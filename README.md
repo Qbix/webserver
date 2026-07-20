@@ -3,19 +3,38 @@
 A pure PHP web server. No nginx, no Apache, no php-fpm.  
 One process serves static files, PHP scripts, WebSocket connections, and a live dashboard.
 
+### 🔟✖️ 10x more concurrent PHP on the same hardware
+
+The biggest bottleneck in PHP hosting is **memory**. Each php-fpm worker loads your
+entire framework independently — 30–60MB per worker. On an 8GB server, that's ~160
+workers max. That's your ceiling for concurrent PHP requests.
+
+Qbix Server forks workers **after** loading your classes. Thanks to copy-on-write,
+all that shared code (framework, config, autoloader) uses memory only once. Each
+worker adds only ~5MB for its per-request data:
+
+```
+php-fpm:       8GB ÷ 50MB per worker  =    160 concurrent PHP requests
+Qbix Server:   8GB ÷  5MB per worker  =  1,600 concurrent PHP requests
+```
+
+Same hardware. Same PHP code. **10x more users served.**
+
 ### Why it's faster than nginx + php-fpm for real apps
 
 | | nginx + php-fpm | Qbix Server |
 |---|---|---|
 | 🚀 **PHP request speed** | 10–50ms bootstrap on *every* request | **0ms** — workers fork after classes are loaded |
-| 💾 **Memory** | 30–60MB × N workers (duplicated) | 30MB shared + ~5MB per worker (copy-on-write) |
+| 💾 **Memory per worker** | 30–60MB each (duplicated) | ~5MB each (shared base via copy-on-write) |
+| 👥 **Concurrent PHP** (8GB) | ~160 workers | **~1,600 workers** |
 | 🔒 **Access-controlled files** | Public URLs or hacky rewrites | `X-Accel-Redirect` — PHP checks access, server streams the file |
 | 🧩 **Cache invalidation** | Whole-page only (purge everything) | `X-Cache-Tree` — invalidate one component, keep the rest cached |
 | 🌐 **WebSocket** | Needs a separate server | Built in |
 | ⚙️ **Setup** | Install nginx, configure proxy_pass, php-fpm pool, sockets... | `php qbixserver.php --port=8080` |
 
 Static file throughput is 55–73% of nginx (C will always beat PHP on raw I/O).  
-But on **actual PHP workloads**, the bootstrap savings make this **2–5x faster**.
+But on **actual PHP workloads**, the memory and bootstrap savings make this
+dramatically faster and more scalable.
 
 > 💡 You can always put nginx, a reverse proxy, or a CDN (Cloudflare, CloudFront)
 > in front of this for faster HTTPS and edge caching. Qbix Server handles the
