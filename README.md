@@ -20,6 +20,7 @@ One process serves static files, PHP scripts, WebSocket connections, and a live 
 - [Building](#-building)
 - [With Qbix Platform](#-with-qbix-platform)
 - [Architecture](#-architecture)
+- [HTTP/2 Support](#-http2-support)
 - [Requirements](#-requirements)
 - [License](#-license)
 
@@ -166,6 +167,7 @@ The 0.05ms you lose on static files, you gain back 30ms on every PHP request. An
 |---|---|
 | **Static files** | ETag, 304 Not Modified, Last-Modified, MIME type detection, in-memory response cache |
 | **Keep-alive** | HTTP/1.0 and 1.1, TCP_NODELAY, configurable limits |
+| **HTTP/2** | Via amphp — multiplexed streams, header compression, TLS (optional) |
 | **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
 | **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
 | **WebSocket** | RFC 6455 upgrade on any path |
@@ -537,6 +539,61 @@ via copy-on-write pages.
 and compiled C. PHP's `stream_select` is `select(2)`, file serving goes through
 userspace, and every operation has interpreter overhead. Getting to 55–73% of C
 performance from pure interpreted PHP is about as good as it gets.
+
+---
+
+## 🌐 HTTP/2 Support
+
+The built-in event loop uses `stream_select` — zero dependencies, works everywhere.
+But if you install [amphp](https://amphp.org/), the server upgrades to a full
+HTTP/2 server with no code changes:
+
+```bash
+composer require amphp/http-server amphp/socket
+php server.php --port=8443
+```
+
+The server detects amphp automatically and switches to its event loop and HTTP
+driver. You get:
+
+| | HTTP/1.1 (built-in) | HTTP/2 (amphp) |
+|---|---|---|
+| Connections per page load | ~6 parallel | 1 multiplexed |
+| Header overhead | Full headers per request | HPACK compressed |
+| Event loop | `stream_select` (portable) | `epoll`/`kqueue` via Revolt |
+| TLS | `stream_socket_enable_crypto` | amphp native TLS |
+| Server push | No | Yes (push static assets before browser asks) |
+
+### How it works
+
+The server has a clean two-layer architecture. `Q_WebServer::route()` handles
+all request logic (static files, PHP dispatch, cache, access control) and returns
+a `[status, headers, body]` array. The transport layer is pluggable:
+
+```
+Built-in:   stream_select → accept → fread → route() → fwrite
+amphp:      Revolt loop → amphp HTTP server → route() → amphp response
+```
+
+All the server's features — response cache, X-Accel-Redirect, component cache
+invalidation, keep-alive, compression — work identically on both transports.
+The `Q_Evented` facade abstracts the event loop, so timers, signals, and socket
+watchers work the same way whether you're on `stream_select` or Revolt.
+
+### When to use which
+
+**Built-in (default):** Zero dependencies. Works on any PHP 8.1+ installation.
+Good for development, small-to-medium sites, and environments where you can't
+install Composer packages.
+
+**amphp:** Better performance under high concurrency thanks to `epoll`/`kqueue`.
+HTTP/2 multiplexing reduces connection overhead for asset-heavy pages.
+Required if you need server push or HTTP/2-only clients.
+
+**Either way:** You can always put Cloudflare, CloudFront, or nginx in front
+as a reverse proxy. The CDN terminates HTTP/2 (and HTTP/3) for you, forwarding
+HTTP/1.1 to the backend. In that configuration, the built-in transport is all
+you need — the CDN handles the protocol upgrade.
 
 ---
 
