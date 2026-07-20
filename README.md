@@ -3,7 +3,23 @@
 A pure PHP web server. No nginx, no Apache, no php-fpm.  
 One process serves static files, PHP scripts, WebSocket connections, and a live dashboard.
 
-**55–73% of nginx throughput** on static files. Zero dependencies beyond PHP itself.
+### Why it's faster than nginx + php-fpm for real apps
+
+| | nginx + php-fpm | Qbix Server |
+|---|---|---|
+| 🚀 **PHP request speed** | 10–50ms bootstrap on *every* request | **0ms** — workers fork after classes are loaded |
+| 💾 **Memory** | 30–60MB × N workers (duplicated) | 30MB shared + ~5MB per worker (copy-on-write) |
+| 🔒 **Access-controlled files** | Public URLs or hacky rewrites | `X-Accel-Redirect` — PHP checks access, server streams the file |
+| 🧩 **Cache invalidation** | Whole-page only (purge everything) | `X-Cache-Tree` — invalidate one component, keep the rest cached |
+| 🌐 **WebSocket** | Needs a separate server | Built in |
+| ⚙️ **Setup** | Install nginx, configure proxy_pass, php-fpm pool, sockets... | `php qbixserver.php --port=8080` |
+
+Static file throughput is 55–73% of nginx (C will always beat PHP on raw I/O).  
+But on **actual PHP workloads**, the bootstrap savings make this **2–5x faster**.
+
+> 💡 You can always put nginx, a reverse proxy, or a CDN (Cloudflare, CloudFront)
+> in front of this for faster HTTPS and edge caching. Qbix Server handles the
+> PHP execution, access control, and intelligent caching behind it.
 
 ---
 
@@ -38,17 +54,17 @@ mkdir web
 echo '<h1>Hello World</h1>' > web/index.html
 
 # Run
-php server.php --port=8080
+php qbixserver.php --port=8080
 ```
 
 Open [http://localhost:8080](http://localhost:8080). That's it.
 
 ```bash
 # Or serve an existing directory
-php server.php --root=/var/www/mysite --port=80
+php qbixserver.php --root=/var/www/mysite --port=80
 
 # Or use the PHAR (single file, 196KB)
-php bin/qbix-server.phar --root=./public --port=8080
+php bin/qbixserver.phar --root=./public --port=8080
 ```
 
 ---
@@ -132,7 +148,7 @@ Use the `--workers=N` flag and configure which classes to preload:
 
 ```bash
 # Start with 4 workers (classes loaded once, shared across all)
-php server.php --app=/path/to/myapp --port=8080 --workers=4
+php qbixserver.php --app=/path/to/myapp --port=8080 --workers=4
 ```
 
 The parent process loads and parses every class in the `preload` list, then forks. Workers inherit the entire loaded state — OPcache entries, class definitions, parsed config trees, autoloader maps. The first PHP request in each worker runs at full speed, no cold start.
@@ -418,25 +434,25 @@ For concurrent PHP execution, use `--workers=N` to pre-fork a worker pool.
 ### 1. From source (needs PHP 8.1+)
 
 ```bash
-php server.php --root=./web --port=8080
+php qbixserver.php --root=./web --port=8080
 ```
 
 ### 2. PHAR — single 196KB file (needs PHP)
 
 ```bash
-php bin/qbix-server.phar --root=./web --port=8080
+php bin/qbixserver.phar --root=./web --port=8080
 
 # Or make it executable
-chmod +x bin/qbix-server.phar
-./bin/qbix-server.phar --port=8080
+chmod +x bin/qbixserver.phar
+./bin/qbixserver.phar --port=8080
 ```
 
 ### 3. Static binary — no PHP needed
 
 ```bash
 # Download from GitHub Releases
-chmod +x qbix-server-linux-x86_64
-./qbix-server-linux-x86_64 --root=./web --port=8080
+chmod +x qbixserver-linux-x86_64
+./qbixserver-linux-x86_64 --root=./web --port=8080
 ```
 
 The binary bundles PHP 8.3 + extensions into a single ~15MB executable.  
@@ -450,7 +466,7 @@ Copy it to any Linux or macOS machine and run. No dependencies.
 
 ```bash
 php -d phar.readonly=0 build-phar.php
-# Output: bin/qbix-server.phar
+# Output: bin/qbixserver.phar
 ```
 
 ### Build the static binary
@@ -462,7 +478,7 @@ php -d phar.readonly=0 build-phar.php
 # With static-php-cli installed locally:
 ./build-binary.sh
 
-# Output: bin/qbix-server (~15MB)
+# Output: bin/qbixserver (~15MB)
 ```
 
 The binary is built using [static-php-cli](https://github.com/crazywhalecc/static-php-cli),
@@ -481,7 +497,7 @@ framework for building social apps with real-time streams, user management, and 
 When you have a Qbix app, the server uses the full framework:
 
 ```bash
-php server.php --app=/path/to/myapp --port=8080
+php qbixserver.php --app=/path/to/myapp --port=8080
 ```
 
 In this mode:
@@ -550,7 +566,7 @@ HTTP/2 server with no code changes:
 
 ```bash
 composer require amphp/http-server amphp/socket
-php server.php --port=8443
+php qbixserver.php --port=8443
 ```
 
 The server detects amphp automatically and switches to its event loop and HTTP
@@ -599,7 +615,7 @@ you need — the CDN handles the protocol upgrade.
 
 ## 📋 Requirements
 
-**For server.php and PHAR:**
+**For qbixserver.php and PHAR:**
 
 - PHP 8.1 or later
 - Extensions: `sockets`, `pcntl` (for signals + workers), `openssl` (for HTTPS)
