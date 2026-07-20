@@ -30,9 +30,9 @@ But on **actual PHP workloads**, the bootstrap savings make this **2–5x faster
 - [Why Not php-fpm?](#-why-not-php-fpm)
 - [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
 - [Features](#-features)
-- [Server Powers](#-server-powers--what-your-php-can-do)
+- [Server Headers](#-server-headers--what-your-php-can-send)
+- [Project Structure](#-project-structure)
 - [Configuration](#-configuration)
-- [PHP Scripts](#-php-scripts)
 - [Three Ways to Run](#-three-ways-to-run)
 - [Building](#-building)
 - [With Qbix Platform](#-with-qbix-platform)
@@ -269,10 +269,25 @@ php qbixserver.php --port=8080  # done
 
 ---
 
-## 🔒 Server Powers — What Your PHP Can Do
+## 🔒 Server Headers — What Your PHP Can Send
 
-Qbix Server understands special response headers from your PHP scripts, giving you
-capabilities that normally require complex nginx configurations or aren't possible at all.
+Qbix Server understands special response headers from your PHP scripts. These are
+the same headers nginx understands (like `X-Accel-Redirect`) plus new ones for
+component-level caching. Your PHP sends them with `header()`, the server acts on them.
+
+### Quick reference
+
+| Header | What it does | Example |
+|---|---|---|
+| `Cache-Control` | Server caches the response, serves without running PHP | `header('Cache-Control: public, max-age=300');` |
+| `X-Accel-Redirect` | Server streams a file after PHP checks access | `header('X-Accel-Redirect: /uploads/private/doc.pdf');` |
+| `X-Cache-Tree` | Registers page components with content hashes | `header('X-Cache-Tree: ' . json_encode([...]));` |
+| `X-Cache-Deps` | Maps components to data dependency keys | `header('X-Cache-Deps: ' . json_encode([...]));` |
+| `X-Cache-Invalidate` | Marks dependency keys as stale | `header('X-Cache-Invalidate: ' . json_encode([...]));` |
+| `X-Cache-Stale` | Marks specific components as needing re-render | `header('X-Cache-Stale: feed,sidebar');` |
+
+All of these are standard PHP `header()` calls. No SDK, no framework needed.
+The server strips them before sending the response to the client.
 
 ### Access-controlled static files
 
@@ -280,8 +295,8 @@ With a typical server, your uploaded files sit at public URLs. Anyone with the l
 access them — and share the link with others. The usual workaround is "unguessable" URLs,
 which are just security through obscurity.
 
-Qbix Server supports `X-Accel-Redirect`: your PHP checks access, then tells the server
-to serve the file directly — fast, streamed, with no public URL exposed:
+`X-Accel-Redirect` lets your PHP check access, then tells the server to serve the file
+directly — fast, streamed, with no public URL exposed:
 
 ```php
 <?php
@@ -300,8 +315,7 @@ if (!$userId || !userCanAccess($userId, $fileId)) {
 
 // Tell the server to serve the file directly.
 // The client never sees the real path.
-$realPath = "/uploads/private/{$fileId}";
-header("X-Accel-Redirect: {$realPath}");
+header("X-Accel-Redirect: /uploads/private/{$fileId}");
 header("Content-Disposition: attachment; filename=\"document.pdf\"");
 
 // The server takes over from here — streams the file
@@ -310,58 +324,66 @@ header("Content-Disposition: attachment; filename=\"document.pdf\"");
 ```
 
 No public URL for the file. No redirect the user can bookmark. The server streams
-the file after your PHP has verified access and exited. This works for PDFs, images,
-videos, ZIPs — anything.
+the file after your PHP has verified access and exited.
 
-### Built-in reverse proxy cache
+### Reverse proxy cache
 
-The server caches responses and serves them without running PHP again.
-Control it with standard `Cache-Control` headers:
+Control how the server caches your PHP responses:
 
 ```php
 <?php
 // web/feed.php — cached for 5 minutes
+
+// The server caches this response and serves it without
+// running PHP again for the next 300 seconds.
 header('Cache-Control: public, max-age=300');
 
-// This runs once, then the server serves the cached
-// response for the next 5 minutes. Zero PHP cost.
 echo renderFeed();
 ```
 
-The server also generates `ETag` headers from your response content. On subsequent
-requests with `If-None-Match`, it returns `304 Not Modified` with no body — saving
-bandwidth for both you and your users.
+```php
+<?php
+// web/profile.php — cached, but revalidate with ETag
 
-### Component-level cache invalidation
+// The server generates an ETag from the response body.
+// Browsers send If-None-Match on next request.
+// Server returns 304 (no body) if nothing changed.
+header('Cache-Control: public, max-age=0, must-revalidate');
 
-This is the big one. Most caching systems cache whole pages — when anything changes,
-you throw away the entire page and re-render everything.
-
-Qbix Server supports `X-Cache-Tree` and `X-Cache-Deps` headers that let your PHP
-register individual components of a page and what data they depend on:
+echo renderProfile($userId);
+```
 
 ```php
 <?php
-// web/community.php — a page with multiple components
+// web/admin.php — never cache
 
-// Render the feed (depends on the feed stream)
-$feedHtml = renderFeed($communityId);
-$feedHash = md5($feedHtml);
+header('Cache-Control: no-store');
 
-// Render the sidebar (depends on the about stream)
+echo renderAdminPanel();
+```
+
+### Component-level cache invalidation
+
+Most caching systems cache whole pages. When anything changes, you throw away the
+entire page and re-render everything. Qbix Server can cache individual components
+and only re-render what changed.
+
+**Step 1: Register components when rendering a page**
+
+```php
+<?php
+// web/community.php — a page with three components
+
+$feedHtml    = renderFeed($communityId);
 $sidebarHtml = renderSidebar($communityId);
-$sidebarHash = md5($sidebarHtml);
-
-// Render members list (depends on participants)
 $membersHtml = renderMembers($communityId);
-$membersHash = md5($membersHtml);
 
-// Register components and what they depend on
+// Tell the server about the component tree and what data each depends on
 header('X-Cache-Tree: ' . json_encode([
     'l' => [
-        'feed'    => $feedHash,
-        'sidebar' => $sidebarHash,
-        'members' => $membersHash,
+        'feed'    => md5($feedHtml),
+        'sidebar' => md5($sidebarHtml),
+        'members' => md5($membersHtml),
     ]
 ]));
 
@@ -371,36 +393,37 @@ header('X-Cache-Deps: ' . json_encode([
     'members' => ["community/{$communityId}/participants"],
 ]));
 
-// When someone posts to the feed, only 'feed' is invalidated.
-// The sidebar and members list are still served from cache.
-// The server re-renders only the stale component.
+header('Cache-Control: public, max-age=300');
+echo $feedHtml . $sidebarHtml . $membersHtml;
 ```
 
-When data changes, tell the server which dependency key was affected:
+**Step 2: Invalidate when data changes**
 
 ```php
 <?php
 // web/post.php — user posts to the feed
 saveNewPost($communityId, $content);
 
-// Invalidate only pages that depend on this feed
+// Tell the server which dependency key changed
 header('X-Cache-Invalidate: ' . json_encode([
     "community/{$communityId}/feed"
 ]));
 
 // The server walks its dependency graph:
 //   community/123/feed → page /community/123 component 'feed'
-// Only that component is stale. Sidebar, members = still cached.
+// Only 'feed' is stale. Sidebar, members = still cached.
+// Next request re-renders only the feed component.
+
+echo json_encode(['ok' => true]);
 ```
 
-The server maintains a Merkle tree of component hashes. When any dependency key
-is invalidated, it walks the tree to find exactly which components on which pages
-are affected — and only those are re-rendered on the next request. Everything else
-is served from the in-memory cache.
+The server maintains a Merkle tree of component hashes. When a dependency key is
+invalidated, it walks the tree to find exactly which components on which pages are
+affected. Everything else is served from the in-memory cache.
 
 ### Even more powerful with Qbix Platform
 
-These headers work with plain PHP as shown above. But with the
+These headers work with plain PHP `header()` calls as shown above. But with the
 [Qbix Platform](https://github.com/Qbix/Platform), it becomes automatic:
 
 ```php
@@ -409,21 +432,127 @@ Q_Response::setCacheComponent('Streams/feed', $hash, [$depKey]);
 Q_Response::invalidateCacheDeps($publisherId . '/' . $streamName);
 
 // X-Accel-Redirect for access-controlled files
-Q_Response::setHeader('X-Accel-Redirect', $path);
+Q_Response::redirect(['uri' => $internalPath, 'accel' => true]);
 
 // Cache-Control with semantic options
-Q_Response::setCachePolicy([
-    'public' => true,
-    'maxAge' => 300,
-    'mustRevalidate' => true,
-]);
+Q_Response::cacheFor(300);
 ```
 
 The Platform's Streams plugin automatically invalidates cache dependencies when
 stream data changes — posts, relations, participant joins — so cached pages
-update themselves without manual invalidation calls. Combined with the server's
-Merkle tree, this gives you fine-grained, data-driven cache invalidation across
-your entire app, with zero configuration.
+update themselves without any manual invalidation calls.
+
+---
+
+## 📂 Project Structure
+
+A typical project looks like this:
+
+```
+myproject/
+├── qbixserver.php          ← server entry point (or use the PHAR)
+├── config/
+│   └── server.json         ← server configuration
+├── web/                    ← document root (publicly accessible)
+│   ├── index.html
+│   ├── style.css
+│   ├── app.js
+│   ├── api.php             ← executed as PHP
+│   └── uploads/            ← served as static files (or via X-Accel-Redirect)
+└── classes/                ← your PHP classes (for preloading)
+    ├── MyApp.php
+    ├── MyApp/
+    │   ├── User.php
+    │   ├── Feed.php
+    │   └── Auth.php
+    └── vendor/             ← composer dependencies
+        └── autoload.php
+```
+
+Only files under `web/` are accessible via HTTP. The `classes/` directory is for
+code that runs inside your PHP scripts — and for classes you want preloaded into
+the fork pool.
+
+### Preloading classes
+
+When you use `--workers=N`, the parent process loads classes before forking.
+Workers inherit everything via copy-on-write — zero bootstrap cost per request.
+
+Configure preloading in `config/server.json`:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "preload": {
+                "autoload": "classes/vendor/autoload.php",
+                "classes": [
+                    "MyApp",
+                    "MyApp\\User",
+                    "MyApp\\Feed",
+                    "MyApp\\Auth",
+                    "MyApp\\Database"
+                ]
+            }
+        }
+    }
+}
+```
+
+```bash
+# Start with 4 workers — classes loaded once, shared across all
+php qbixserver.php --root=./web --port=8080 --workers=4
+```
+
+What happens at startup:
+
+```
+1. Parent includes classes/vendor/autoload.php
+2. Parent loads each class in the preload list (triggers autoloader)
+3. All class definitions, constants, and autoloader maps are now in memory
+4. Parent calls pcntl_fork() × 4
+5. Each worker inherits everything — ready to handle requests immediately
+```
+
+Your `web/api.php` can now use `MyApp\User` or `MyApp\Feed` without any `require`
+or autoloader overhead — the classes are already loaded:
+
+```php
+<?php
+// web/api.php — classes are already in memory from preloading
+use MyApp\User;
+use MyApp\Feed;
+
+$user = User::fromSession();
+$items = Feed::latest(20);
+
+header('Content-Type: application/json');
+header('Cache-Control: public, max-age=60');
+echo json_encode($items);
+```
+
+### Workers: fork-per-request (truly shared-nothing)
+
+Each worker handles exactly **one request**, then exits. The parent immediately
+forks a replacement. This means:
+
+- Static variables — **wiped** (process dies)
+- Global state — **wiped** (process dies)
+- Memory leaks — **impossible** (OS reclaims everything)
+- Secrets in memory — **gone** (no persistence between requests)
+
+This is safer than php-fpm, which reuses workers across requests and relies on
+`pm.max_requests` to periodically recycle them. With Qbix Server, every request
+gets a clean process. The fork cost (~0.5ms) is negligible compared to the
+bootstrap savings (~10–50ms).
+
+### In-process mode (--workers=0)
+
+Without `--workers`, PHP scripts run directly in the event loop. This is
+single-threaded — fine for development and lightweight APIs. Superglobals
+(`$_GET`, `$_POST`, etc.) are reset between requests, but static class
+variables persist (same as php-fpm). Use `--workers=N` in production for
+full isolation.
 
 ---
 
@@ -466,35 +595,6 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `rateLimit.enabled` | false | Enable per-IP rate limiting |
 | `rateLimit.requests` | 100 | Requests per window |
 | `rateLimit.window` | 60 | Window in seconds |
-
----
-
-## 🐘 PHP Scripts
-
-Any `.php` file in your document root is executed when requested:
-
-```
-web/
-  index.html      ← served as static file
-  style.css       ← served as static file
-  api.php         ← executed as PHP
-  webhook.php     ← executed as PHP
-```
-
-PHP scripts have full access to `$_SERVER`, `$_GET`, `$_POST`, `$_REQUEST`:
-
-```php
-<?php
-// web/api.php
-header('Content-Type: application/json');
-echo json_encode([
-    'time'   => date('c'),
-    'method' => $_SERVER['REQUEST_METHOD'],
-    'query'  => $_GET,
-]);
-```
-
-For concurrent PHP execution, use `--workers=N` to pre-fork a worker pool.
 
 ---
 
