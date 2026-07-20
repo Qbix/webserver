@@ -92,6 +92,45 @@ class Q_WebServer
 			}
 		}
 
+		// ── Preload classes (before forking) ─────────────
+		$preload = Q_Config::get('Q', 'webserver', 'preload', array());
+		if (!empty($preload)) {
+			// Load the autoloader first (e.g. Composer's)
+			$autoload = is_string($preload)
+				? $preload
+				: (isset($preload['autoload']) ? $preload['autoload'] : null);
+			if ($autoload) {
+				$autoloadPath = $autoload;
+				// Resolve relative to the document root's parent (project root)
+				if ($autoloadPath[0] !== '/' && $autoloadPath[0] !== '\\') {
+					$projectRoot = dirname(rtrim(self::$rootDir, DS));
+					$autoloadPath = $projectRoot . DS . $autoloadPath;
+				}
+				if (file_exists($autoloadPath)) {
+					require_once $autoloadPath;
+					$count = count(get_declared_classes());
+					echo "  Autoloader: " . basename($autoload) . "\n";
+				} else {
+					echo "  Warning: autoload file not found: $autoloadPath\n";
+				}
+			}
+			// Then load each named class (triggers the autoloader)
+			$classes = isset($preload['classes']) ? $preload['classes'] : array();
+			if (!empty($classes)) {
+				$loaded = 0;
+				foreach ($classes as $class) {
+					if (!class_exists($class, true) && !interface_exists($class, true)
+						&& !trait_exists($class, true)
+					) {
+						echo "  Warning: could not preload $class\n";
+					} else {
+						$loaded++;
+					}
+				}
+				echo "  Preloaded: $loaded classes\n";
+			}
+		}
+
 		// ── Worker pool ──────────────────────────────────
 		if ($workers > 0 && function_exists('pcntl_fork')) {
 			self::$pool = new Q_WebServer_Pool($workers);

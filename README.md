@@ -31,7 +31,7 @@ But on **actual PHP workloads**, the bootstrap savings make this **2–5x faster
 - [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
 - [Features](#-features)
 - [Server Headers](#-server-headers--what-your-php-can-send)
-- [Project Structure](#-project-structure)
+- [For PHP Developers](#-for-php-developers--the-micro-framework)
 - [Configuration](#-configuration)
 - [Three Ways to Run](#-three-ways-to-run)
 - [Building](#-building)
@@ -444,41 +444,85 @@ update themselves without any manual invalidation calls.
 
 ---
 
-## 📂 Project Structure
+## 📂 For PHP Developers — The Micro-Framework
 
-A typical project looks like this:
+Qbix Server isn't just a static file server with PHP bolted on. It's a micro-framework
+where you **drop files into conventional directories** and things just work — classes
+autoload, events fire handlers, views render templates. No configuration needed for
+the basics.
+
+### Project layout
 
 ```
 myproject/
-├── qbixserver.php          ← server entry point (or use the PHAR)
+├── qbixserver.php              ← server entry point (or use the PHAR)
 ├── config/
-│   └── server.json         ← server configuration
-├── web/                    ← document root (publicly accessible)
-│   ├── index.html
+│   └── server.json             ← server + app configuration
+├── web/                        ← document root (publicly accessible)
+│   ├── index.html              ← static files served directly
 │   ├── style.css
-│   ├── app.js
-│   ├── api.php             ← executed as PHP
-│   └── uploads/            ← served as static files (or via X-Accel-Redirect)
-└── classes/                ← your PHP classes (for preloading)
-    ├── MyApp.php
-    ├── MyApp/
-    │   ├── User.php
-    │   ├── Feed.php
-    │   └── Auth.php
-    └── vendor/             ← composer dependencies
-        └── autoload.php
+│   ├── api.php                 ← PHP scripts executed on request
+│   └── uploads/
+├── classes/                    ← autoloaded classes (preloaded into workers)
+│   ├── MyApp/
+│   │   ├── User.php            ← MyApp\User or MyApp_User
+│   │   ├── Feed.php
+│   │   └── Auth.php
+│   └── vendor/
+│       └── autoload.php        ← Composer autoloader (optional)
+├── handlers/                   ← event handlers (loaded on demand)
+│   └── MyApp/
+│       └── feed/
+│           ├── post.php        ← handles "MyApp/feed/post" event
+│           └── validate.php    ← handles "MyApp/feed/validate" event
+└── views/                      ← PHP templates for Q::view()
+    └── MyApp/
+        └── feed/
+            ├── page.php
+            └── item.php
 ```
 
-Only files under `web/` are accessible via HTTP. The `classes/` directory is for
-code that runs inside your PHP scripts — and for classes you want preloaded into
-the fork pool.
+Only `web/` is accessible via HTTP. Everything else is server-side only.
 
-### Preloading classes
+### Classes — preloaded, both conventions
 
-When you use `--workers=N`, the parent process loads classes before forking.
-Workers inherit everything via copy-on-write — zero bootstrap cost per request.
+Drop a PHP file in `classes/` and it's autoloaded. Both naming conventions work:
 
-Configure preloading in `config/server.json`:
+```php
+<?php
+// classes/MyApp/User.php — namespace style (PSR-4)
+namespace MyApp;
+
+class User {
+    public static function fromSession(): ?self { /* ... */ }
+    public static function find(string $id): ?self { /* ... */ }
+}
+```
+
+```php
+<?php
+// classes/MyApp/Auth.php — underscore style (Qbix convention)
+class MyApp_Auth {
+    static function check(): bool { return !empty($_SESSION['user_id']); }
+}
+```
+
+Both are available immediately in your `web/*.php` scripts:
+
+```php
+<?php
+// web/profile.php — both class styles work, no require needed
+use MyApp\User;
+
+$user = User::fromSession();
+$isAdmin = MyApp_Auth::check();
+```
+
+The autoloader also bridges between conventions — if you define `MyApp_Auth`,
+it's also accessible as `MyApp\Auth`, and vice versa.
+
+**Preloading** loads classes into memory before forking workers, so there's zero
+autoloader overhead per request:
 
 ```json
 {
@@ -487,11 +531,9 @@ Configure preloading in `config/server.json`:
             "preload": {
                 "autoload": "classes/vendor/autoload.php",
                 "classes": [
-                    "MyApp",
                     "MyApp\\User",
                     "MyApp\\Feed",
-                    "MyApp\\Auth",
-                    "MyApp\\Database"
+                    "MyApp_Auth"
                 ]
             }
         }
@@ -500,36 +542,172 @@ Configure preloading in `config/server.json`:
 ```
 
 ```bash
-# Start with 4 workers — classes loaded once, shared across all
 php qbixserver.php --root=./web --port=8080 --workers=4
+#  Autoloader: autoload.php
+#  Preloaded: 3 classes
 ```
 
-What happens at startup:
+Classes are **eager** — loaded once at startup, shared across all workers via
+copy-on-write. This is the "hot path" code that handles every request.
 
-```
-1. Parent includes classes/vendor/autoload.php
-2. Parent loads each class in the preload list (triggers autoloader)
-3. All class definitions, constants, and autoloader maps are now in memory
-4. Parent calls pcntl_fork() × 4
-5. Each worker inherits everything — ready to handle requests immediately
-```
+### Handlers — loaded on demand
 
-Your `web/api.php` can now use `MyApp\User` or `MyApp\Feed` without any `require`
-or autoloader overhead — the classes are already loaded:
+Handlers are the opposite of classes: they're loaded **only when their event fires**.
+Drop a file in `handlers/` and it's available as an event:
 
 ```php
 <?php
-// web/api.php — classes are already in memory from preloading
-use MyApp\User;
-use MyApp\Feed;
+// handlers/MyApp/feed/post.php
+// Handles the "MyApp/feed/post" event
+// Function name = path with slashes replaced by underscores
 
-$user = User::fromSession();
-$items = Feed::latest(20);
+function MyApp_feed_post(&$params, &$result) {
+    $title = $params['title'] ?? 'Untitled';
+    $userId = $params['userId'] ?? null;
+
+    // Validate, save to DB, whatever
+    $id = saveFeedPost($userId, $title);
+
+    $result = ['id' => $id, 'title' => $title, 'saved' => true];
+    return $result;
+}
+```
+
+Fire it from anywhere:
+
+```php
+<?php
+// web/api.php
+$result = Q::event('MyApp/feed/post', [
+    'title'  => $_POST['title'],
+    'userId' => $_SESSION['user_id'],
+]);
 
 header('Content-Type: application/json');
-header('Cache-Control: public, max-age=60');
-echo json_encode($items);
+echo json_encode($result);
 ```
+
+The handler file is `include`'d the first time the event fires, then the function
+stays in memory. If the event never fires, the file is never loaded. This is ideal
+for things like webhooks, admin actions, and error handlers — code that runs rarely
+but needs to be available.
+
+**Check if a handler exists:**
+
+```php
+if (Q::canHandle('MyApp/feed/post')) {
+    Q::event('MyApp/feed/post', $params);
+}
+```
+
+### Before/after hooks
+
+You can attach hooks to any event via config — useful for validation, logging,
+access control, or cross-cutting concerns:
+
+```json
+{
+    "Q": {
+        "handlersBeforeEvent": {
+            "MyApp/feed/post": ["MyApp/feed/validate"]
+        },
+        "handlersAfterEvent": {
+            "MyApp/feed/post": ["MyApp/feed/notify"]
+        }
+    }
+}
+```
+
+```php
+<?php
+// handlers/MyApp/feed/validate.php
+function MyApp_feed_validate(&$params, &$result) {
+    if (empty($params['title'])) {
+        $result = ['error' => 'Title required'];
+        return false; // stops the event chain — main handler won't fire
+    }
+}
+```
+
+```php
+<?php
+// handlers/MyApp/feed/notify.php
+function MyApp_feed_notify(&$params, &$result) {
+    // Runs after the main handler
+    if (!empty($result['saved'])) {
+        sendNotification($params['userId'], "Post published: " . $result['title']);
+    }
+}
+```
+
+The chain is: **before hooks → main handler → after hooks**. Any before hook
+returning `false` stops the chain. This is the same pattern the full
+[Qbix Platform](https://github.com/Qbix/Platform) uses — your handlers
+work identically when you upgrade.
+
+### Remote handlers
+
+Handlers can also be URLs. If a handler name in the config starts with
+`http://` or `https://`, the server POSTs the event parameters as JSON
+to that URL instead of loading a local PHP file:
+
+```json
+{
+    "Q": {
+        "handlersAfterEvent": {
+            "MyApp/user/register": ["https://hooks.example.com/new-user"]
+        }
+    }
+}
+```
+
+When `Q::event('MyApp/user/register', $params)` fires, the local handler
+runs first, then the server POSTs `$params` as JSON to the remote URL.
+This is webhooks built into the event system — no separate webhook
+infrastructure needed.
+
+### Views — PHP templates
+
+Render PHP templates from the `views/` directory:
+
+```php
+<?php
+// views/MyApp/feed/item.php
+// Variables are extracted into scope from the $params array
+?>
+<article>
+    <h2><?= htmlspecialchars($title) ?></h2>
+    <p><?= htmlspecialchars($body) ?></p>
+    <time><?= $time ?></time>
+</article>
+```
+
+```php
+<?php
+// web/feed.php
+$items = MyApp\Feed::latest(10);
+$html = '';
+foreach ($items as $item) {
+    $html .= Q::view('MyApp/feed/item.php', $item);
+}
+echo Q::view('MyApp/feed/page.php', ['content' => $html]);
+```
+
+Views are just PHP files — full language access, no template DSL to learn.
+
+### The philosophy
+
+| | Loaded when | Lives in | Purpose |
+|---|---|---|---|
+| **Classes** | Startup (preloaded) | `classes/` | Models, services, utilities — your core code |
+| **Handlers** | First event fire (on demand) | `handlers/` | Actions, hooks, webhooks — code that responds to events |
+| **Views** | When rendered | `views/` | Templates — HTML with PHP |
+| **Scripts** | When requested via HTTP | `web/` | Entry points — the "controller" layer |
+| **Config** | Startup | `config/` | Settings, handler hooks, preload lists |
+
+Classes are **eager**. Handlers are **lazy**. Scripts are **per-request**.
+Views are **on-demand**. This gives you the right loading strategy for each
+kind of code without thinking about it — just put files in the right directory.
 
 ### Workers: fork-per-request (truly shared-nothing)
 
@@ -553,6 +731,17 @@ single-threaded — fine for development and lightweight APIs. Superglobals
 (`$_GET`, `$_POST`, etc.) are reset between requests, but static class
 variables persist (same as php-fpm). Use `--workers=N` in production for
 full isolation.
+
+### Growing into the full Qbix Platform
+
+The conventions above — `classes/`, `handlers/`, `views/`, `config/` — are
+the same ones the [Qbix Platform](https://github.com/Qbix/Platform) uses.
+When your project outgrows the micro-framework and you need user accounts,
+real-time streams, access control, payments, or a plugin system, you switch
+to `--app` mode and everything you've written keeps working. Your classes
+stay in `classes/`, your handlers stay in `handlers/`, your views stay in
+`views/`. You just gain access to Streams, Users, Assets, and the rest of
+the plugin ecosystem — without rewriting anything.
 
 ---
 
@@ -784,7 +973,7 @@ you need — the CDN handles the protocol upgrade.
 
 ## 📋 Requirements
 
-**For qbixserver.php and PHAR:**
+**Linux / macOS (recommended):**
 
 - PHP 8.1 or later
 - Extensions: `sockets`, `pcntl` (for signals + workers), `openssl` (for HTTPS)
@@ -800,6 +989,12 @@ sudo apt install php-cli php-sockets
 **For the static binary:**
 
 - Nothing. The PHP runtime is included.
+
+**Windows:** The server runs in single-threaded mode (`--workers=0` only).
+Static files, PHP scripts, WebSocket, caching, compression, access control —
+everything works. You lose fork-per-request isolation and signal-based graceful
+shutdown, because `pcntl` doesn't exist on Windows. Good for development; for
+production use Linux or macOS (or WSL).
 
 ---
 

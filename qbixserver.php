@@ -107,6 +107,11 @@ if (!$webDir || !is_dir($webDir)) {
 	exit(1);
 }
 
+// Initialize Q with the project root (parent of web/)
+// This sets up autoloading from classes/ and handlers from handlers/
+$projectRoot = dirname($webDir);
+Q::init($projectRoot);
+
 // ── Load config ─────────────────────────────────────
 
 // Default server config
