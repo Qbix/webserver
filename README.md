@@ -27,15 +27,15 @@ One process serves static files, PHP scripts, WebSocket connections, and a live 
 
 ```bash
 # Clone
-git clone https://github.com/Qbix/Server.git
-cd Server
+git clone https://github.com/Qbix/webserver.git
+cd webserver
 
 # Create a web directory
 mkdir web
 echo '<h1>Hello World</h1>' > web/index.html
 
 # Run
-php server.php --port=8080
+php qbixserver.php --port=8080
 ```
 
 Open [http://localhost:8080](http://localhost:8080). That's it.
