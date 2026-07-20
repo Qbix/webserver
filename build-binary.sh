@@ -11,7 +11,7 @@
 #   - Docker (for cross-compilation) or local build tools
 #   - ~2GB disk space for the build
 #
-# Output: bin/qbix-server (or bin/qbix-server-$OS-$ARCH)
+# Output: bin/qbixserver (or bin/qbixserver-$OS-$ARCH)
 #
 
 set -e
@@ -85,12 +85,12 @@ build_with_static_php_cli() {
     php -d phar.readonly=0 "$SCRIPT_DIR/build-phar.php"
 
     echo "Combining micro.sfx + PHAR..."
-    cat "$MICRO_SFXN" "$BIN_DIR/qbix-server.phar" > "$BIN_DIR/qbix-server"
-    chmod +x "$BIN_DIR/qbix-server"
+    cat "$MICRO_SFXN" "$BIN_DIR/qbixserver.phar" > "$BIN_DIR/qbixserver"
+    chmod +x "$BIN_DIR/qbixserver"
 
     echo ""
-    echo "Binary built: $BIN_DIR/qbix-server"
-    ls -lh "$BIN_DIR/qbix-server"
+    echo "Binary built: $BIN_DIR/qbixserver"
+    ls -lh "$BIN_DIR/qbixserver"
 }
 
 # ── Method 2: Docker-based build ─────────────────
@@ -125,24 +125,24 @@ RUN spc download --with-php=8.3 --for-extensions=pcntl,sockets,openssl,mbstring,
 RUN spc build pcntl,sockets,openssl,mbstring,filter --build-micro
 
 # Combine
-RUN cat buildroot/bin/micro.sfx bin/qbix-server.phar > bin/qbix-server && \
-    chmod +x bin/qbix-server
+RUN cat buildroot/bin/micro.sfx bin/qbixserver.phar > bin/qbixserver && \
+    chmod +x bin/qbixserver
 
 FROM scratch
-COPY --from=builder /build/bin/qbix-server /qbix-server
+COPY --from=builder /build/bin/qbixserver /qbix-server
 DOCKERFILE
 
-    docker build -t qbix-server-builder "$TMPDIR"
-    docker create --name qbix-extract qbix-server-builder
-    docker cp qbix-extract:/qbix-server "$BIN_DIR/qbix-server"
+    docker build -t qbixserver-builder "$TMPDIR"
+    docker create --name qbix-extract qbixserver-builder
+    docker cp qbix-extract:/qbixserver "$BIN_DIR/qbixserver"
     docker rm qbix-extract
-    docker rmi qbix-server-builder 2>/dev/null || true
+    docker rmi qbixserver-builder 2>/dev/null || true
 
     rm -rf "$TMPDIR"
 
     echo ""
-    echo "Binary built: $BIN_DIR/qbix-server"
-    ls -lh "$BIN_DIR/qbix-server"
+    echo "Binary built: $BIN_DIR/qbixserver"
+    ls -lh "$BIN_DIR/qbixserver"
 }
 
 # ── Method 3: Manual build (fallback) ────────────
@@ -156,7 +156,7 @@ build_manual() {
     echo "  Method A: curl -sL https://github.com/crazywhalecc/static-php-cli/... | tar xz"
     echo "  Method B: $0 --docker"
     echo ""
-    echo "The PHAR works identically: php bin/qbix-server.phar --port=8080"
+    echo "The PHAR works identically: php bin/qbixserver.phar --port=8080"
 }
 
 # ── Choose build method ──────────────────────────

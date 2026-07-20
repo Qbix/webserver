@@ -1,0 +1,25 @@
+{
+    "name": "qbix/server",
+    "description": "Pure PHP web server — static files, PHP execution, WebSocket, live dashboard",
+    "type": "project",
+    "license": "MIT",
+    "keywords": ["server", "http", "webserver", "php", "static", "websocket"],
+    "homepage": "https://github.com/Qbix/Server",
+    "require": {
+        "php": ">=8.1",
+        "ext-sockets": "*"
+    },
+    "require-dev": {
+        "revolt/event-loop": "^1.0"
+    },
+    "suggest": {
+        "ext-pcntl": "Required for graceful shutdown (SIGTERM/SIGINT) and --workers=N",
+        "ext-openssl": "Required for HTTPS/TLS support",
+        "revolt/event-loop": "Enables Revolt event loop driver (epoll/kqueue, better performance under high concurrency)",
+        "amphp/http-server": "Enables HTTP/2 support with multiplexed streams and HPACK compression"
+    },
+    "autoload": {
+        "classmap": ["src/"]
+    },
+    "bin": ["qbixserver.php"]
+}

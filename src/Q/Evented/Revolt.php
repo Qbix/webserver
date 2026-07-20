@@ -1,30 +1,87 @@
 <?php
+/**
+ * @module Q
+ */
+
+use Revolt\EventLoop;
+
+/**
+ * Event loop driver backed by Revolt (amphp's event loop).
+ * Install via: composer require revolt/event-loop
+ *
+ * @class Q_Evented_Revolt
+ * @extends Q_Evented_Driver
+ */
 class Q_Evented_Revolt extends Q_Evented_Driver
 {
 	protected $running = false;
-	function onReadable($s, callable $cb) {
-		return \Revolt\EventLoop::onReadable($s, function($id,$s)use($cb){ $cb($s); });
+
+	function onReadable($stream, callable $cb)
+	{
+		return EventLoop::onReadable($stream, function ($id, $s) use ($cb) {
+			$cb($s);
+		});
 	}
-	function onWritable($s, callable $cb) {
-		return \Revolt\EventLoop::onWritable($s, function($id,$s)use($cb){ $cb($s); });
+
+	function onWritable($stream, callable $cb)
+	{
+		return EventLoop::onWritable($stream, function ($id, $s) use ($cb) {
+			$cb($s);
+		});
 	}
-	function delay($sec, callable $cb) {
-		return \Revolt\EventLoop::delay($sec, function()use($cb){ $cb(); });
+
+	function delay($seconds, callable $cb)
+	{
+		return EventLoop::delay($seconds, function () use ($cb) {
+			$cb();
+		});
 	}
-	function repeat($sec, callable $cb) {
-		return \Revolt\EventLoop::repeat($sec, function()use($cb){ $cb(); });
+
+	function repeat($seconds, callable $cb)
+	{
+		return EventLoop::repeat($seconds, function () use ($cb) {
+			$cb();
+		});
 	}
-	function defer(callable $cb) {
-		return \Revolt\EventLoop::defer(function()use($cb){ $cb(); });
+
+	function defer(callable $cb)
+	{
+		return EventLoop::defer(function () use ($cb) {
+			$cb();
+		});
 	}
-	function onSignal($sig, callable $cb) {
-		return \Revolt\EventLoop::onSignal($sig, function($id,$s)use($cb){ $cb($s); });
+
+	function onSignal($signal, callable $cb)
+	{
+		return EventLoop::onSignal($signal, function ($id, $s) use ($cb) {
+			$cb($s);
+		});
 	}
-	function cancel($id) { \Revolt\EventLoop::cancel($id); }
-	function disable($id) { \Revolt\EventLoop::disable($id); }
-	function enable($id) { \Revolt\EventLoop::enable($id); }
-	function run() { $this->running = true; \Revolt\EventLoop::run(); $this->running = false; }
-	function tick($t = 0) { \Revolt\EventLoop::delay($t?:0.0,function(){}); \Revolt\EventLoop::run(); }
-	function stop() { $this->running = false; }
-	function running() { return $this->running; }
+
+	function cancel($id)  { EventLoop::cancel($id); }
+	function disable($id) { EventLoop::disable($id); }
+	function enable($id)  { EventLoop::enable($id); }
+
+	function run()
+	{
+		$this->running = true;
+		EventLoop::run();
+		$this->running = false;
+	}
+
+	function tick($timeout = 0)
+	{
+		EventLoop::delay($timeout ?: 0.0, function () {});
+		EventLoop::run();
+	}
+
+	function stop()
+	{
+		$this->running = false;
+	}
+
+	function running()
+	{
+		return $this->running;
+	}
 }

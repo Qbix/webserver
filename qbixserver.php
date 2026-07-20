@@ -3,8 +3,8 @@
 /**
  * Qbix Server — pure PHP web server.
  *
- * Standalone: php server.php --root=./web --port=8080
- * With Qbix:  php server.php --app=/path/to/myapp --port=8080
+ * Standalone: php qbixserver.php --root=./web --port=8080
+ * With Qbix:  php qbixserver.php --app=/path/to/myapp --port=8080
  *
  * Options:
  *   --root=DIR       Document root (default: ./web)
@@ -38,7 +38,7 @@ foreach ($argv as $i => $arg) {
 	if ($i === 0) continue;
 	if ($arg === '--help' || $arg === '-h') {
 		echo "Qbix Server v" . QBIX_SERVER_VERSION . "\n\n";
-		echo "Usage: php server.php [options]\n\n";
+		echo "Usage: php qbixserver.php [options]\n\n";
 		echo "Options:\n";
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
@@ -200,19 +200,21 @@ Q_WebServer::$onRequest = function ($method, $uri, $status, $ms) use ($colors, $
 
 // ── Start server ────────────────────────────────────
 
+$W = 38; // inner width of the box
+
 echo "\n";
-echo "  ┌──────────────────────────────────────┐\n";
-echo "  │  Qbix Server v" . QBIX_SERVER_VERSION . str_repeat(' ', 22 - strlen(QBIX_SERVER_VERSION)) . "│\n";
-echo "  ├──────────────────────────────────────┤\n";
-echo "  │  http://{$opts['host']}:{$opts['port']}" . str_repeat(' ', max(0, 24 - strlen("{$opts['host']}:{$opts['port']}"))) . "│\n";
-echo "  │  Root: " . basename($webDir) . str_repeat(' ', max(0, 29 - strlen(basename($webDir)))) . "│\n";
-echo "  │  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone') . str_repeat(' ', $qbixMode ? 16 : 19) . "│\n";
-echo "  │  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process') . str_repeat(' ', max(0, 30 - strlen($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'))) . "│\n";
-echo "  ├──────────────────────────────────────┤\n";
-echo "  │  Dashboard: /Q/dashboard             │\n";
-echo "  │  Health:    /Q/health                │\n";
-echo "  │  Ctrl+C to stop                      │\n";
-echo "  └──────────────────────────────────────┘\n";
+echo "  ┌" . str_repeat('─', $W) . "┐\n";
+echo "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n";
+echo "  ├" . str_repeat('─', $W) . "┤\n";
+echo "  │" . str_pad("  http://{$opts['host']}:{$opts['port']}", $W) . "│\n";
+echo "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n";
+echo "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n";
+echo "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n";
+echo "  ├" . str_repeat('─', $W) . "┤\n";
+echo "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n";
+echo "  │" . str_pad("  Health:    /Q/health", $W) . "│\n";
+echo "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n";
+echo "  └" . str_repeat('─', $W) . "┘\n";
 echo "\n";
 
 Q_WebServer::start(

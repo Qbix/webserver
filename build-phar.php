@@ -1,13 +1,13 @@
 #!/usr/bin/env php
 <?php
 /**
- * Build qbix-server.phar — single-file distributable.
+ * Build qbixserver.phar — single-file distributable.
  *
  * Usage: php build-phar.php
- * Output: bin/qbix-server.phar
+ * Output: bin/qbixserver.phar
  *
  * The PHAR includes all server classes and the minimal Q shim.
- * Run with: php bin/qbix-server.phar --root=./web --port=8080
+ * Run with: php bin/qbixserver.phar --root=./web --port=8080
  *
  * Requires: phar.readonly=0 in php.ini (or pass -d phar.readonly=0)
  */
@@ -18,16 +18,16 @@ if (ini_get('phar.readonly')) {
 	exit(1);
 }
 
-$pharFile = __DIR__ . '/bin/qbix-server.phar';
+$pharFile = __DIR__ . '/bin/qbixserver.phar';
 if (file_exists($pharFile)) {
 	unlink($pharFile);
 }
 
 @mkdir(__DIR__ . '/bin', 0755, true);
 
-echo "Building qbix-server.phar...\n";
+echo "Building qbixserver.phar...\n";
 
-$phar = new Phar($pharFile, 0, 'qbix-server.phar');
+$phar = new Phar($pharFile, 0, 'qbixserver.phar');
 $phar->startBuffering();
 
 // Add source files
@@ -43,12 +43,12 @@ $phar->buildFromIterator(
 $stub = <<<'STUB'
 #!/usr/bin/env php
 <?php
-Phar::mapPhar('qbix-server.phar');
+Phar::mapPhar('qbixserver.phar');
 
 // Bootstrap
-require 'phar://qbix-server.phar/Q.php';
+require 'phar://qbixserver.phar/Q.php';
 
-// Parse args the same way as server.php
+// Parse args the same way as qbixserver.php
 $opts = array(
 	'root'    => null,
 	'app'     => null,
@@ -66,7 +66,7 @@ foreach ($argv as $i => $arg) {
 	if ($i === 0) continue;
 	if ($arg === '--help' || $arg === '-h') {
 		echo "Qbix Server v" . QBIX_SERVER_VERSION . " (PHAR)\n\n";
-		echo "Usage: php qbix-server.phar [options]\n\n";
+		echo "Usage: php qbixserver.phar [options]\n\n";
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory\n";
 		echo "  --host=IP        Bind address (default: 0.0.0.0)\n";
@@ -127,6 +127,6 @@ $phar->stopBuffering();
 chmod($pharFile, 0755);
 
 $size = filesize($pharFile);
-echo "Built: bin/qbix-server.phar (" . round($size / 1024) . " KB)\n";
-echo "Run:   php bin/qbix-server.phar --root=./web --port=8080\n";
-echo "Or:    chmod +x bin/qbix-server.phar && ./bin/qbix-server.phar --port=8080\n";
+echo "Built: bin/qbixserver.phar (" . round($size / 1024) . " KB)\n";
+echo "Run:   php bin/qbixserver.phar --root=./web --port=8080\n";
+echo "Or:    chmod +x bin/qbixserver.phar && ./bin/qbixserver.phar --port=8080\n";
