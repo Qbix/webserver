@@ -463,7 +463,7 @@ myproject/
 │   ├── style.css
 │   ├── api.php                 ← PHP scripts executed on request
 │   └── uploads/
-├── classes/                    ← autoloaded classes (preloaded into workers)
+├── classes/                    ← your PHP classes (autoloaded when first used)
 │   ├── MyApp/
 │   │   ├── User.php            ← MyApp\User or MyApp_User
 │   │   ├── Feed.php
@@ -484,9 +484,73 @@ myproject/
 
 Only `web/` is accessible via HTTP. Everything else is server-side only.
 
-### Classes — preloaded, both conventions
+**Your PHP scripts don't need to `require` or `include` anything.** The server
+has already loaded the `Q` class, the autoloader, and the event system before
+your script runs. Classes from `classes/`, events via `Q::event()`, views via
+`Q::view()` — all available immediately. Just write your code:
 
-Drop a PHP file in `classes/` and it's autoloaded. Both naming conventions work:
+```php
+<?php
+// web/api.php — no require, no include, no bootstrap
+use MyApp\User;
+
+$user = User::find($_GET['id']);
+$feed = Q::event('MyApp/feed/get', ['userId' => $user->id]);
+
+header('Content-Type: application/json');
+echo json_encode($feed);
+```
+
+### The `Q` class — available in every script
+
+The server injects the `Q` class into every PHP script automatically. Here's
+what you get:
+
+| Method | What it does |
+|---|---|
+| `Q::event($name, $params)` | Fire an event — runs the handler from `handlers/` |
+| `Q::canHandle($name)` | Check if a handler exists for an event |
+| `Q::view($name, $params)` | Render a PHP template from `views/` |
+| `Q::ifset($arr, 'key1', 'key2', $default)` | Safe nested array/object access without isset chains |
+| `Q::getObject($data, ['path', 'to', 'key'], $default)` | Deep access into nested arrays/objects |
+| `Q::setObject(['path', 'to', 'key'], $value, $data)` | Deep set into nested arrays, creating intermediates |
+| `Q::json_encode($value)` | `json_encode` with unescaped slashes |
+| `Q::json_decode($json, true)` | `json_decode` wrapper |
+| `Q_Config::get('section', 'key', $default)` | Read from `config/server.json` |
+| `Q_Config::set('section', 'key', $value)` | Set a config value at runtime |
+| `Q_Config::expect('section', 'key')` | Read config or throw if missing |
+
+```php
+<?php
+// web/settings.php — using Q utilities
+
+// Safe deep access (no "undefined index" warnings)
+$theme = Q::ifset($_COOKIE, 'theme', 'light');
+
+// Read app config from config/server.json
+$maxUpload = Q_Config::get('MyApp', 'upload', 'maxSize', 10485760);
+
+// Fire an event with before/after hooks
+$result = Q::event('MyApp/settings/save', [
+    'userId' => $_SESSION['user_id'],
+    'theme'  => $_POST['theme'],
+]);
+
+// Render a view
+echo Q::view('MyApp/settings/page.php', [
+    'result' => $result,
+    'theme'  => $theme,
+]);
+```
+
+When you upgrade to the full [Qbix Platform](https://github.com/Qbix/Platform),
+the `Q` class expands with hundreds more methods — but everything above
+continues to work identically. Your scripts don't need to change.
+
+### Classes — autoloaded and optionally preloaded
+
+Drop a PHP file in `classes/` and it's **autoloaded** — found automatically the first
+time your code references it. No `require` needed. Both naming conventions work:
 
 ```php
 <?php
@@ -518,11 +582,15 @@ $user = User::fromSession();
 $isAdmin = MyApp_Auth::check();
 ```
 
-The autoloader also bridges between conventions — if you define `MyApp_Auth`,
-it's also accessible as `MyApp\Auth`, and vice versa.
+The autoloader maps class names to file paths (`MyApp\User` → `classes/MyApp/User.php`,
+`MyApp_Auth` → `classes/MyApp/Auth.php`) and bridges between conventions with
+`class_alias` — if you define `MyApp_Auth`, it's also accessible as `MyApp\Auth`,
+and vice versa. If you have a Composer `autoload.php`, that works too — list it
+in the preload config and both autoloaders coexist.
 
-**Preloading** loads classes into memory before forking workers, so there's zero
-autoloader overhead per request:
+**Preloading** is optional but recommended for `--workers=N` mode. It loads specific
+classes into memory *before* forking workers, so the autoloader never runs during
+requests — classes are already there via copy-on-write:
 
 ```json
 {
