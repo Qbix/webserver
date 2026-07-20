@@ -43,6 +43,12 @@ class Q_WebServer
 			throw new Exception("Q_WebServer already running");
 		}
 
+		// Ignore SIGPIPE — prevents crash when writing to a closed socket
+		// (e.g. client disconnects, or worker dies mid-response)
+		if (function_exists('pcntl_signal')) {
+			pcntl_signal(SIGPIPE, SIG_IGN);
+		}
+
 		$root = realpath($dir);
 		if (!$root || !is_dir($root)) {
 			throw new Exception("Invalid document root: $dir");
@@ -340,6 +346,10 @@ class Q_WebServer
 				echo "\n  Graceful shutdown (SIGTERM)...\n";
 				self::stop();
 				Q_Evented::stop();
+			});
+			// Reap zombie children from fork-per-request PHP execution
+			Q_Evented::onSignal(SIGCHLD, function () {
+				while (pcntl_waitpid(-1, $st, WNOHANG) > 0) {}
 			});
 		}
 		Q_Evented::run();
@@ -855,12 +865,170 @@ class Q_WebServer
 			unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
 			return false;
 		}
-		// In-process: run through Headers for X-Accel-Redirect + compression
-		$parsed['_scriptPath'] = $scriptPath;
-		$response = self::dispatchToQ($parsed);
+
+		// No pool — fork a single child if pcntl is available.
+		// This protects the server from exit()/die() in scripts
+		// and prevents blocking the event loop during PHP execution.
+		if (function_exists('pcntl_fork')) {
+			$pid = pcntl_fork();
+			if ($pid === -1) {
+				// Fork failed — fall through to in-process execution
+			} elseif ($pid === 0) {
+				// ── CHILD: handle request, write response to client, exit ──
+				$parsed['_scriptPath'] = $scriptPath;
+				$response = self::dispatchToQ($parsed);
+				Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+				@fclose($client);
+				exit(0);
+			} else {
+				// ── PARENT: close client socket (child owns it now), reap later ──
+				@fclose($client);
+				$key = (int) $client;
+				if (isset(self::$clientWatchers[$key])) {
+					Q_Evented::cancel(self::$clientWatchers[$key]);
+				}
+				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
+				// Non-blocking reap — don't wait for child
+				pcntl_waitpid($pid, $st, WNOHANG);
+				self::$lastStatus = 200;
+				return false;
+			}
+		}
+
+		// Fallback: use proc_open to run PHP in a subprocess (Windows,
+		// or fork failed). Safe against exit()/die() — the subprocess
+		// dies, not the server. Slower than fork (no shared classes)
+		// but still provides isolation.
+		return self::handlePhpSubprocess($client, $parsed, $scriptPath);
+	}
+
+	/**
+	 * Execute a PHP script in a subprocess via proc_open.
+	 * Used on Windows (no pcntl_fork) or as fallback when fork fails.
+	 * The subprocess gets request data via stdin, returns response via stdout.
+	 * @method handlePhpSubprocess
+	 * @static
+	 * @private
+	 */
+	private static function handlePhpSubprocess($client, $parsed, $scriptPath)
+	{
+		// Build a small inline PHP worker that:
+		// 1. Reads request JSON from stdin
+		// 2. Sets up superglobals
+		// 3. Loads Q.php for autoloader/events
+		// 4. Includes the target script
+		// 5. Writes response JSON to stdout
+		$qFile = dirname(__FILE__) . DS . 'Q.php';
+		$workerCode = <<<'WORKER'
+<?php
+$json = '';
+while (!feof(STDIN)) { $c = fread(STDIN, 65536); if ($c === false || $c === '') break; $json .= $c; }
+$req = json_decode($json, true);
+if (!$req) { echo json_encode(['status'=>500,'body'=>'Bad request','headers'=>[]]); exit; }
+if (isset($req['qFile']) && file_exists($req['qFile'])) {
+    require_once $req['qFile'];
+    if (isset($req['projectRoot'])) Q::init($req['projectRoot']);
+}
+$_SERVER['REQUEST_METHOD'] = $req['method'] ?? 'GET';
+$_SERVER['REQUEST_URI'] = $req['uri'] ?? '/';
+$_SERVER['QUERY_STRING'] = $req['query'] ?? '';
+$_SERVER['SCRIPT_FILENAME'] = $req['scriptPath'] ?? '';
+$_SERVER['SCRIPT_NAME'] = '/' . basename($req['scriptPath'] ?? 'index.php');
+$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
+$_SERVER['SERVER_NAME'] = $req['serverName'] ?? 'localhost';
+$_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
+foreach ($req['headers'] ?? [] as $k=>$v) $_SERVER['HTTP_'.strtoupper(str_replace('-','_',$k))] = $v;
+if (isset($req['headers']['content-type'])) $_SERVER['CONTENT_TYPE'] = $req['headers']['content-type'];
+if (isset($req['headers']['content-length'])) $_SERVER['CONTENT_LENGTH'] = $req['headers']['content-length'];
+$_GET = $_POST = $_REQUEST = [];
+if (!empty($req['query'])) parse_str($req['query'], $_GET);
+$ct = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
+$raw = $req['body'] ?? '';
+if (strpos($ct,'application/x-www-form-urlencoded') !== false) parse_str($raw, $_POST);
+elseif (strpos($ct,'application/json') !== false) $_POST = json_decode($raw, true) ?: [];
+$_REQUEST = array_merge($_GET, $_POST);
+ob_start(); $status = 200; $headers = [];
+try {
+    if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
+    foreach (headers_list() as $h) { if (strpos($h,':')!==false) { [$k,$v] = explode(':',$h,2); $headers[trim($k)] = trim($v); } }
+    $code = http_response_code(); if ($code) $status = $code;
+} catch (Throwable $e) { $status = 500; ob_clean(); echo $e->getMessage(); $headers['Content-Type']='text/plain'; }
+$body = ob_get_clean();
+echo json_encode(compact('status','body','headers'), JSON_UNESCAPED_SLASHES);
+WORKER;
+
+		// Write worker code to a temp file (reuse across requests)
+		static $workerFile = null;
+		if (!$workerFile || !file_exists($workerFile)) {
+			$workerFile = tempnam(sys_get_temp_dir(), 'qbix_worker_');
+			file_put_contents($workerFile, $workerCode);
+			register_shutdown_function(function () use (&$workerFile) {
+				@unlink($workerFile);
+			});
+		}
+
+		// Build request payload
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$payload = json_encode(array(
+			'method'      => $parsed['method'],
+			'uri'         => $parsed['uri'],
+			'query'       => $parsed['query'],
+			'headers'     => $parsed['headers'],
+			'body'        => $parsed['body'] ?? '',
+			'scriptPath'  => $scriptPath,
+			'documentRoot'=> rtrim(self::$rootDir, DS),
+			'serverName'  => explode(':', $host)[0],
+			'serverPort'  => (string) self::$port,
+			'qFile'       => $qFile,
+			'projectRoot' => dirname(rtrim(self::$rootDir, DS)),
+		), JSON_UNESCAPED_SLASHES);
+
+		// Launch subprocess
+		$descriptors = array(
+			0 => array('pipe', 'r'), // stdin
+			1 => array('pipe', 'w'), // stdout
+			2 => array('pipe', 'w'), // stderr
+		);
+
+		$phpBin = defined('PHP_BINARY') ? PHP_BINARY : 'php';
+		$process = proc_open($phpBin . ' ' . escapeshellarg($workerFile), $descriptors, $pipes);
+
+		if (!is_resource($process)) {
+			// proc_open failed — last resort, run in-process
+			$parsed['_scriptPath'] = $scriptPath;
+			$response = self::dispatchToQ($parsed);
+			Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+			self::$lastStatus = $response['status'] ?? 200;
+			return false;
+		}
+
+		// Send request data to child's stdin
+		fwrite($pipes[0], $payload);
+		fclose($pipes[0]);
+
+		// Read response from child's stdout
+		$stdout = '';
+		while (!feof($pipes[1])) {
+			$chunk = fread($pipes[1], 65536);
+			if ($chunk === false || $chunk === '') break;
+			$stdout .= $chunk;
+		}
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		proc_close($process);
+
+		// Parse response
+		$response = json_decode($stdout, true);
+		if (!$response) {
+			$response = array(
+				'status' => 502,
+				'body' => 'Worker subprocess failed',
+				'headers' => array('Content-Type' => 'text/plain'),
+			);
+		}
+
 		Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 		self::$lastStatus = $response['status'] ?? 200;
-		// Store in cache if cacheable
 		Q_WebServer_Cache::put($parsed, $response);
 		return false;
 	}
@@ -1268,6 +1436,12 @@ HTML
 		}
 		$_REQUEST = array_merge($_GET, $_POST);
 
+		// Clear any stale headers and output from previous in-process requests,
+		// then start fresh output buffering. This prevents "headers already sent"
+		// errors when scripts call header() after prior output leaked through.
+		while (ob_get_level()) ob_end_clean();
+		header_remove();
+		http_response_code(200);
 		ob_start();
 		$status = 200;
 		$headers = array();

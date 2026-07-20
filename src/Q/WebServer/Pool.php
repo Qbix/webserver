@@ -234,7 +234,12 @@ class Q_WebServer_Pool
 			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
 			'remoteAddr'     => '127.0.0.1'
 		));
-		fwrite($this->workers[$index]['socket'], pack('N', strlen($msg)) . $msg);
+		$written = @fwrite($this->workers[$index]['socket'], pack('N', strlen($msg)) . $msg);
+		if ($written === false || $written === 0) {
+			// Worker died before receiving the request — recycle and re-queue
+			$this->pending[] = array($client, $parsed, $scriptPath);
+			$this->recycle($index, true);
+		}
 	}
 
 	/**

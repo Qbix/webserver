@@ -1,6 +1,6 @@
 {
     "name": "qbix/server",
-    "description": "Pure PHP web server — static files, PHP execution, WebSocket, live dashboard",
+    "description": "Pure-PHP Web Server. No NGinX or PHP-FPM needed. Handle 10x more traffic instead!",
     "type": "project",
     "license": "MIT",
     "keywords": ["server", "http", "webserver", "php", "static", "websocket"],

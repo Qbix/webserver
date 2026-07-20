@@ -811,13 +811,26 @@ This is safer than php-fpm, which reuses workers across requests and relies on
 gets a clean process. The fork cost (~0.5ms) is negligible compared to the
 bootstrap savings (~10–50ms).
 
-### In-process mode (--workers=0)
+### How PHP requests are handled
 
-Without `--workers`, PHP scripts run directly in the event loop. This is
-single-threaded — fine for development and lightweight APIs. Superglobals
-(`$_GET`, `$_POST`, etc.) are reset between requests, but static class
-variables persist (same as php-fpm). Use `--workers=N` in production for
-full isolation.
+On Linux and macOS (where `pcntl_fork` is available), **every PHP request
+is forked** — even without `--workers`. The server forks a child, the child
+handles the request and exits, the parent continues serving. This means:
+
+- `exit()` / `die()` in a script only kills the child — the server survives
+- Long-running scripts don't block static file serving
+- Each request is truly isolated
+
+The `--workers=N` flag pre-forks N idle workers for faster dispatch (no fork
+latency per request). Without it, the server forks on demand. Both modes are
+shared-nothing.
+
+**Windows** doesn't have `pcntl_fork`, so PHP scripts run in a subprocess
+via `proc_open`. This is safe — `exit()` can't crash the server — but each
+subprocess starts a fresh PHP interpreter (~50ms), so you don't get the
+preload speed benefit. Static files, WebSocket, caching, and everything
+else work identically. Good for development; use Linux/macOS for the full
+10x performance advantage.
 
 ### Growing into the full Qbix Platform
 
@@ -1077,11 +1090,12 @@ sudo apt install php-cli php-sockets
 
 - Nothing. The PHP runtime is included.
 
-**Windows:** The server runs in single-threaded mode (`--workers=0` only).
-Static files, PHP scripts, WebSocket, caching, compression, access control —
-everything works. You lose fork-per-request isolation and signal-based graceful
-shutdown, because `pcntl` doesn't exist on Windows. Good for development; for
-production use Linux or macOS (or WSL).
+**Windows:** The server works without `pcntl`. Static files, PHP scripts,
+WebSocket, caching, compression, access control — everything works. PHP
+scripts run in isolated subprocesses via `proc_open`, so `exit()` and
+crashes won't bring down the server. You lose the preload speed benefit
+(each subprocess starts fresh) and signal-based graceful shutdown. For
+the full 10x performance advantage, use Linux or macOS (or WSL).
 
 ---
 
