@@ -28,6 +28,7 @@ But on **actual PHP workloads**, the bootstrap savings make this **2–5x faster
 - [Quick Start](#-quick-start)
 - [Performance](#-performance)
 - [Why Not php-fpm?](#-why-not-php-fpm)
+- [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
 - [Features](#-features)
 - [Server Powers](#-server-powers--what-your-php-can-do)
 - [Configuration](#-configuration)
@@ -174,6 +175,74 @@ The benchmarks above measure static file throughput, where nginx's C implementat
 - **Qbix Server:** 0.15ms static file + 0ms bootstrap + 5ms actual work = **5ms**
 
 The 0.05ms you lose on static files, you gain back 30ms on every PHP request. And you can always put nginx or a CDN in front for the static file edge.
+
+---
+
+## ⚖️ vs FrankenPHP and Swoole
+
+If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. Here's how they compare:
+
+| | FrankenPHP | Swoole | Qbix Server |
+|---|---|---|---|
+| **Language** | Go + C (embeds PHP) | C extension for PHP | Pure PHP |
+| **Install** | Download Go binary or Docker | `pecl install swoole` (compiles C) | `php qbixserver.php` — nothing to install |
+| **Architecture** | Worker mode (persistent) | Coroutine-based (persistent) | Shared-nothing with fork-after-preload |
+| **State leaks** | ⚠️ Possible — workers persist between requests | ⚠️ Possible — must manage globals carefully | ✅ Impossible — each request gets a clean fork |
+| **PHP compatibility** | Most code works, some edge cases | Many extensions incompatible, blocking I/O breaks coroutines | ✅ 100% — standard PHP, nothing unusual |
+| **Memory safety** | Go runtime + PHP = complex interaction | C extension = segfault risk | PHP only = memory-safe by default |
+| **Access control** | No X-Accel-Redirect equivalent | Manual implementation | ✅ Built-in X-Accel-Redirect |
+| **Component cache** | No | No | ✅ X-Cache-Tree — sub-page invalidation |
+| **Early hints / 103** | ✅ Yes | No | Via amphp |
+| **HTTP/2** | ✅ Built-in (Caddy) | ✅ Built-in | ✅ Via amphp |
+| **WebSocket** | Via Mercure | ✅ Built-in | ✅ Built-in |
+
+### The shared-nothing advantage
+
+FrankenPHP and Swoole keep PHP workers alive across requests. This is fast, but it means global state, static variables, database connections, and in-memory caches **persist between unrelated requests**. This causes subtle bugs:
+
+```php
+// This leaks between requests in FrankenPHP/Swoole:
+class UserService {
+    private static ?User $cached = null;
+    
+    public static function current(): User {
+        if (!self::$cached) {
+            self::$cached = User::fromSession();
+        }
+        return self::$cached; // Returns previous user's data!
+    }
+}
+```
+
+Every PHP framework, library, and snippet that uses static variables, singletons, or global state becomes a potential security hole. You have to audit everything.
+
+Qbix Server avoids this entirely. Workers fork from a preloaded parent, so they inherit loaded classes and parsed config (read-only, shared via copy-on-write). But each request runs in its own process — when it's done, everything is gone. No state leaks. No audit needed. Your existing PHP code works exactly as it does on php-fpm.
+
+### The "just PHP" advantage
+
+FrankenPHP requires Go tooling to build or a pre-built binary that bundles Caddy. Swoole requires compiling a C extension, which can conflict with other extensions and doesn't work on all hosting environments.
+
+Qbix Server is a PHP file. If you can run `php -v`, you can run the server. It uses standard PHP extensions (`sockets`, `pcntl`) that come pre-installed on most systems. There's no compilation step, no foreign runtime, no binary compatibility issues.
+
+```bash
+# FrankenPHP
+docker pull dunglas/frankenphp  # 150MB+ image, or build from Go source
+
+# Swoole
+pecl install swoole             # compiles C, may fail on some systems
+# Then edit php.ini, restart php...
+
+# Qbix Server
+php qbixserver.php --port=8080  # done
+```
+
+### When to choose what
+
+**Choose FrankenPHP** if you want Caddy's ecosystem (automatic HTTPS, HTTP/3) and don't mind Go as a dependency. Good for Laravel projects that already use Octane.
+
+**Choose Swoole** if you need coroutines for high-concurrency I/O (thousands of simultaneous HTTP client requests, database queries). Good for async-heavy microservices.
+
+**Choose Qbix Server** if you want shared-nothing safety, zero-install deployment, access-controlled file serving, component-level cache invalidation, and full compatibility with existing PHP code. Good for apps that serve pages (not just APIs), need fine-grained caching, and want the simplest possible deployment.
 
 ---
 
