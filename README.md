@@ -42,10 +42,10 @@ Open [http://localhost:8080](http://localhost:8080). That's it.
 
 ```bash
 # Or serve an existing directory
-php server.php --root=/var/www/mysite --port=80
+php qbixserver.php --root=/var/www/mysite --port=80
 
 # Or use the PHAR (single file, 196KB)
-php bin/qbix-server.phar --root=./public --port=8080
+php bin/qbixserver.phar --root=./public --port=8080
 ```
 
 ---
@@ -166,25 +166,25 @@ For concurrent PHP execution, use `--workers=N` to pre-fork a worker pool.
 ### 1. From source (needs PHP 8.1+)
 
 ```bash
-php server.php --root=./web --port=8080
+php qbixserver.php --root=./web --port=8080
 ```
 
 ### 2. PHAR — single 196KB file (needs PHP)
 
 ```bash
-php bin/qbix-server.phar --root=./web --port=8080
+php bin/qbixserver.phar --root=./web --port=8080
 
 # Or make it executable
-chmod +x bin/qbix-server.phar
-./bin/qbix-server.phar --port=8080
+chmod +x bin/qbixserver.phar
+./bin/qbixserver.phar --port=8080
 ```
 
 ### 3. Static binary — no PHP needed
 
 ```bash
 # Download from GitHub Releases
-chmod +x qbix-server-linux-x86_64
-./qbix-server-linux-x86_64 --root=./web --port=8080
+chmod +x qbixserver-linux-x86_64
+./qbixserver-linux-x86_64 --root=./web --port=8080
 ```
 
 The binary bundles PHP 8.3 + extensions into a single ~15MB executable.  
@@ -198,7 +198,7 @@ Copy it to any Linux machine and run. No dependencies.
 
 ```bash
 php -d phar.readonly=0 build-phar.php
-# Output: bin/qbix-server.phar
+# Output: bin/qbixserver.phar
 ```
 
 ### Build the static binary
@@ -210,7 +210,7 @@ php -d phar.readonly=0 build-phar.php
 # With static-php-cli installed locally:
 ./build-binary.sh
 
-# Output: bin/qbix-server (~15MB)
+# Output: bin/qbixserver (~15MB)
 ```
 
 The binary is built using [static-php-cli](https://github.com/crazywhalecc/static-php-cli),
