@@ -41,6 +41,43 @@ the memory and bootstrap savings make this dramatically faster and more scalable
 > in front of this for faster HTTPS and edge caching. Qbix Server handles the
 > PHP execution, access control, and intelligent caching behind it.
 
+### 🎯 Drop files in folders. Get a real-time server.
+
+Three execution models — HTTP, WebSocket, and rooms — all shared-nothing,
+all just PHP files in folders:
+
+```
+handlers/
+├── api/users/
+│   ├── get.php          ← HTTP: GET /api/users (fork, serve, die)
+│   └── post.php         ← HTTP: POST /api/users
+├── chat/
+│   ├── message.php      ← WebSocket: one process per connection
+│   └── join.php         ←   static vars persist across messages
+└── game/
+    └── room.php         ← Room: one process per room, shared state
+                              with configurable tick timer
+
+classes/
+└── MyApp/               ← Preloaded and shared across all three models
+    ├── Auth.php
+    └── Chat.php
+```
+
+| Model | Process lifetime | State | Cleanup |
+|---|---|---|---|
+| **HTTP** | Fork → handle one request → die | None (shared-nothing) | Automatic — process exits |
+| **WebSocket** | Fork → handle all messages from one user → die on disconnect | `static` vars persist across messages | Automatic — process exits |
+| **Room** | Fork → handle messages from all users in room → die when empty | `static` vars shared across all members | Automatic — process exits |
+
+No cleanup code. No memory leaks. No state leaking between users.
+Every model uses `handlers/`, `classes/`, and `Q::event()`.
+Try it — one command, zero config:
+
+```bash
+php qbixserver.php --root=./web --port=8080
+```
+
 ---
 
 ## 📑 Table of Contents
