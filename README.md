@@ -2106,8 +2106,71 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `socket.js` | `"/Q/socket.js"` | Path to serve the minimal bare-WebSocket client (3KB). `false` to disable. |
 | `app` | `""` | App name — prefixes handler function names (e.g. `"Chess"` → `Chess_chat_message()`) |
 | `webserver.fallback` | null | Catch-all: `"index.html"`, `{"handler":"app/notfound"}`, or `{"file":"404.html"}` |
+| `webserver.hotReload` | `false` | Watch `classes/`, `handlers/`, `config/` for changes. Auto-restarts on class/config changes. |
 | `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
 | `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
+
+### Virtual hosts
+
+Serve multiple domains from one server. Each host can have its own document root:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "hosts": {
+                "example.com": {
+                    "root": "/var/www/example/web"
+                },
+                "api.example.com": {
+                    "root": "/var/www/api/web"
+                },
+                "staging.example.com": {
+                    "root": "/var/www/staging/web"
+                }
+            }
+        }
+    }
+}
+```
+
+The `Host` header selects the root. Requests for unconfigured hosts use the
+default `--root` directory. WebSocket, rooms, handlers, and static files all
+respect the per-host root.
+
+### Hot reload
+
+Watch `classes/`, `handlers/`, and `config/` for file changes:
+
+```bash
+php qbixserver.php --root=./web --port=8080 --hotreload
+```
+
+Or via config:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "hotReload": true
+        }
+    }
+}
+```
+
+Handler changes take effect immediately — handlers are lazy-loaded, so the
+next request or connection picks up the new code. Class or config changes
+trigger a graceful restart (the server re-execs itself with the same arguments).
+
+Changes are logged to stderr:
+
+```
+14:32:07 hot-reload: ~ handlers/chat/message.php
+14:32:09 hot-reload: + classes/MyApp/NewFeature.php
+14:32:09 hot-reload: restarting server...
+```
+
+Polls every 2 seconds. Use in development, not production.
 
 ### Scheduler
 
@@ -2599,8 +2662,8 @@ the full 10x performance advantage, use Linux or macOS (or WSL).
 
 **Coming next:**
 
-- **Virtual hosts** — `Q.web.hosts.$hostname` config overrides for multi-domain serving
-- **Hot reload** — watch `classes/`, `handlers/`, `config/` for changes, auto-restart workers
+- **Clustering** — multi-process worker pool with shared socket for horizontal scaling
+- **HTTP long-polling** — Socket.IO polling transport for environments that block WebSocket
 
 ---
 

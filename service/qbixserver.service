@@ -1,0 +1,25 @@
+[Unit]
+Description=Qbix Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/myapp
+ExecStart=/usr/bin/php /var/www/myapp/qbixserver.php --root=./web --port=8080 --pid=/var/run/qbixserver.pid
+ExecStop=/usr/bin/php /var/www/myapp/qbixserver.php --stop --pid=/var/run/qbixserver.pid
+ExecReload=/usr/bin/php /var/www/myapp/qbixserver.php --reload --pid=/var/run/qbixserver.pid
+PIDFile=/var/run/qbixserver.pid
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/myapp /var/run
+
+[Install]
+WantedBy=multi-user.target

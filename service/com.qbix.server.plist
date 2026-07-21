@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qbix.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/php</string>
+        <string>/var/www/myapp/qbixserver.php</string>
+        <string>--root=./web</string>
+        <string>--port=8080</string>
+        <string>--pid=/tmp/qbixserver.pid</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/var/www/myapp</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/qbixserver.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/qbixserver.error.log</string>
+</dict>
+</plist>

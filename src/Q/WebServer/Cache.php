@@ -258,7 +258,8 @@ class Q_WebServer_Cache
 	 */
 	static function cacheKey($parsed)
 	{
-		$parts = $parsed['path'] . '?' . ($parsed['query'] ?? '');
+		$host = $parsed['headers']['host'] ?? '';
+		$parts = $host . $parsed['path'] . '?' . ($parsed['query'] ?? '');
 
 		// Include Accept-Encoding in key for compressed variants
 		$ae = $parsed['headers']['accept-encoding'] ?? '';

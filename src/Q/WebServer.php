@@ -347,6 +347,16 @@ class Q_WebServer
 				self::stop();
 				Q_Evented::stop();
 			});
+			Q_Evented::onSignal(SIGHUP, function () {
+				echo "\n  Reloading (SIGHUP)...\n";
+				self::stop();
+				Q_Evented::stop();
+				// Re-exec with same arguments
+				$args = $_SERVER['argv'] ?? array();
+				if (function_exists('pcntl_exec')) {
+					pcntl_exec(PHP_BINARY, $args);
+				}
+			});
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
 				while (($pid = pcntl_waitpid(-1, $st, WNOHANG)) > 0) {
@@ -379,6 +389,14 @@ class Q_WebServer
 			Q_Scheduler::init($schedule);
 			Q_Evented::repeat(1, function () {
 				Q_Scheduler::tick();
+			});
+		}
+
+		// Hot reload — watch for file changes in classes/, handlers/, config/
+		if (Q_Config::get('Q', 'webserver', 'hotReload', false)) {
+			Q_HotReload::init();
+			Q_Evented::repeat(2, function () {
+				Q_HotReload::check();
 			});
 		}
 
@@ -539,6 +557,7 @@ class Q_WebServer
 			&& self::$keepAliveCount[$key] < $maxKeepAlive;
 
 		try {
+			$savedRoot = self::$rootDir;
 			$keepOpen = self::handleRequest($client, $parsed);
 		} catch (\Throwable $e) {
 			// Never let a request crash the event loop
@@ -553,6 +572,11 @@ class Q_WebServer
 				(self::$onRequest)($parsed['method'] ?? 'GET', $parsed['uri'] ?? '/', 500, $ms);
 			}
 			return;
+		} finally {
+			// Restore rootDir after vhost override
+			if (self::$rootDir !== $savedRoot) {
+				self::$rootDir = $savedRoot;
+			}
 		}
 		$ms = round((microtime(true) - $start) * 1000, 1);
 
@@ -778,6 +802,17 @@ class Q_WebServer
 	{
 		$method = $parsed['method'];
 		$path = $parsed['path'];
+
+		// Virtual hosts — override rootDir based on Host header
+		$host = $parsed['headers']['host'] ?? '';
+		$host = strtolower(preg_replace('/:\d+$/', '', $host)); // strip port
+		$hostConfig = Q_Config::get('Q', 'webserver', 'hosts', $host, null);
+		if ($hostConfig && isset($hostConfig['root'])) {
+			$vroot = realpath($hostConfig['root']);
+			if ($vroot && is_dir($vroot)) {
+				self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $vroot), DS) . DS;
+			}
+		}
 
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
 		// 1. Serve client JS files (before /Q/ check — socket.io.js is at /socket.io/)
@@ -2427,14 +2462,16 @@ HTML
 	private static function resolveStatic($urlPath)
 	{
 		// Path resolution cache — avoids repeated realpath() syscalls
+		// Key includes rootDir so vhosts don't cross-contaminate
 		static $pathCache = array();
-		if (isset($pathCache[$urlPath])) {
-			$cached = $pathCache[$urlPath];
+		$cacheKey = self::$rootDir . $urlPath;
+		if (isset($pathCache[$cacheKey])) {
+			$cached = $pathCache[$cacheKey];
 			// Quick mtime check for invalidation (cheaper than realpath)
 			if ($cached === null || file_exists($cached)) {
 				return $cached;
 			}
-			unset($pathCache[$urlPath]);
+			unset($pathCache[$cacheKey]);
 		}
 
 		$rel = str_replace('/', DS, ltrim($urlPath, '/'));
@@ -2443,17 +2480,17 @@ HTML
 		$fsPath = realpath(self::$rootDir . $rel);
 		if (!$fsPath) {
 			// Cache negative results too (404s won't re-stat)
-			if (count($pathCache) < 10000) $pathCache[$urlPath] = null;
+			if (count($pathCache) < 10000) $pathCache[$cacheKey] = null;
 			return null;
 		}
 		$fsPath = str_replace(array('/','\\'), DS, $fsPath);
 		$root = rtrim(self::$rootDir, DS);
 		if ($fsPath !== $root && strncmp($fsPath, self::$rootDir, strlen(self::$rootDir)) !== 0) {
-			$pathCache[$urlPath] = null;
+			$pathCache[$cacheKey] = null;
 			return null; // path traversal
 		}
 		$result = (is_dir($fsPath) || is_file($fsPath)) ? $fsPath : null;
-		if (count($pathCache) < 10000) $pathCache[$urlPath] = $result;
+		if (count($pathCache) < 10000) $pathCache[$cacheKey] = $result;
 		return $result;
 	}
 

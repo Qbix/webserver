@@ -38,7 +38,7 @@ foreach ($argv as $i => $arg) {
 	if ($i === 0) continue;
 	if ($arg === '--help' || $arg === '-h') {
 		echo "Qbix Server v" . QBIX_SERVER_VERSION . "\n\n";
-		echo "Usage: php qbixserver.php [options]\n\n";
+		echo "Usage: ./qbixserver.php [options]\n\n";
 		echo "Options:\n";
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
@@ -47,7 +47,11 @@ foreach ($argv as $i => $arg) {
 		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
 		echo "  --config=FILE    JSON config file\n";
 		echo "  --pid=PATH       PID file path\n";
+		echo "  --hotreload      Watch files, auto-restart on changes\n";
 		echo "  --debug          Verbose logging\n";
+		echo "  -t               Test config and exit\n";
+		echo "  --stop           Graceful shutdown (via PID file)\n";
+		echo "  --reload         Re-exec server (via PID file)\n";
 		echo "  --version        Print version\n";
 		exit(0);
 	}
@@ -55,8 +59,24 @@ foreach ($argv as $i => $arg) {
 		echo "Qbix Server v" . QBIX_SERVER_VERSION . "\n";
 		exit(0);
 	}
+	if ($arg === '-t') {
+		$opts['test'] = true;
+		continue;
+	}
+	if ($arg === '--stop') {
+		$opts['signal'] = 'stop';
+		continue;
+	}
+	if ($arg === '--reload') {
+		$opts['signal'] = 'reload';
+		continue;
+	}
 	if ($arg === '--debug') {
 		$opts['debug'] = true;
+		continue;
+	}
+	if ($arg === '--hotreload') {
+		$opts['hotreload'] = true;
 		continue;
 	}
 	if (preg_match('/^--(\w+)=(.+)$/', $arg, $m)) {
@@ -207,6 +227,66 @@ if (file_exists($appConfig)) {
 
 // Preload handlers if configured (Q.handlers.preload: true)
 Q::preload();
+
+// CLI flag overrides
+if (!empty($opts['hotreload'])) {
+	Q_Config::set('Q', 'webserver', 'hotReload', true);
+}
+
+// ── Signal commands (--stop, --reload) ──────────────
+
+if (!empty($opts['signal'])) {
+	$pidFile = $opts['pid'] ?: dirname($webDir) . '/qbixserver.pid';
+	if (!file_exists($pidFile)) {
+		fwrite(STDERR, "PID file not found: $pidFile\n");
+		fwrite(STDERR, "Use --pid=PATH to specify, or start the server with --pid first.\n");
+		exit(1);
+	}
+	$pid = (int) trim(file_get_contents($pidFile));
+	if ($pid <= 0 || !posix_kill($pid, 0)) {
+		fwrite(STDERR, "No running server found (PID $pid)\n");
+		@unlink($pidFile);
+		exit(1);
+	}
+	if ($opts['signal'] === 'stop') {
+		posix_kill($pid, SIGTERM);
+		echo "Sent SIGTERM to PID $pid\n";
+	} elseif ($opts['signal'] === 'reload') {
+		posix_kill($pid, SIGHUP);
+		echo "Sent SIGHUP to PID $pid\n";
+	}
+	exit(0);
+}
+
+// ── Config test (-t) ────────────────────────────────
+
+if (!empty($opts['test'])) {
+	echo "Qbix Server v" . QBIX_SERVER_VERSION . "\n";
+	echo "Config: OK\n";
+	echo "  Root:       $webDir\n";
+	echo "  Host:       {$opts['host']}\n";
+	echo "  Port:       {$opts['port']}\n";
+	$app = Q::app();
+	if ($app) echo "  App:        $app\n";
+	$ioPath = Q_Config::get('Q', 'socket', 'io', '/socket.io');
+	echo "  Socket.IO:  " . ($ioPath !== false ? $ioPath : 'disabled') . "\n";
+	$jsPath = Q_Config::get('Q', 'socket', 'js', '/Q/socket.js');
+	echo "  Socket.js:  " . ($jsPath !== false ? $jsPath : 'disabled') . "\n";
+	$hosts = Q_Config::get('Q', 'webserver', 'hosts', array());
+	if (!empty($hosts)) {
+		echo "  Vhosts:     " . implode(', ', array_keys($hosts)) . "\n";
+	}
+	$schedule = Q_Config::get('Q', 'scheduler', array());
+	if (!empty($schedule)) {
+		echo "  Scheduled:  " . implode(', ', array_keys($schedule)) . "\n";
+	}
+	$timeout = Q_Config::get('Q', 'webserver', 'requestTimeout', 30);
+	echo "  Timeout:    {$timeout}s\n";
+	$preloaded = Q::$preloadedHandlers;
+	echo "  Classes:    " . count(get_declared_classes()) . " preloaded\n";
+	echo "  Handlers:   " . ($preloaded > 0 ? "$preloaded preloaded" : "lazy") . "\n";
+	exit(0);
+}
 
 // ── PID file ────────────────────────────────────────
 
