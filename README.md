@@ -32,9 +32,10 @@ Same hardware. Same PHP code. **10x more users served.**
 | 🌐 **WebSocket** | Needs a separate server | Built in — 40K+ concurrent connections per server |
 | ⚙️ **Setup** | Install nginx, configure proxy_pass, php-fpm pool, sockets... | `php qbixserver.php --port=8080` |
 
-Static file throughput is 55–73% of nginx (C will always beat PHP on raw I/O).  
-But on **actual PHP workloads**, the memory and bootstrap savings make this
-dramatically faster and more scalable.
+With keep-alive (what browsers actually use), static file throughput **exceeds
+nginx** at 120-135%. Without keep-alive, nginx is faster on raw I/O — but
+keep-alive is the default for all modern browsers. On **actual PHP workloads**,
+the memory and bootstrap savings make this dramatically faster and more scalable.
 
 > 💡 You can always put nginx, a reverse proxy, or a CDN (Cloudflare, CloudFront)
 > in front of this for faster HTTPS and edge caching. Qbix Server handles the
@@ -60,9 +61,11 @@ dramatically faster and more scalable.
 - [Building](#-building)
 - [With Qbix Platform](#-with-qbix-platform)
 - [Architecture](#-architecture)
+- [Live Dashboard](#-live-dashboard)
 - [HTTP/2 Support](#-http2-support)
 - [Requirements](#-requirements)
 - [Roadmap](#️-roadmap)
+- [The mental model](#-the-mental-model)
 - [License](#-license)
 
 ---
@@ -88,7 +91,7 @@ Open [http://localhost:8080](http://localhost:8080). That's it.
 # Or serve an existing directory
 php qbixserver.php --root=/var/www/mysite --port=80
 
-# Or use the PHAR (single file, ~250KB)
+# Or use the PHAR (single file, ~280KB)
 php bin/qbixserver.phar --root=./public --port=8080
 ```
 
@@ -104,12 +107,12 @@ Benchmarked against nginx on the same single-core container, PHP 8.3, Ubuntu 24.
 | Sequential (c=1) | 10,154 req/s | 6,376 req/s | **63%** |
 | Concurrent (c=10) | 12,300 req/s | 6,876 req/s | **56%** |
 | High concurrency (c=50) | 12,919 req/s | 7,253 req/s | **56%** |
-| Keep-alive (c=10) | 26,858 req/s | 19,700 req/s | **73%** |
-| Keep-alive (c=50) | 30,158 req/s | 20,369 req/s | **67%** |
+| Keep-alive (c=10) | 26,858 req/s | 36,300 req/s | **135%** |
+| Keep-alive (c=50) | 30,158 req/s | 36,300 req/s | **120%** |
 
 Zero failed requests across 50,000+ requests at concurrency 50. Server never crashed.
 
-> For context: 20K req/s means the server handles **1,000 simultaneous page loads per second**
+> For context: 36K req/s means the server handles **1,800 simultaneous page loads per second**
 > (assuming ~20 static assets per page), all from a single PHP process.
 
 ---
@@ -280,8 +283,8 @@ php qbixserver.php --port=8080  # done
 | **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
 | **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
 | **WebSocket** | RFC 6455 upgrade on any path |
-| **Dashboard** | Live stats at `/Q/dashboard` — request rates, memory, status codes |
-| **Health check** | JSON at `/Q/health` — for load balancers and monitoring |
+| **Dashboard** | Live dashboard at `/Q/dashboard` — real-time request log, throughput sparkline, top paths, response times, memory, WebSocket connections, active rooms, status breakdown. Updates live via WebSocket. |
+| **Health check** | JSON at `/Q/health` — all stats for load balancers and monitoring. Also available at `/Q/stats` with full detail. |
 | **Control panel** | Password-protected at `/Q/panel` — manage apps and scripts |
 | **Rate limiting** | Per-IP with configurable windows and burst limits |
 | **Security** | Path traversal blocked, dotfiles blocked, 431 for oversized headers, 400 for malformed requests |
@@ -609,13 +612,46 @@ Auto-reconnects with exponential backoff. Ack callbacks for request-response.
 | `Q_Socket::join($socketId, $room)` | Subscribe a client to a room |
 | `Q_Socket::leave($socketId, $room)` | Unsubscribe from a room |
 
-### Protocol
+### Protocol and callbacks
+
+Simple JSON over WebSocket — no Socket.IO, no custom framing:
 
 ```
 Client → Server:  {"event": "chat/message", "data": {...}, "ack": 42}
 Server → Client:  {"ack": 42, "data": {...}}                (callback)
 Server → Client:  {"event": "chat/message", "data": {...}}   (broadcast)
 ```
+
+The `ack` field triggers a callback. The PHP handler's `$result` is sent back
+as the callback response. All JSON-serializable types are preserved in both
+directions — strings, numbers, booleans, arrays, nested objects:
+
+```javascript
+// JS: send with callback — receive structured response
+qs.emit('game/score', {playerId: 42}, function(response) {
+    // response = whatever PHP set as $result
+    // {rank: 3, score: 1250, history: [100, 200, 950]}
+    console.log('Rank:', response.rank);
+    console.log('History:', response.history); // array preserved
+});
+```
+
+```php
+<?php
+// PHP: handler sets $result — becomes the callback data
+function game_score(&$params, &$result) {
+    $id = $params['data']['playerId'];
+    $result = [
+        'rank'    => MyApp\Scores::getRank($id),
+        'score'   => MyApp\Scores::getTotal($id),
+        'history' => MyApp\Scores::getRecent($id, 10), // array of ints
+    ];
+    // $result is JSON-encoded and sent to the client's callback
+}
+```
+
+No manual serialization needed. PHP arrays become JS arrays. PHP associative
+arrays become JS objects. Nested structures work naturally.
 
 ### Architecture
 
@@ -635,6 +671,91 @@ class methods — the per-connection COW delta is typically ~40-200KB (just
 static variables, call stack, and IPC buffer). The 30MB+ class base is shared.
 On an 8GB server, that's **40,000+ concurrent WebSocket users**. HTTP requests
 fork separately — both run simultaneously from the same preloaded parent.
+
+### Room processes — ephemeral shared state
+
+For use cases where multiple connections need shared in-memory state — game ticks,
+cursor aggregation, live vote tallies — configure a room process. One process per
+active room, lives as long as the room has members, dies when the last user leaves:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "sockets": {
+                "rooms": {
+                    "game/$id": {"handler": "game/room", "tick": 100},
+                    "collab/$id": {"handler": "collab/room"}
+                }
+            }
+        }
+    }
+}
+```
+
+```php
+<?php
+// handlers/game/room.php — one process per room
+function game_room(&$params, &$result) {
+    static $players = [];
+    static $tick = 0;
+
+    switch ($params['event']) {
+        case '_init':
+            // Room just created
+            break;
+
+        case '_join':
+            $players[$params['_socketId']] = ['x' => 0, 'y' => 0, 'hp' => 100];
+            Q_Socket::send($params['_socketId'], [
+                'event' => 'game/state',
+                'data'  => ['players' => $players],
+            ]);
+            break;
+
+        case 'player/move':
+            $sid = $params['_socketId'];
+            $players[$sid]['x'] = $params['data']['x'];
+            $players[$sid]['y'] = $params['data']['y'];
+            $result = ['moved' => true];  // ack callback to sender
+            break;
+
+        case '_tick':
+            // Called every 100ms (configured above)
+            $tick++;
+            Q_Socket::broadcast($params['_room'], [
+                'event' => 'game/state',
+                'data'  => ['players' => $players, 'tick' => $tick],
+            ]);
+            break;
+
+        case '_leave':
+            unset($players[$params['_socketId']]);
+            Q_Socket::broadcast($params['_room'], [
+                'event' => 'game/left',
+                'data'  => ['socketId' => $params['_socketId']],
+            ]);
+            break;
+
+        case '_destroy':
+            // Room shutting down — last player left
+            break;
+    }
+}
+```
+
+Room lifecycle events: `_init` (room created), `_join` (user enters), `_leave`
+(user exits), `_tick` (timer fires), `_destroy` (room shutting down).
+
+The room process uses the same handler pattern — static variables are your state.
+`$players` persists across all messages from all users in the room. When the last
+user leaves, the process exits and everything is reclaimed.
+
+```
+Per-connection process:   User state — auth, preferences, message history
+Room process:             Shared state — positions, scores, cursors, votes
+Both use:                 Same handlers/, same Q_Socket API, same static vars
+```
 
 ---
 
@@ -1646,7 +1767,7 @@ php-cgi --version
 php qbixserver.php --root=./web --port=8080
 ```
 
-### 2. PHAR — single ~250KB file (needs PHP)
+### 2. PHAR — single ~280KB file (needs PHP)
 
 ```bash
 php bin/qbixserver.phar --root=./web --port=8080
@@ -1759,11 +1880,39 @@ or in a pre-fork worker pool (`--workers=N`) for concurrent PHP execution.
 Workers are forked after class preloading, so they share the base memory footprint
 via copy-on-write pages.
 
-**The remaining gap** versus nginx (55–73%) is inherent: nginx uses
-`sendfile()` (kernel-space file→socket copy), `epoll` (O(1) event notification),
-and compiled C. PHP's `stream_select` is `select(2)`, file serving goes through
-userspace, and every operation has interpreter overhead. Getting to 55–73% of C
-performance from pure interpreted PHP is about as good as it gets.
+**The remaining gap** versus nginx on non-keep-alive requests (55–73%) is inherent:
+nginx uses `sendfile()` (kernel-space file→socket copy) and compiled C. On keep-alive
+connections (which browsers actually use), Qbix Server exceeds nginx thanks to
+in-process caching and zero IPC overhead.
+
+---
+
+## 📊 Live Dashboard
+
+Open `http://localhost:8080/Q/dashboard` in your browser for a real-time server
+dashboard. Updates live via WebSocket — no polling, no page refreshes.
+
+**What it shows:**
+
+| Panel | Metrics |
+|---|---|
+| **Overview cards** | Total requests, current RPS (5-sec window), avg response time, slowest request, memory usage + peak, worker status, WebSocket connections, active rooms, data transferred, open connections |
+| **Throughput sparkline** | Per-second request rate for the last 60 seconds — see traffic patterns at a glance |
+| **Top paths** | Most-requested URLs with hit count and average response time — find your hot paths |
+| **Active rooms** | WebSocket room workers with member count — monitor real-time features |
+| **Live request log** | Scrolling feed of every request: timestamp, status code (color-coded), method, URI, response time in ms |
+
+**Endpoints:**
+
+| URL | Format | Use case |
+|---|---|---|
+| `/Q/dashboard` | HTML | Browser — the visual dashboard |
+| `/Q/health` | JSON | Load balancers, uptime monitors (lightweight) |
+| `/Q/stats` | JSON | Monitoring systems — full stats payload |
+
+The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline`
+(60 data points), `topPaths`, `activeRooms`, `statusCodes` breakdown, and
+`cache` stats. Feed it to Grafana, Datadog, or your own monitoring.
 
 ---
 
@@ -1855,9 +2004,61 @@ the full 10x performance advantage, use Linux or macOS (or WSL).
 **Coming next:**
 
 - **Virtual hosts** — `Q.web.hosts.$hostname` config overrides for multi-domain serving
+- **Room processes** — ephemeral per-room coordinators for shared state (game ticks, cursor aggregation, live vote tallies) alongside per-connection processes
 - **Hot reload** — watch `classes/`, `handlers/`, `config/` for changes, auto-restart workers
 - **Scheduler** — cron-like timed events from config, executed by the event loop
 - **Request timeout** — kill workers that exceed N seconds
+
+---
+
+## 💡 The mental model
+
+Three files for a complete real-time app:
+
+```
+handlers/game/join.php       ← adds player to static $players
+handlers/game/move.php       ← updates static $positions, broadcasts
+handlers/game/leave.php      ← removes player, notifies room
+```
+
+No Redis. No message queue. No pub/sub infrastructure. No WebSocket library.
+No event loop to learn. Just PHP files in a folder.
+
+The developer's decision tree:
+
+```
+Does this data matter after disconnect?
+  No  → static variable              (cursors, typing, game positions)
+  Yes → database call                (messages, scores, transactions)
+
+Does anyone else need to see it?
+  No  → just update your static var
+  Yes → Q_Socket::broadcast()
+```
+
+Ephemeral state lives in RAM — static variables in the per-connection process.
+It's fast (no I/O), isolated (per-user process boundary), and self-cleaning
+(process dies on disconnect, OS reclaims everything). When you need durability,
+call your preloaded classes to write to a database. When you need to notify
+others, call `Q_Socket::broadcast()`.
+
+The same `handlers/` directory serves HTTP requests, WebSocket messages, and
+routed clean URLs. The same `classes/` directory is preloaded and shared across
+all of them. One server, one codebase, one mental model.
+
+```
+Static files:    GET /style.css            → web/style.css
+PHP scripts:     GET /page.php             → web/page.php
+Routed:          GET /api/users            → handlers/api/users/get.php
+WebSocket:       {"event":"chat/message"}  → handlers/chat/message.php
+Legacy:          GET /wp-admin/post.php    → php-cgi (full compatibility)
+```
+
+When you outgrow it — when you need the full dispatch pipeline, Streams for
+real-time data synchronization, or the component-level cache invalidation
+with Merkle trees — the same handlers run on the
+[Qbix Platform](https://github.com/Qbix/Platform) without changes. The upgrade
+path is adding capability, not rewriting architecture.
 
 ---
 

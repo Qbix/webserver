@@ -8,21 +8,10 @@
  *
  * Handles RFC 6455 WebSocket protocol: upgrade handshake,
  * frame encoding/decoding, ping/pong, channels, broadcast.
- * Works on the same port as Q_WebServer — HTTP requests are
- * served normally, WebSocket upgrades are handed off here.
  *
- * Client-side uses the browser's native WebSocket API:
- *   var ws = new WebSocket('ws://localhost:8080/my/path');
- *
- * Server-side:
- *   // In a Q_Evented loop, after detecting Upgrade header:
- *   Q_WebSocket::upgrade($socket, $headers, function ($socket, $msg) {
- *       // handle incoming message
- *   });
- *
- *   // Broadcast to all connected clients (or a channel):
- *   Q_WebSocket::broadcast(array('type' => 'update', 'data' => $data));
- *   Q_WebSocket::broadcastTo('dashboard', array('type' => 'stats'));
+ * Two types of worker processes:
+ *   - Connection workers: one per WebSocket connection (user isolation)
+ *   - Room workers: one per active room (shared ephemeral state)
  *
  * @class Q_WebSocket
  */
@@ -30,264 +19,164 @@ class Q_WebSocket
 {
 	const GUID = '258EAFA5-E914-47DA-95CA-5AB5DC587B41';
 
-	/**
-	 * Connected clients. socketKey => [socket, watcher, channels, buffer, onMessage]
-	 * @property $clients
-	 * @static
-	 */
+	/** Connected clients. socketKey => [socket, watcher, channels, buffer, onMessage] */
 	static $clients = array();
-
-	/**
-	 * Channel → subscriber map. channel => [socketKey => true]
-	 * @property $channels
-	 * @static
-	 */
+	/** Channel/room subscriptions. channelName => [socketKey => true] */
 	static $channels = array();
+	/** Connection workers. socketKey => [pid, pipe, watcher] */
+	static $workers = array();
+	/** Room workers. roomName => [pid, pipe, watcher, members => [socketKey => true], tick => ms] */
+	static $roomWorkers = array();
+	/** Cached room patterns from config */
+	static $roomPatterns = null;
 
-	/**
-	 * Upgrade an HTTP connection to WebSocket.
-	 * Performs the RFC 6455 handshake and registers the socket
-	 * with Q_Evented for non-blocking frame reads.
-	 *
-	 * @method upgrade
-	 * @static
-	 * @param {resource} $socket The TCP socket (from Q_WebServer)
-	 * @param {array} $headers Lowercase HTTP headers from the request
-	 * @param {callable|null} [$onMessage=null] function($socketKey, $message)
-	 *  called when client sends a text frame
-	 * @param {string|null} [$channel=null] Auto-subscribe to this channel
-	 * @return {boolean} true if upgrade succeeded
-	 */
+	// ── Upgrade + framing (unchanged) ───────────────
+
 	static function upgrade($socket, $headers, $onMessage = null, $channel = null)
 	{
-		$key = $headers['sec-websocket-key'] ?? '';
+		$key = $headers['sec-websocket-key'] ?? null;
 		if (!$key) return false;
-
 		$accept = base64_encode(sha1($key . self::GUID, true));
-
 		$resp = "HTTP/1.1 101 Switching Protocols\r\n"
-			. "Upgrade: websocket\r\n"
-			. "Connection: Upgrade\r\n"
-			. "Sec-WebSocket-Accept: $accept\r\n\r\n";
-		fwrite($socket, $resp);
-
+			. "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+			. "Sec-WebSocket-Accept: $accept\r\n"
+			. "Server: QbixServer\r\n\r\n";
+		@fwrite($socket, $resp);
 		$sk = (int) $socket;
+		$watcher = Q_Evented::onReadable($socket, function ($sock) use ($sk) {
+			Q_WebSocket::onData($sk, $sock);
+		});
 		self::$clients[$sk] = array(
-			'socket'    => $socket,
-			'watcher'   => null,
-			'channels'  => array(),
-			'buffer'    => '',
-			'onMessage' => $onMessage
+			'socket' => $socket, 'watcher' => $watcher,
+			'channels' => array(), 'buffer' => '', 'onMessage' => $onMessage
 		);
-
-		self::$clients[$sk]['watcher'] = Q_Evented::onReadable(
-			$socket,
-			function ($s) { Q_WebSocket::onData($s); }
-		);
-
-		if ($channel) {
-			self::subscribe($sk, $channel);
-		}
-
+		if ($channel) self::subscribe($sk, $channel);
 		return true;
 	}
 
-	/**
-	 * Handle incoming data on a WebSocket connection.
-	 * Parses frames, dispatches text messages, handles
-	 * ping/pong and close.
-	 *
-	 * @method onData
-	 * @static
-	 * @param {resource} $socket
-	 */
-	static function onData($socket)
+	static function onData($sk, $socket)
 	{
-		$sk = (int) $socket;
 		if (!isset(self::$clients[$sk])) return;
-
 		$data = @fread($socket, 65536);
 		if ($data === false || $data === '') {
 			self::disconnect($sk);
 			return;
 		}
-
 		self::$clients[$sk]['buffer'] .= $data;
-
-		while (strlen(self::$clients[$sk]['buffer']) >= 2) {
-			$frame = self::decodeFrame(self::$clients[$sk]['buffer']);
-			if ($frame === null) break; // incomplete
-
-			self::$clients[$sk]['buffer'] = $frame['remaining'];
-
+		while (($frame = self::decodeFrame(self::$clients[$sk]['buffer'])) !== null) {
 			switch ($frame['opcode']) {
-				case 0x1: // Text frame
+				case 0x1: // text
 					$cb = self::$clients[$sk]['onMessage'];
-					if ($cb) {
-						$cb($sk, $frame['payload']);
-					}
+					if ($cb) $cb($sk, $frame['payload']);
 					break;
-				case 0x8: // Close
-					self::encodeAndSend($socket, 0x8, '');
+				case 0x2: // binary — ignore
+					break;
+				case 0x8: // close
 					self::disconnect($sk);
 					return;
-				case 0x9: // Ping → Pong
-					self::encodeAndSend($socket, 0xA, $frame['payload']);
+				case 0x9: // ping → pong
+					self::encodeAndSend(self::$clients[$sk]['socket'], 0xA, $frame['payload']);
 					break;
-				case 0xA: // Pong — ignore
+				case 0xA: // pong — ignore
 					break;
 			}
 		}
 	}
 
-	// ── Sending ──────────────────────────────────────────
+	static function decodeFrame(&$buffer)
+	{
+		$len = strlen($buffer);
+		if ($len < 2) return null;
+		$b0 = ord($buffer[0]); $b1 = ord($buffer[1]);
+		$opcode = $b0 & 0x0F;
+		$masked = ($b1 >> 7) & 1;
+		$payloadLen = $b1 & 0x7F;
+		$offset = 2;
+		if ($payloadLen === 126) {
+			if ($len < 4) return null;
+			$payloadLen = unpack('n', substr($buffer, 2, 2))[1];
+			$offset = 4;
+		} elseif ($payloadLen === 127) {
+			if ($len < 10) return null;
+			$payloadLen = unpack('J', substr($buffer, 2, 8))[1];
+			$offset = 10;
+		}
+		if ($masked) {
+			if ($len < $offset + 4 + $payloadLen) return null;
+			$mask = substr($buffer, $offset, 4);
+			$offset += 4;
+			$payload = '';
+			$raw = substr($buffer, $offset, $payloadLen);
+			for ($i = 0; $i < $payloadLen; $i++) {
+				$payload .= chr(ord($raw[$i]) ^ ord($mask[$i % 4]));
+			}
+		} else {
+			if ($len < $offset + $payloadLen) return null;
+			$payload = substr($buffer, $offset, $payloadLen);
+		}
+		$buffer = substr($buffer, $offset + $payloadLen);
+		return array('opcode' => $opcode, 'payload' => $payload);
+	}
 
-	/**
-	 * Send a text message to a specific client.
-	 * @method send
-	 * @static
-	 * @param {integer} $socketKey
-	 * @param {array|string} $data If array, JSON-encoded
-	 */
+	// ── Sending ─────────────────────────────────────
+
 	static function send($socketKey, $data)
 	{
 		if (!isset(self::$clients[$socketKey])) return;
-		$text = is_string($data) ? $data : json_encode($data);
-		self::encodeAndSend(self::$clients[$socketKey]['socket'], 0x1, $text);
+		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		self::encodeAndSend(self::$clients[$socketKey]['socket'], 0x1, $json);
 	}
 
-	/**
-	 * Broadcast to ALL connected clients.
-	 * @method broadcast
-	 * @static
-	 * @param {array|string} $data
-	 */
 	static function broadcast($data)
 	{
-		$text = is_string($data) ? $data : json_encode($data);
+		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 		foreach (self::$clients as $sk => $c) {
-			if (is_resource($c['socket'])) {
-				self::encodeAndSend($c['socket'], 0x1, $text);
-			} else {
-				self::disconnect($sk);
-			}
+			self::encodeAndSend($c['socket'], 0x1, $json);
 		}
 	}
 
-	/**
-	 * Broadcast to clients subscribed to a channel.
-	 * @method broadcastTo
-	 * @static
-	 * @param {string} $channel
-	 * @param {array|string} $data
-	 */
 	static function broadcastTo($channel, $data)
 	{
-		if (empty(self::$channels[$channel])) return;
-		$text = is_string($data) ? $data : json_encode($data);
+		if (!isset(self::$channels[$channel])) return;
+		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 		foreach (self::$channels[$channel] as $sk => $_) {
-			if (!isset(self::$clients[$sk]) || !is_resource(self::$clients[$sk]['socket'])) {
-				unset(self::$channels[$channel][$sk]);
-				continue;
+			if (isset(self::$clients[$sk])) {
+				self::encodeAndSend(self::$clients[$sk]['socket'], 0x1, $json);
 			}
-			self::encodeAndSend(self::$clients[$sk]['socket'], 0x1, $text);
 		}
 	}
 
-	// ── Channels ─────────────────────────────────────────
-
-	static function subscribe($socketKey, $channel)
+	static function subscribe($sk, $channel)
 	{
-		self::$channels[$channel][$socketKey] = true;
-		self::$clients[$socketKey]['channels'][$channel] = true;
+		if (!isset(self::$channels[$channel])) self::$channels[$channel] = array();
+		self::$channels[$channel][$sk] = true;
+		if (isset(self::$clients[$sk])) self::$clients[$sk]['channels'][$channel] = true;
+		// If a room worker exists for this channel, notify it
+		self::notifyRoomJoin($channel, $sk);
 	}
 
-	static function unsubscribe($socketKey, $channel)
+	static function unsubscribe($sk, $channel)
 	{
-		unset(self::$channels[$channel][$socketKey]);
-		unset(self::$clients[$socketKey]['channels'][$channel]);
+		unset(self::$channels[$channel][$sk]);
+		if (empty(self::$channels[$channel])) unset(self::$channels[$channel]);
+		if (isset(self::$clients[$sk])) unset(self::$clients[$sk]['channels'][$channel]);
+		self::notifyRoomLeave($channel, $sk);
 	}
-
-	// ── Connection management ────────────────────────────
 
 	static function disconnect($sk)
 	{
 		if (!isset(self::$clients[$sk])) return;
-		// Notify worker process if one exists for this socket
 		self::notifyDisconnect($sk);
 		$w = self::$clients[$sk]['watcher'];
 		if ($w) Q_Evented::cancel($w);
 		foreach (self::$clients[$sk]['channels'] as $ch => $_) {
 			unset(self::$channels[$ch][$sk]);
+			self::notifyRoomLeave($ch, $sk);
 		}
 		@fclose(self::$clients[$sk]['socket']);
 		unset(self::$clients[$sk]);
 	}
 
-	static function disconnectAll()
-	{
-		foreach (array_keys(self::$clients) as $sk) {
-			self::disconnect($sk);
-		}
-	}
-
-	static function clientCount()
-	{
-		return count(self::$clients);
-	}
-
-	// ── RFC 6455 frame encoding/decoding ─────────────────
-
-	/**
-	 * Decode one frame from a buffer.
-	 * @return {array|null} [opcode, payload, remaining] or null if incomplete
-	 */
-	static function decodeFrame(&$buf)
-	{
-		$len = strlen($buf);
-		if ($len < 2) return null;
-
-		$b0 = ord($buf[0]);
-		$b1 = ord($buf[1]);
-		$opcode = $b0 & 0x0F;
-		$masked = ($b1 & 0x80) !== 0;
-		$payloadLen = $b1 & 0x7F;
-		$offset = 2;
-
-		if ($payloadLen === 126) {
-			if ($len < 4) return null;
-			$payloadLen = unpack('n', substr($buf, 2, 2))[1];
-			$offset = 4;
-		} elseif ($payloadLen === 127) {
-			if ($len < 10) return null;
-			$payloadLen = unpack('J', substr($buf, 2, 8))[1];
-			$offset = 10;
-		}
-
-		$totalNeeded = $offset + ($masked ? 4 : 0) + $payloadLen;
-		if ($len < $totalNeeded) return null;
-
-		if ($masked) {
-			$mask = substr($buf, $offset, 4);
-			$offset += 4;
-			$payload = substr($buf, $offset, $payloadLen);
-			for ($i = 0; $i < $payloadLen; $i++) {
-				$payload[$i] = chr(ord($payload[$i]) ^ ord($mask[$i % 4]));
-			}
-		} else {
-			$payload = substr($buf, $offset, $payloadLen);
-		}
-
-		return array(
-			'opcode'    => $opcode,
-			'payload'   => $payload,
-			'remaining' => substr($buf, $offset + $payloadLen)
-		);
-	}
-
-	/**
-	 * Encode and send a frame (server→client, unmasked).
-	 */
 	static function encodeAndSend($socket, $opcode, $payload)
 	{
 		$len = strlen($payload);
@@ -303,41 +192,37 @@ class Q_WebSocket
 		@fwrite($socket, $frame);
 	}
 
-	// ── Process-per-socket dispatch ─────────────────────
+	// ── Connection worker (process-per-socket) ──────
 
-	/**
-	 * Map of socketKey → ['pid' => int, 'pipe' => resource, 'watcher' => string]
-	 * Each WebSocket connection gets one long-lived PHP child process.
-	 * @property $workers
-	 * @static
-	 */
-	static $workers = array();
-
-	/**
-	 * Called when a WebSocket message arrives. If no child process exists
-	 * for this socket, fork one (process-per-socket). Then forward the
-	 * message to the child via length-prefixed JSON on the IPC pipe.
-	 * @method dispatchEvent
-	 * @static
-	 */
 	static function dispatchEvent($socketKey, $raw, $path = '/')
 	{
 		$msg = json_decode($raw, true);
 		if (!$msg || empty($msg['event'])) return;
 
-		// Ensure a child process exists for this connection
+		$event = $msg['event'];
+
+		// Check if this event should go to a room worker instead
+		if (isset(self::$clients[$socketKey])) {
+			foreach (self::$clients[$socketKey]['channels'] as $ch => $_) {
+				if (isset(self::$roomWorkers[$ch])) {
+					// Forward to room worker with sender info
+					$msg['_socketId'] = $socketKey;
+					self::sendToRoomWorker($ch, $msg);
+					return;
+				}
+			}
+		}
+
+		// Default: per-connection worker
 		if (!isset(self::$workers[$socketKey])) {
 			self::spawnWorker($socketKey, $path);
 		}
+		if (!isset(self::$workers[$socketKey])) return;
 
-		if (!isset(self::$workers[$socketKey])) return; // fork failed
-
-		// Forward message to child via length-prefixed JSON
-		$json = json_encode($msg, JSON_UNESCAPED_SLASHES);
+		$json = json_encode($msg, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 		$packet = pack('N', strlen($json)) . $json;
 		$written = @fwrite(self::$workers[$socketKey]['pipe'], $packet);
 		if ($written === false || $written === 0) {
-			// Child died — respawn and retry once
 			self::cleanupWorker($socketKey);
 			self::spawnWorker($socketKey, $path);
 			if (isset(self::$workers[$socketKey])) {
@@ -346,39 +231,24 @@ class Q_WebSocket
 		}
 	}
 
-	/**
-	 * Fork a child process for a WebSocket connection.
-	 * The child reads messages from the IPC pipe and dispatches
-	 * each one via Q::event() to the appropriate handler.
-	 * Static variables in handlers persist across messages.
-	 * Process dies on disconnect — all state wiped.
-	 * @method spawnWorker
-	 * @static
-	 */
 	static function spawnWorker($socketKey, $path)
 	{
-		if (!function_exists('pcntl_fork')) {
-			return; // no fork — messages dispatch in-process
-		}
+		if (!function_exists('pcntl_fork')) return;
 
 		$pf = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
 		$pair = stream_socket_pair($pf, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 		if (!$pair) return;
 
 		$pid = pcntl_fork();
-		if ($pid === -1) {
-			fclose($pair[0]); fclose($pair[1]);
-			return;
-		}
+		if ($pid === -1) { fclose($pair[0]); fclose($pair[1]); return; }
 
 		if ($pid === 0) {
-			// ── CHILD: message loop ──
+			// ── CHILD: connection message loop ──
 			fclose($pair[0]);
 			$pipe = $pair[1];
 			Q_Socket::$_pipe = $pipe;
 			Q_Socket::$_socketId = $socketKey;
 
-			// Fire _connect event
 			$connectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_connect', null);
 			if ($connectHandler) {
 				Q::event($connectHandler, array(
@@ -388,30 +258,24 @@ class Q_WebSocket
 				Q_Socket::flush();
 			}
 
-			// Message loop — blocks on pipe reads, dispatches Q::event()
 			while (true) {
 				$header = @fread($pipe, 4);
 				if ($header === false || $header === '' || strlen($header) < 4) break;
-
 				$len = unpack('N', $header)[1];
 				if ($len <= 0 || $len > 10485760) break;
-
 				$json = '';
 				while (strlen($json) < $len) {
 					$chunk = @fread($pipe, $len - strlen($json));
 					if ($chunk === false || $chunk === '') break 2;
 					$json .= $chunk;
 				}
-
 				$msg = json_decode($json, true);
 				if (!$msg) continue;
 
 				$event = $msg['event'] ?? '';
 				if ($event === '_disconnect') break;
 
-				// Resolve handler via config, or use event name directly
 				$mapped = Q_Config::get('Q', 'webserver', 'sockets', 'events', $event, $event);
-
 				Q_Socket::$_ack = isset($msg['ack']) ? $msg['ack'] : null;
 
 				$result = null;
@@ -422,18 +286,14 @@ class Q_WebSocket
 					'event'     => $event,
 					'data'      => $msg['data'] ?? array(),
 				);
-
 				Q::event($mapped, $params, false, false, $result);
 
-				// Auto-ack if handler returned a result
 				if (Q_Socket::$_ack !== null && $result !== null) {
 					Q_Socket::reply(array('ack' => Q_Socket::$_ack, 'data' => $result));
 				}
-
 				Q_Socket::flush();
 			}
 
-			// Fire _disconnect event
 			$disconnectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_disconnect', null);
 			if ($disconnectHandler) {
 				Q::event($disconnectHandler, array(
@@ -441,7 +301,6 @@ class Q_WebSocket
 				));
 				Q_Socket::flush();
 			}
-
 			fclose($pipe);
 			exit(0);
 		}
@@ -449,7 +308,6 @@ class Q_WebSocket
 		// ── PARENT ──
 		fclose($pair[1]);
 		stream_set_blocking($pair[0], false);
-
 		$ipcWatcher = Q_Evented::onReadable($pair[0], function ($pipe) use ($socketKey) {
 			$data = @fread($pipe, 65536);
 			if ($data === false || $data === '') {
@@ -463,74 +321,321 @@ class Q_WebSocket
 				if ($cmd) Q_WebSocket::executeCommand($cmd);
 			}
 		});
-
 		self::$workers[$socketKey] = array(
-			'pid' => $pid,
-			'pipe' => $pair[0],
-			'watcher' => $ipcWatcher,
+			'pid' => $pid, 'pipe' => $pair[0], 'watcher' => $ipcWatcher,
 		);
 	}
 
-	/**
-	 * Clean up a worker process for a socket.
-	 * @method cleanupWorker
-	 * @static
-	 */
 	static function cleanupWorker($socketKey)
 	{
 		if (!isset(self::$workers[$socketKey])) return;
 		$w = self::$workers[$socketKey];
 		if ($w['watcher']) Q_Evented::cancel($w['watcher']);
 		@fclose($w['pipe']);
-		if ($w['pid'] > 0) {
-			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGTERM);
+		if ($w['pid'] > 0 && function_exists('posix_kill')) {
+			posix_kill($w['pid'], SIGTERM);
 			pcntl_waitpid($w['pid'], $st, WNOHANG);
 		}
 		unset(self::$workers[$socketKey]);
 	}
 
-	/**
-	 * Notify a worker that its WebSocket client disconnected.
-	 * Sends a _disconnect event then cleans up.
-	 * @method notifyDisconnect
-	 * @static
-	 */
 	static function notifyDisconnect($socketKey)
 	{
 		if (!isset(self::$workers[$socketKey])) return;
-		// Send disconnect message to child (it will exit its listen loop)
 		$json = json_encode(array('event' => '_disconnect', 'data' => array()));
 		$packet = pack('N', strlen($json)) . $json;
 		@fwrite(self::$workers[$socketKey]['pipe'], $packet);
-		// Give child a moment then cleanup
 		self::cleanupWorker($socketKey);
 	}
 
+	// ── Room workers (process-per-room) ─────────────
+
 	/**
-	 * Run a socket event handler in-process (Windows/no fork fallback).
-	 * @method dispatchEventInProcess
+	 * Get room patterns from config. Cached.
+	 * Config format:
+	 *   Q.webserver.sockets.rooms.$pattern = {handler, tick?}
+	 *   e.g. "game/$id" => {"handler": "game/room", "tick": 100}
+	 * @method getRoomPatterns
 	 * @static
 	 */
+	static function getRoomPatterns()
+	{
+		if (self::$roomPatterns !== null) return self::$roomPatterns;
+		self::$roomPatterns = Q_Config::get('Q', 'webserver', 'sockets', 'rooms', array());
+		return self::$roomPatterns;
+	}
+
+	/**
+	 * Check if a room name matches a configured room pattern.
+	 * Returns the config (handler, tick) or null.
+	 * @method matchRoomPattern
+	 * @static
+	 */
+	static function matchRoomPattern($roomName)
+	{
+		$patterns = self::getRoomPatterns();
+		if (empty($patterns)) return null;
+		$segments = explode('/', $roomName);
+		foreach ($patterns as $pattern => $config) {
+			$pSegments = explode('/', $pattern);
+			if (count($pSegments) !== count($segments)) continue;
+			$match = true;
+			$params = array();
+			for ($i = 0; $i < count($pSegments); $i++) {
+				$ps = $pSegments[$i];
+				if (isset($ps[0]) && ($ps[0] === '$' || $ps[0] === ':')) {
+					$params[substr($ps, 1)] = $segments[$i];
+				} elseif ($ps !== $segments[$i]) {
+					$match = false;
+					break;
+				}
+			}
+			if ($match) {
+				return array_merge((array) $config, array('_params' => $params, '_pattern' => $pattern));
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Spawn a room worker process.
+	 * @method spawnRoomWorker
+	 * @static
+	 */
+	static function spawnRoomWorker($roomName, $config)
+	{
+		if (!function_exists('pcntl_fork')) return;
+		if (isset(self::$roomWorkers[$roomName])) return;
+
+		$pf = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
+		$pair = stream_socket_pair($pf, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+		if (!$pair) return;
+
+		$handler = $config['handler'] ?? '';
+		$tick = isset($config['tick']) ? (int) $config['tick'] : 0;
+		$params = $config['_params'] ?? array();
+
+		$pid = pcntl_fork();
+		if ($pid === -1) { fclose($pair[0]); fclose($pair[1]); return; }
+
+		if ($pid === 0) {
+			// ── CHILD: room message loop ──
+			fclose($pair[0]);
+			$pipe = $pair[1];
+			Q_Socket::$_pipe = $pipe;
+			Q_Socket::$_socketId = 0; // room process, no single socket
+
+			// Set up tick timer if configured
+			$tickCallback = null;
+			if ($tick > 0) {
+				$tickCallback = function () use ($handler, $roomName, $params, $pipe) {
+					Q_Socket::$_ack = null;
+					$result = null;
+					$p = array_merge($params, array(
+						'_room' => $roomName, 'event' => '_tick',
+						'data' => array(), '_socketId' => 0,
+					));
+					Q::event($handler, $p, false, false, $result);
+					Q_Socket::flush();
+				};
+			}
+
+			// Fire _init event
+			$result = null;
+			Q::event($handler, array_merge($params, array(
+				'_room' => $roomName, 'event' => '_init', 'data' => array(),
+				'_socketId' => 0,
+			)), false, false, $result);
+			Q_Socket::flush();
+
+			// Message loop with optional tick
+			stream_set_blocking($pipe, false);
+			$lastTick = microtime(true);
+
+			while (true) {
+				$read = array($pipe);
+				$write = $except = null;
+				$timeout = $tick > 0 ? max(0.001, ($tick / 1000.0) - (microtime(true) - $lastTick)) : 1.0;
+				$ready = @stream_select($read, $write, $except, (int) $timeout,
+					(int) (($timeout - (int) $timeout) * 1000000));
+
+				// Tick
+				if ($tick > 0 && (microtime(true) - $lastTick) * 1000 >= $tick) {
+					$lastTick = microtime(true);
+					if ($tickCallback) $tickCallback();
+				}
+
+				if ($ready === false) break;
+				if ($ready === 0) continue;
+
+				// Read length-prefixed messages
+				$raw = @fread($pipe, 65536);
+				if ($raw === false || $raw === '') break;
+
+				// May contain multiple messages
+				$buf = $raw;
+				while (strlen($buf) >= 4) {
+					$len = unpack('N', substr($buf, 0, 4))[1];
+					if ($len <= 0 || $len > 10485760) { $buf = ''; break; }
+					if (strlen($buf) < 4 + $len) break;
+					$json = substr($buf, 4, $len);
+					$buf = substr($buf, 4 + $len);
+
+					$msg = json_decode($json, true);
+					if (!$msg) continue;
+
+					$event = $msg['event'] ?? '';
+					if ($event === '_shutdown') break 2;
+
+					Q_Socket::$_ack = isset($msg['ack']) ? $msg['ack'] : null;
+					Q_Socket::$_socketId = $msg['_socketId'] ?? 0;
+
+					$result = null;
+					$p = array_merge($params, array(
+						'_room'     => $roomName,
+						'_socketId' => Q_Socket::$_socketId,
+						'_ack'      => Q_Socket::$_ack,
+						'event'     => $event,
+						'data'      => $msg['data'] ?? array(),
+					));
+					Q::event($handler, $p, false, false, $result);
+
+					if (Q_Socket::$_ack !== null && $result !== null) {
+						Q_Socket::send(Q_Socket::$_socketId,
+							array('ack' => Q_Socket::$_ack, 'data' => $result));
+					}
+					Q_Socket::flush();
+				}
+			}
+
+			// Fire _destroy event
+			Q::event($handler, array_merge($params, array(
+				'_room' => $roomName, 'event' => '_destroy', 'data' => array(),
+				'_socketId' => 0,
+			)), false, false, $result);
+			Q_Socket::flush();
+
+			fclose($pipe);
+			exit(0);
+		}
+
+		// ── PARENT ──
+		fclose($pair[1]);
+		stream_set_blocking($pair[0], false);
+		$ipcWatcher = Q_Evented::onReadable($pair[0], function ($pipe) use ($roomName) {
+			$data = @fread($pipe, 65536);
+			if ($data === false || $data === '') {
+				Q_WebSocket::cleanupRoomWorker($roomName);
+				return;
+			}
+			$lines = explode("\n", trim($data));
+			foreach ($lines as $line) {
+				if ($line === '') continue;
+				$cmd = json_decode($line, true);
+				if ($cmd) Q_WebSocket::executeCommand($cmd);
+			}
+		});
+		self::$roomWorkers[$roomName] = array(
+			'pid' => $pid, 'pipe' => $pair[0], 'watcher' => $ipcWatcher,
+			'members' => array(),
+		);
+	}
+
+	/**
+	 * Send a message to a room worker.
+	 * @method sendToRoomWorker
+	 * @static
+	 */
+	static function sendToRoomWorker($roomName, $msg)
+	{
+		if (!isset(self::$roomWorkers[$roomName])) return;
+		$json = json_encode($msg, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		$packet = pack('N', strlen($json)) . $json;
+		@fwrite(self::$roomWorkers[$roomName]['pipe'], $packet);
+	}
+
+	/**
+	 * Notify room worker when a socket joins.
+	 * @method notifyRoomJoin
+	 * @static
+	 */
+	static function notifyRoomJoin($channel, $socketKey)
+	{
+		$config = self::matchRoomPattern($channel);
+		if (!$config) return;
+
+		// Spawn room worker if not running
+		if (!isset(self::$roomWorkers[$channel])) {
+			self::spawnRoomWorker($channel, $config);
+		}
+		if (!isset(self::$roomWorkers[$channel])) return;
+
+		self::$roomWorkers[$channel]['members'][$socketKey] = true;
+		self::sendToRoomWorker($channel, array(
+			'event' => '_join', 'data' => array(),
+			'_socketId' => $socketKey,
+		));
+	}
+
+	/**
+	 * Notify room worker when a socket leaves.
+	 * @method notifyRoomLeave
+	 * @static
+	 */
+	static function notifyRoomLeave($channel, $socketKey)
+	{
+		if (!isset(self::$roomWorkers[$channel])) return;
+		unset(self::$roomWorkers[$channel]['members'][$socketKey]);
+
+		self::sendToRoomWorker($channel, array(
+			'event' => '_leave', 'data' => array(),
+			'_socketId' => $socketKey,
+		));
+
+		// Shut down room if empty
+		if (empty(self::$roomWorkers[$channel]['members'])) {
+			self::sendToRoomWorker($channel, array(
+				'event' => '_shutdown', 'data' => array(),
+			));
+			self::cleanupRoomWorker($channel);
+		}
+	}
+
+	/**
+	 * Clean up a room worker.
+	 * @method cleanupRoomWorker
+	 * @static
+	 */
+	static function cleanupRoomWorker($roomName)
+	{
+		if (!isset(self::$roomWorkers[$roomName])) return;
+		$w = self::$roomWorkers[$roomName];
+		if ($w['watcher']) Q_Evented::cancel($w['watcher']);
+		@fclose($w['pipe']);
+		if ($w['pid'] > 0 && function_exists('posix_kill')) {
+			posix_kill($w['pid'], SIGTERM);
+			pcntl_waitpid($w['pid'], $st, WNOHANG);
+		}
+		unset(self::$roomWorkers[$roomName]);
+	}
+
+	// ── In-process fallback (Windows) ───────────────
+
 	static function dispatchEventInProcess($eventName, $params, $socketKey, $ack)
 	{
 		Q_Socket::$_directMode = true;
 		Q_Socket::$_socketId = $socketKey;
 		Q_Socket::$_ack = $ack;
-
 		$result = null;
 		Q::event($eventName, $params, false, false, $result);
-
 		if ($ack !== null && $result !== null) {
 			self::send($socketKey, array('ack' => $ack, 'data' => $result));
 		}
 		Q_Socket::$_directMode = false;
 	}
 
-	/**
-	 * Execute an IPC command from a child process.
-	 * @method executeCommand
-	 * @static
-	 */
+	// ── IPC command execution ───────────────────────
+
 	static function executeCommand($cmd)
 	{
 		switch ($cmd['cmd'] ?? '') {

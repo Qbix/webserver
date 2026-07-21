@@ -359,8 +359,9 @@ class Q_WebServer
 
 	static function onAccept($socket)
 	{
-		// Max connections check
-		$maxConn = Q_Config::get('Q', 'webserver', 'maxConnections', 1024);
+		// Max connections check (cached)
+		static $maxConn = null;
+		if ($maxConn === null) $maxConn = Q_Config::get('Q', 'webserver', 'maxConnections', 1024);
 		if (count(self::$clients) >= $maxConn) {
 			$reject = @stream_socket_accept($socket, 0);
 			if ($reject) {
@@ -408,7 +409,8 @@ class Q_WebServer
 		);
 
 		// Read timeout — close if no complete request within N seconds
-		$readTimeout = (float) Q_Config::get('Q', 'webserver', 'timeout', 'read', 30);
+		static $readTimeout = null;
+		if ($readTimeout === null) $readTimeout = (float) Q_Config::get('Q', 'webserver', 'timeout', 'read', 30);
 		self::$timeoutWatchers[$key] = Q_Evented::delay($readTimeout, function () use ($key) {
 			Q_WebServer::closeClient($key);
 		});
@@ -499,7 +501,8 @@ class Q_WebServer
 		$parsed['_remotePort'] = $peer ? (int) substr(strrchr($peer, ':'), 1) : 0;
 
 		// Determine keep-alive before handling request
-		$maxKeepAlive = (int) Q_Config::get('Q', 'webserver', 'keepAlive', 'max', 100);
+		static $maxKeepAlive = null;
+		if ($maxKeepAlive === null) $maxKeepAlive = (int) Q_Config::get('Q', 'webserver', 'keepAlive', 'max', 100);
 		$connHeader = strtolower($parsed['headers']['connection'] ?? 'keep-alive');
 		self::$keepAliveCount[$key] = (self::$keepAliveCount[$key] ?? 0) + 1;
 		$parsed['_keepAlive'] = ($connHeader !== 'close')
@@ -553,7 +556,8 @@ class Q_WebServer
 		);
 
 		// ── Keep-alive decision ──────────────────────────
-		$keepAliveTimeout = (float) Q_Config::get('Q', 'webserver', 'keepAlive', 'timeout', 15);
+		static $keepAliveTimeout = null;
+		if ($keepAliveTimeout === null) $keepAliveTimeout = (float) Q_Config::get('Q', 'webserver', 'keepAlive', 'timeout', 15);
 		$shouldKeepAlive = !empty($parsed['_keepAlive']) && self::$lastStatus < 500;
 
 		if ($shouldKeepAlive) {
@@ -878,7 +882,8 @@ class Q_WebServer
 		//    - string: path to a static file relative to web/ (e.g. "index.html")
 		//    - object with "handler": event name to dispatch via Q::event()
 		//    - object with "file": static file + auto-detect Content-Type
-		$fallback = Q_Config::get('Q', 'webserver', 'fallback', null);
+		static $fallback = null;
+		if ($fallback === null) $fallback = Q_Config::get('Q', 'webserver', 'fallback', null);
 		if ($fallback !== null) {
 			if (is_string($fallback)) {
 				// Static file (SPA catch-all: serve index.html for all routes)
@@ -1413,7 +1418,8 @@ WORKER;
 		fclose($pipes[0]);
 
 		// Read CGI response with timeout
-		$timeout = Q_Config::get('Q', 'webserver', 'cgi', 'timeout', 30);
+		static $timeout = null;
+		if ($timeout === null) $timeout = Q_Config::get('Q', 'webserver', 'cgi', 'timeout', 30);
 		$deadline = microtime(true) + $timeout;
 		$stdout = '';
 		$stderr = '';
@@ -1720,7 +1726,8 @@ WORKER;
 		if (preg_match('#/\.(?!well-known)#', $urlPath)) return true;
 
 		// Config-based blocked paths
-		$blockedPaths = Q_Config::get('Q', 'web', 'blocked', 'paths', array());
+		static $blockedPaths = null;
+		if ($blockedPaths === null) $blockedPaths = Q_Config::get('Q', 'web', 'blocked', 'paths', array());
 		foreach ($blockedPaths as $pp => $v) {
 			if ($v && strpos($urlPath, '/' . ltrim($pp, '/')) === 0) return true;
 		}
@@ -1750,7 +1757,8 @@ WORKER;
 	 */
 	static function isIndexed($urlPath)
 	{
-		$patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(
+		static $patterns = null;
+		if ($patterns === null) $patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(
 			'#^/img/#' => true
 		));
 		foreach ($patterns as $regex => $enabled) {
@@ -2311,14 +2319,20 @@ HTML
 	 */
 	static function checkRateLimit($ip)
 	{
-		if (!Q_Config::get('Q', 'webserver', 'rateLimit', 'enabled', false)) {
+		static $rateLimitEnabled = null;
+		if ($rateLimitEnabled === null) $rateLimitEnabled = Q_Config::get('Q', 'webserver', 'rateLimit', 'enabled', false);
+		if (!$rateLimitEnabled) {
 			return true;
 		}
 		$now = time();
-		$maxReqs = Q_Config::get('Q', 'webserver', 'rateLimit', 'requests', 100);
-		$window = Q_Config::get('Q', 'webserver', 'rateLimit', 'window', 60);
-		$burstReqs = Q_Config::get('Q', 'webserver', 'rateLimit', 'burstRequests', 20);
-		$burstWindow = Q_Config::get('Q', 'webserver', 'rateLimit', 'burstWindow', 1);
+		static $maxReqs = null;
+		if ($maxReqs === null) $maxReqs = Q_Config::get('Q', 'webserver', 'rateLimit', 'requests', 100);
+		static $window = null;
+		if ($window === null) $window = Q_Config::get('Q', 'webserver', 'rateLimit', 'window', 60);
+		static $burstReqs = null;
+		if ($burstReqs === null) $burstReqs = Q_Config::get('Q', 'webserver', 'rateLimit', 'burstRequests', 20);
+		static $burstWindow = null;
+		if ($burstWindow === null) $burstWindow = Q_Config::get('Q', 'webserver', 'rateLimit', 'burstWindow', 1);
 
 		// Clean old entries
 		if (!isset(self::$rateLimitData[$ip])) {
@@ -2360,17 +2374,35 @@ HTML
 
 	private static function resolveStatic($urlPath)
 	{
+		// Path resolution cache — avoids repeated realpath() syscalls
+		static $pathCache = array();
+		if (isset($pathCache[$urlPath])) {
+			$cached = $pathCache[$urlPath];
+			// Quick mtime check for invalidation (cheaper than realpath)
+			if ($cached === null || file_exists($cached)) {
+				return $cached;
+			}
+			unset($pathCache[$urlPath]);
+		}
+
 		$rel = str_replace('/', DS, ltrim($urlPath, '/'));
 		// Block null bytes (directory traversal via null byte injection)
 		if (strpos($rel, "\0") !== false) return null;
 		$fsPath = realpath(self::$rootDir . $rel);
-		if (!$fsPath) return null;
+		if (!$fsPath) {
+			// Cache negative results too (404s won't re-stat)
+			if (count($pathCache) < 10000) $pathCache[$urlPath] = null;
+			return null;
+		}
 		$fsPath = str_replace(array('/','\\'), DS, $fsPath);
 		$root = rtrim(self::$rootDir, DS);
 		if ($fsPath !== $root && strncmp($fsPath, self::$rootDir, strlen(self::$rootDir)) !== 0) {
+			$pathCache[$urlPath] = null;
 			return null; // path traversal
 		}
-		return (is_dir($fsPath) || is_file($fsPath)) ? $fsPath : null;
+		$result = (is_dir($fsPath) || is_file($fsPath)) ? $fsPath : null;
+		if (count($pathCache) < 10000) $pathCache[$urlPath] = $result;
+		return $result;
 	}
 
 	private static function closeClient($key)

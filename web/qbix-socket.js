@@ -1,23 +1,32 @@
 /**
- * QSocket — tiny WebSocket client for Qbix Server.
+ * QSocket — WebSocket client for Qbix Server.
  *
  * Usage:
  *   var qs = new QSocket('ws://localhost:8080/ws/chat');
  *
+ *   // Listen for events from the server
  *   qs.on('chat/message', function(data) {
- *       console.log(data.from + ': ' + data.text);
+ *       console.log(data.user + ': ' + data.text);
  *   });
  *
- *   qs.emit('chat/message', {text: 'hello'}, function(ack) {
- *       console.log('Server confirmed:', ack);
+ *   // Send event with callback (server acks with structured data)
+ *   qs.emit('chat/message', {text: 'hello'}, function(response) {
+ *       // response is whatever the PHP handler set as $result
+ *       // arrays, objects, nested structures — all preserved via JSON
+ *       console.log('Message #' + response.count);
  *   });
  *
- *   qs.emit('chat/join', {room: 'lobby'});
+ *   // Send without callback
+ *   qs.emit('chat/typing', {user: 'Alice'});
  *
  * Protocol (JSON over WebSocket):
  *   Client → Server:  {"event": "...", "data": {...}, "ack": N}
  *   Server → Client:  {"event": "...", "data": {...}}           (broadcast)
  *   Server → Client:  {"ack": N, "data": {...}}                 (callback)
+ *
+ * Data is serialized as JSON in both directions. PHP arrays and nested
+ * objects map to JS objects/arrays. Callbacks receive the full structured
+ * response — strings, numbers, booleans, arrays, nested objects.
  */
 (function (root) {
     'use strict';
@@ -39,38 +48,31 @@
 
             self.ws.onopen = function () {
                 self._delay = self._reconnectDelay;
-                // Flush queued messages
                 while (self._queue.length) {
                     self.ws.send(self._queue.shift());
                 }
-                if (self._handlers['connect']) {
-                    self._handlers['connect'].forEach(function (fn) { fn(); });
-                }
+                self._fire('connect');
             };
 
             self.ws.onmessage = function (e) {
                 var msg;
                 try { msg = JSON.parse(e.data); } catch (err) { return; }
 
-                // Ack response (callback from server)
+                // Ack response — invoke the stored callback with full data
                 if (msg.ack !== undefined && self._acks[msg.ack]) {
                     self._acks[msg.ack](msg.data);
                     delete self._acks[msg.ack];
                     return;
                 }
 
-                // Event broadcast
-                if (msg.event && self._handlers[msg.event]) {
-                    self._handlers[msg.event].forEach(function (fn) {
-                        fn(msg.data);
-                    });
+                // Event broadcast — pass full data to all listeners
+                if (msg.event) {
+                    self._fire(msg.event, msg.data);
                 }
             };
 
             self.ws.onclose = function () {
-                if (self._handlers['disconnect']) {
-                    self._handlers['disconnect'].forEach(function (fn) { fn(); });
-                }
+                self._fire('disconnect');
                 if (self._reconnect) {
                     self._delay = Math.min(self._delay * 1.5, self._maxDelay);
                     setTimeout(self._connect, self._delay);
@@ -82,13 +84,22 @@
             };
         };
 
+        self._fire = function (event, data) {
+            var handlers = self._handlers[event];
+            if (!handlers) return;
+            for (var i = 0; i < handlers.length; i++) {
+                handlers[i](data);
+            }
+        };
+
         self._delay = self._reconnectDelay;
         self._connect();
     }
 
     /**
      * Listen for an event from the server.
-     * Special events: 'connect', 'disconnect'
+     * Callback receives the data object (arrays, nested objects preserved).
+     * Special events: 'connect' (no data), 'disconnect' (no data)
      */
     QSocket.prototype.on = function (event, fn) {
         if (!this._handlers[event]) this._handlers[event] = [];
@@ -97,21 +108,31 @@
     };
 
     /**
-     * Remove a listener.
+     * Remove listener(s). No fn = remove all for that event.
      */
     QSocket.prototype.off = function (event, fn) {
         if (!this._handlers[event]) return this;
         if (!fn) { delete this._handlers[event]; return this; }
-        this._handlers[event] = this._handlers[event].filter(function (f) { return f !== fn; });
+        this._handlers[event] = this._handlers[event].filter(function (f) {
+            return f !== fn;
+        });
         return this;
     };
 
     /**
      * Send an event to the server.
-     * Optional callback is invoked when the server acks.
+     *
+     * @param {string} event - Event name (maps to PHP handler)
+     * @param {*} data - Any JSON-serializable value: object, array, string, number, boolean, null
+     * @param {function} [callback] - Called with the server's response (the PHP handler's $result)
+     *
+     * Examples:
+     *   qs.emit('chat/message', {text: 'hi', tags: ['urgent']}, function(res) { ... });
+     *   qs.emit('game/move', {x: 10, y: 20});
+     *   qs.emit('ping', null, function(res) { console.log(res.time); });
      */
     QSocket.prototype.emit = function (event, data, callback) {
-        var msg = { event: event, data: data || {} };
+        var msg = { event: event, data: (data !== undefined ? data : null) };
         if (typeof callback === 'function') {
             msg.ack = ++this._ackId;
             this._acks[msg.ack] = callback;
@@ -126,7 +147,7 @@
     };
 
     /**
-     * Close the connection (disables auto-reconnect).
+     * Close the connection. Disables auto-reconnect.
      */
     QSocket.prototype.close = function () {
         this._reconnect = false;
