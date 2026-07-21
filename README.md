@@ -2101,12 +2101,67 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `rateLimit.enabled` | false | Enable per-IP rate limiting |
 | `rateLimit.requests` | 100 | Requests per window |
 | `rateLimit.window` | 60 | Window in seconds |
+| `webserver.requestTimeout` | 30 | Seconds before killing a hung HTTP worker (0 = no limit) |
 | `socket.io` | `"/socket.io"` | Socket.IO endpoint. Protocol detection + client JS at `{path}/socket.io.js`. `false` to disable. |
 | `socket.js` | `"/Q/socket.js"` | Path to serve the minimal bare-WebSocket client (3KB). `false` to disable. |
 | `app` | `""` | App name — prefixes handler function names (e.g. `"Chess"` → `Chess_chat_message()`) |
 | `webserver.fallback` | null | Catch-all: `"index.html"`, `{"handler":"app/notfound"}`, or `{"file":"404.html"}` |
 | `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
 | `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
+
+### Scheduler
+
+Run tasks on intervals or at specific times. Handlers are forked like HTTP
+requests — they don't block the event loop and respect `requestTimeout`.
+
+```json
+{
+    "Q": {
+        "scheduler": {
+            "cleanup": {
+                "handler": "tasks/cleanup",
+                "every": 3600
+            },
+            "daily-report": {
+                "handler": "tasks/report",
+                "times": ["09:00"]
+            },
+            "business-check": {
+                "handler": "tasks/check",
+                "times": ["09:00", "12:00", "17:00"],
+                "weekdays": ["mon", "wed", "fri"]
+            },
+            "monthly-invoice": {
+                "handler": "tasks/invoice",
+                "times": ["00:00"],
+                "monthdays": [1]
+            }
+        }
+    }
+}
+```
+
+| Field | What it does |
+|---|---|
+| `handler` | Handler path — dispatched via `Q::event()`, same as HTTP handlers |
+| `every` | Run every N seconds from startup |
+| `times` | Run at specific `HH:MM` times (24h format) |
+| `weekdays` | Only fire on these days: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
+| `monthdays` | Only fire on these days of the month: `[1]`, `[1, 15]`, etc. |
+
+The handler receives `$params['task']` (the task name) and `$params['scheduled'] = true`:
+
+```php
+<?php
+// handlers/tasks/cleanup.php
+function tasks_cleanup(&$params, &$result) {
+    MyApp\Sessions::expireOld();
+    MyApp\Logs::rotate();
+}
+```
+
+On restart, tasks scheduled for the current minute are skipped to avoid
+double-firing. Interval tasks wait one full interval before their first run.
 
 ### CGI carveout mode — legacy PHP compatibility
 
@@ -2546,9 +2601,6 @@ the full 10x performance advantage, use Linux or macOS (or WSL).
 
 - **Virtual hosts** — `Q.web.hosts.$hostname` config overrides for multi-domain serving
 - **Hot reload** — watch `classes/`, `handlers/`, `config/` for changes, auto-restart workers
-- **Scheduler** — cron-like timed events from config, executed by the event loop
-- **Request timeout** — kill workers that exceed N seconds
-- **Server-initiated ping** — parent sends Engine.IO pings on a timer (currently only responds to client pings)
 
 ---
 

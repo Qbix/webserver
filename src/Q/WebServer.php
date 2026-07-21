@@ -349,9 +349,39 @@ class Q_WebServer
 			});
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
-				while (pcntl_waitpid(-1, $st, WNOHANG) > 0) {}
+				while (($pid = pcntl_waitpid(-1, $st, WNOHANG)) > 0) {
+					unset(Q_WebServer::$workerPids[$pid]);
+				}
 			});
 		}
+		// Engine.IO ping timer — keeps Socket.IO connections alive
+		Q_Evented::repeat(25, function () {
+			Q_WebSocket::pingSocketIO();
+		});
+
+		// Request timeout — kill workers that exceed the configured limit
+		$timeout = Q_Config::get('Q', 'webserver', 'requestTimeout', 30);
+		if ($timeout > 0) {
+			Q_Evented::repeat(1, function () use ($timeout) {
+				$now = microtime(true);
+				foreach (Q_WebServer::$workerPids as $pid => $start) {
+					if ($now - $start > $timeout) {
+						@posix_kill($pid, SIGKILL);
+						unset(Q_WebServer::$workerPids[$pid]);
+					}
+				}
+			});
+		}
+
+		// Scheduler — run tasks on intervals or at specific times
+		$schedule = Q_Config::get('Q', 'scheduler', array());
+		if (!empty($schedule)) {
+			Q_Scheduler::init($schedule);
+			Q_Evented::repeat(1, function () {
+				Q_Scheduler::tick();
+			});
+		}
+
 		Q_Evented::run();
 	}
 
@@ -1040,6 +1070,7 @@ class Q_WebServer
 					Q_Evented::cancel(self::$clientWatchers[$key]);
 				}
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
+				self::$workerPids[$pid] = microtime(true);
 				pcntl_waitpid($pid, $st, WNOHANG);
 				self::$lastStatus = 200;
 				list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
@@ -1155,6 +1186,7 @@ class Q_WebServer
 					Q_Evented::cancel(self::$clientWatchers[$key]);
 				}
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
+				self::$workerPids[$pid] = microtime(true);
 				// Non-blocking reap — don't wait for child
 				pcntl_waitpid($pid, $st, WNOHANG);
 				self::$lastStatus = 200;
@@ -2460,6 +2492,8 @@ HTML
 	private static $running = false;
 	private static $lastStatus = 200;
 	private static $lastBody = '';
+	/** @internal pid => start_time for request timeout enforcement */
+	static $workerPids = array();
 
 	static $allowedExtensions = array(
 		'html','htm','txt','md','json','xml','yaml','yml','csv','tsv','log',

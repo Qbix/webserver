@@ -383,6 +383,19 @@ class Q_WebSocket
 	}
 
 	/**
+	 * Send Engine.IO ping to all Socket.IO clients.
+	 * Called on a 25s timer by the parent process.
+	 */
+	static function pingSocketIO()
+	{
+		foreach (self::$clients as $sk => $c) {
+			if (($c['protocol'] ?? 'json') === 'socketio') {
+				self::sendRaw($sk, '2');
+			}
+		}
+	}
+
+	/**
 	 * Send a Socket.IO ACK response: 43<ackId>[data]
 	 */
 	/**
