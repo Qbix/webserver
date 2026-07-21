@@ -1068,6 +1068,35 @@ class Q_WebServer
 	 */
 	private static function handlePhp($client, $parsed, $scriptPath)
 	{
+		// ── CGI carveout: check if this script should use php-cgi ──
+		// Scripts matching Q.webserver.cgi.patterns run via php-cgi subprocess
+		// where native header(), setcookie(), headers_list() all work.
+		// Use for legacy/third-party code (WordPress, etc.) that calls header() directly.
+		static $cgiPatterns = null;
+		static $cgiBinary = null;
+		if ($cgiPatterns === null) {
+			$cgiPatterns = Q_Config::get('Q', 'webserver', 'cgi', 'patterns', array());
+			$cgiBinary = Q_Config::get('Q', 'webserver', 'cgi', 'binary', null);
+			if (!$cgiBinary) {
+				// Auto-detect php-cgi
+				foreach (array('php-cgi', 'php-cgi8.3', 'php-cgi8.2', 'php-cgi8.1') as $bin) {
+					$path = trim(shell_exec("which $bin 2>/dev/null") ?? '');
+					if ($path && is_executable($path)) {
+						$cgiBinary = $path;
+						break;
+					}
+				}
+			}
+		}
+		if (!empty($cgiPatterns) && $cgiBinary) {
+			$relPath = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen(self::$rootDir))), '/');
+			foreach ($cgiPatterns as $pattern) {
+				if (@preg_match($pattern, $relPath)) {
+					return self::handlePhpCgi($client, $parsed, $scriptPath, $cgiBinary);
+				}
+			}
+		}
+
 		if (self::$pool) {
 			self::$lastStatus = 200;
 			self::$pool->dispatch($client, $parsed, $scriptPath);
@@ -1272,7 +1301,240 @@ WORKER;
 		return false;
 	}
 
-	// ── Static file serving ──────────────────────────────
+	/**
+	 * Execute a PHP script via php-cgi binary for full header() compatibility.
+	 * Used for legacy/third-party code (WordPress, Laravel, etc.) that calls
+	 * header() and setcookie() directly. The php-cgi binary outputs real HTTP
+	 * headers followed by the body — we parse and forward them.
+	 *
+	 * Slower than fork mode (no preload benefit) but 100% compatible.
+	 *
+	 * @method handlePhpCgi
+	 * @static
+	 * @private
+	 */
+	private static function handlePhpCgi($client, $parsed, $scriptPath, $cgiBinary)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$hostParts = explode(':', $host);
+		$isHttps = !empty(self::$tlsSocket);
+		$fwdProto = strtolower($parsed['headers']['x-forwarded-proto'] ?? '');
+		if ($fwdProto === 'https') $isHttps = true;
+		$cfVisitor = $parsed['headers']['cf-visitor'] ?? '';
+		if (strpos($cfVisitor, '"https"') !== false) $isHttps = true;
+
+		// Compute SCRIPT_NAME and PATH_INFO (frameworks need correct PATH_INFO)
+		$requestPath = parse_url($parsed['uri'], PHP_URL_PATH) ?: '/';
+		$docRoot = rtrim(self::$rootDir, DS);
+		$scriptRel = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen($docRoot))), '/');
+		$pathInfo = '';
+		if (strlen($requestPath) > strlen($scriptRel)) {
+			$pathInfo = substr($requestPath, strlen($scriptRel));
+		}
+
+		// Build CGI environment variables — full set matching nginx fastcgi_params
+		$env = array(
+			'REDIRECT_STATUS'    => '200',
+			'GATEWAY_INTERFACE'  => 'CGI/1.1',
+			'SERVER_SOFTWARE'    => 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0'),
+			'SERVER_PROTOCOL'    => 'HTTP/' . ($parsed['httpVersion'] ?? '1.1'),
+			'SERVER_NAME'        => $hostParts[0],
+			'SERVER_PORT'        => isset($hostParts[1]) ? $hostParts[1] : (string) self::$port,
+			'SERVER_ADDR'        => self::$host === '0.0.0.0' ? '127.0.0.1' : self::$host,
+			'REQUEST_METHOD'     => $parsed['method'],
+			'REQUEST_URI'        => $parsed['uri'],
+			'QUERY_STRING'       => $parsed['query'],
+			'SCRIPT_FILENAME'    => $scriptPath,
+			'SCRIPT_NAME'        => $scriptRel,
+			'PHP_SELF'           => $scriptRel . $pathInfo,
+			'PATH_INFO'          => $pathInfo,
+			'PATH_TRANSLATED'    => $pathInfo ? $docRoot . $pathInfo : '',
+			'DOCUMENT_ROOT'      => $docRoot,
+			'DOCUMENT_URI'       => $scriptRel,
+			'REMOTE_ADDR'        => $parsed['_remoteAddr'] ?? '127.0.0.1',
+			'REMOTE_PORT'        => (string) ($parsed['_remotePort'] ?? 0),
+			'REQUEST_SCHEME'     => $isHttps ? 'https' : 'http',
+			'HTTPS'              => $isHttps ? 'on' : '',
+			'REQUEST_TIME'       => (string) time(),
+			'REQUEST_TIME_FLOAT' => (string) microtime(true),
+		);
+
+		// Forward ALL request headers as HTTP_* env vars
+		foreach ($parsed['headers'] as $k => $v) {
+			$envKey = 'HTTP_' . strtoupper(str_replace('-', '_', $k));
+			$env[$envKey] = $v;
+		}
+		// Content-Type and Content-Length are special (no HTTP_ prefix per CGI spec)
+		if (isset($parsed['headers']['content-type'])) {
+			$env['CONTENT_TYPE'] = $parsed['headers']['content-type'];
+		}
+		if (isset($parsed['headers']['content-length'])) {
+			$env['CONTENT_LENGTH'] = $parsed['headers']['content-length'];
+		}
+		// Basic auth
+		$auth = $parsed['headers']['authorization'] ?? '';
+		if (stripos($auth, 'Basic ') === 0) {
+			$decoded = base64_decode(substr($auth, 6));
+			if ($decoded && strpos($decoded, ':') !== false) {
+				list($user, $pass) = explode(':', $decoded, 2);
+				$env['PHP_AUTH_USER'] = $user;
+				$env['PHP_AUTH_PW'] = $pass;
+				$env['AUTH_TYPE'] = 'Basic';
+			}
+		}
+		// Inherit essential system env vars
+		foreach (array('PATH', 'HOME', 'TEMP', 'TMP', 'TMPDIR', 'SYSTEMROOT') as $sysVar) {
+			if (isset($_ENV[$sysVar])) $env[$sysVar] = $_ENV[$sysVar];
+			elseif (($v = getenv($sysVar)) !== false) $env[$sysVar] = $v;
+		}
+
+		// Launch php-cgi
+		$descriptors = array(
+			0 => array('pipe', 'r'), // stdin (request body)
+			1 => array('pipe', 'w'), // stdout (CGI response)
+			2 => array('pipe', 'w'), // stderr (errors)
+		);
+
+		$cwd = dirname($scriptPath); // run in the script's directory
+		$process = proc_open($cgiBinary, $descriptors, $pipes, $cwd, $env);
+		if (!is_resource($process)) {
+			self::sendResponse($client, 502, 'CGI process failed to start');
+			return false;
+		}
+
+		// Non-blocking reads for timeout support
+		stream_set_blocking($pipes[1], false);
+		stream_set_blocking($pipes[2], false);
+
+		// Send request body to stdin
+		if (!empty($parsed['body'])) {
+			@fwrite($pipes[0], $parsed['body']);
+		}
+		fclose($pipes[0]);
+
+		// Read CGI response with timeout
+		$timeout = Q_Config::get('Q', 'webserver', 'cgi', 'timeout', 30);
+		$deadline = microtime(true) + $timeout;
+		$stdout = '';
+		$stderr = '';
+		while (true) {
+			$read = array($pipes[1], $pipes[2]);
+			$write = $except = null;
+			$remaining = max(0.1, $deadline - microtime(true));
+			if ($remaining <= 0) break; // timeout
+			$ready = @stream_select($read, $write, $except, (int) $remaining, (int) (($remaining - (int) $remaining) * 1000000));
+			if ($ready === false) break;
+			if ($ready === 0) continue;
+			foreach ($read as $pipe) {
+				$chunk = @fread($pipe, 65536);
+				if ($chunk === false || $chunk === '') {
+					if ($pipe === $pipes[1] && feof($pipes[1])) break 2;
+					continue;
+				}
+				if ($pipe === $pipes[1]) $stdout .= $chunk;
+				else $stderr .= $chunk;
+			}
+		}
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		$exitCode = proc_close($process);
+
+		// Log stderr if non-empty
+		if ($stderr !== '') {
+			Q_WebServer_Log::error("CGI stderr ($scriptPath): " . trim($stderr));
+		}
+
+		// Handle timeout
+		if (microtime(true) >= $deadline && $stdout === '') {
+			self::sendResponse($client, 504, 'CGI process timed out');
+			return false;
+		}
+
+		// Handle empty response
+		if ($stdout === '') {
+			$status = ($exitCode !== 0) ? 500 : 200;
+			$response = array('status' => $status, 'body' => '', 'headers' => array());
+			Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+			self::$lastStatus = $status;
+			return false;
+		}
+
+		// Parse CGI output: headers separated by blank line from body
+		$headerEnd = strpos($stdout, "\r\n\r\n");
+		$sep = 4;
+		if ($headerEnd === false) {
+			$headerEnd = strpos($stdout, "\n\n");
+			$sep = 2;
+		}
+
+		if ($headerEnd === false) {
+			$body = $stdout;
+			$headers = array();
+			$status = 200;
+			$extraHeaders = array();
+		} else {
+			$headerBlock = substr($stdout, 0, $headerEnd);
+			$body = substr($stdout, $headerEnd + $sep);
+			$headers = array();
+			$extraHeaders = array(); // for multiple Set-Cookie headers
+			$status = 200;
+
+			foreach (explode("\n", $headerBlock) as $line) {
+				$line = rtrim($line, "\r");
+				if ($line === '') continue;
+
+				// Status line: "Status: 404 Not Found"
+				if (stripos($line, 'Status:') === 0) {
+					$status = (int) trim(substr($line, 7));
+					continue;
+				}
+				// Location header implies redirect status
+				$colonPos = strpos($line, ':');
+				if ($colonPos === false) continue;
+
+				$name = trim(substr($line, 0, $colonPos));
+				$value = trim(substr($line, $colonPos + 1));
+
+				// Multiple Set-Cookie headers must all be forwarded
+				if (strtolower($name) === 'set-cookie') {
+					$extraHeaders[] = array($name, $value);
+				} else {
+					$headers[$name] = $value;
+				}
+
+				if (strtolower($name) === 'location' && $status === 200) {
+					$status = 302; // implicit redirect
+				}
+			}
+		}
+
+		// Build and send response
+		// We bypass processResponse for Set-Cookie to handle multiples
+		$headers['Content-Length'] = strlen($body);
+		$headers['Connection'] = 'close';
+
+		static $reasons = array(
+			200=>'OK', 201=>'Created', 204=>'No Content',
+			301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
+			400=>'Bad Request', 401=>'Unauthorized', 403=>'Forbidden',
+			404=>'Not Found', 405=>'Method Not Allowed',
+			413=>'Payload Too Large', 500=>'Internal Server Error',
+			502=>'Bad Gateway', 503=>'Service Unavailable', 504=>'Gateway Timeout',
+		);
+		$reason = $reasons[$status] ?? 'OK';
+		$out = "HTTP/1.1 $status $reason\r\n";
+		foreach ($headers as $k => $v) {
+			$out .= "$k: $v\r\n";
+		}
+		// Append all Set-Cookie headers (can't use associative array)
+		foreach ($extraHeaders as $pair) {
+			$out .= $pair[0] . ': ' . $pair[1] . "\r\n";
+		}
+		@fwrite($client, $out . "\r\n" . $body);
+
+		self::$lastStatus = $status;
+		return false;
+	}
 
 	private static function serveStaticFile($client, $fsPath, $method, $reqHeaders, $keepAlive = false)
 	{

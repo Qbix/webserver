@@ -55,6 +55,7 @@ dramatically faster and more scalable.
 - [Clean URL Routing](#️-clean-url-routing-optional)
 - [For PHP Developers](#-for-php-developers--the-micro-framework)
 - [Configuration](#-configuration)
+- [Running Legacy PHP](#running-legacy-php--wordpress-laravel-symfony)
 - [Three Ways to Run](#-three-ways-to-run)
 - [Building](#-building)
 - [With Qbix Platform](#-with-qbix-platform)
@@ -1115,8 +1116,9 @@ Q_Response::setCookie('session', $id);         // cookies
 Q_Response::redirect('/login');                // redirect
 ```
 
-For existing code that calls `header()` directly, a CGI carveout mode is coming —
-configure URL patterns to use `php-cgi` where native `header()` works (see roadmap).
+For existing code that calls `header()` directly, use CGI carveout mode —
+configure URL patterns in `server.json` under `Q.webserver.cgi.patterns` to run
+those scripts via `php-cgi` where native `header()` works (see Configuration).
 
 When you upgrade to the full [Qbix Platform](https://github.com/Qbix/Platform),
 the `Q` class expands with hundreds more methods — but everything above
@@ -1440,6 +1442,199 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `rateLimit.enabled` | false | Enable per-IP rate limiting |
 | `rateLimit.requests` | 100 | Requests per window |
 | `rateLimit.window` | 60 | Window in seconds |
+| `webserver.fallback` | null | Catch-all: `"index.html"`, `{"handler":"app/notfound"}`, or `{"file":"404.html"}` |
+| `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
+| `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
+
+### CGI carveout mode — legacy PHP compatibility
+
+Scripts matching `Q.webserver.cgi.patterns` run via `php-cgi` subprocess instead
+of fork. Native `header()`, `setcookie()`, `session_start()` all work — full
+compatibility with WordPress, Laravel, or any PHP code that calls `header()` directly.
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "cgi": {
+                "patterns": [
+                    "#^/wp-admin/.*\\.php$#",
+                    "#^/wp-login\\.php$#",
+                    "#^/legacy/.*\\.php$#"
+                ]
+            }
+        }
+    }
+}
+```
+
+The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you
+don't get the preload speed benefit. Static files, caching, and everything else
+still work at full speed. Use this for third-party code you can't modify — your
+own code should use `Q::header()` and the fork path for 10x performance.
+
+The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
+
+```json
+{ "Q": { "webserver": { "cgi": { "binary": "/usr/bin/php-cgi8.3" } } } }
+```
+
+### Running legacy PHP — WordPress, Laravel, Symfony
+
+You can run existing PHP applications on Qbix Server without modifying their code.
+The key: put the framework's public directory as `web/`, and use CGI carveout
+patterns to match all PHP files.
+
+**WordPress:**
+
+```
+wordpress-site/
+├── qbixserver.php          ← copy here
+├── src/                    ← copy here
+├── config/
+│   └── server.json
+└── web/                    ← symlink or copy of WordPress root
+    ├── wp-admin/
+    ├── wp-content/
+    ├── wp-includes/
+    ├── wp-login.php
+    ├── index.php
+    └── wp-config.php
+```
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "cgi": {
+                "patterns": ["#\\.php$#"]
+            },
+            "fallback": "index.php"
+        }
+    }
+}
+```
+
+The pattern `#\\.php$#` sends all PHP files through `php-cgi`. The fallback
+sends unmatched URLs to `index.php` (WordPress permalink routing). Static
+files (images, CSS, JS) are served directly at full speed.
+
+**Laravel:**
+
+```
+laravel-app/
+├── qbixserver.php
+├── src/
+├── config/
+│   └── server.json
+├── web/                    ← symlink to Laravel's public/
+│   ├── index.php
+│   └── .htaccess           ← ignored (no Apache)
+├── app/
+├── routes/
+├── storage/
+└── vendor/
+```
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "cgi": {
+                "patterns": ["#\\.php$#"]
+            },
+            "fallback": "index.php"
+        }
+    }
+}
+```
+
+All requests that don't match a static file go to `index.php`. Laravel's
+router takes over from there. The `app/`, `vendor/`, and `storage/`
+directories are outside `web/` — inaccessible via URL by default.
+
+**Symfony:**
+
+```
+symfony-app/
+├── qbixserver.php
+├── src/
+├── config/
+│   ├── server.json
+│   └── ...                 ← Symfony config files
+├── web/                    ← symlink to Symfony's public/
+│   └── index.php
+├── src/                    ← Symfony source (separate from Qbix src/)
+├── var/
+└── vendor/
+```
+
+Same config pattern. Symfony's front controller (`public/index.php`) handles
+all routing internally.
+
+**Porting your own legacy code:**
+
+For code you control, you have three options — from least effort to best performance:
+
+**Option 1: Full CGI (zero changes, slower)**
+
+```json
+{ "Q": { "webserver": { "cgi": { "patterns": ["#\\.php$#"] } } } }
+```
+
+Every PHP file runs through `php-cgi`. Native `header()`, `setcookie()`,
+`session_start()` all work. No code changes. Performance is comparable
+to nginx + php-fpm (no preload benefit).
+
+**Option 2: Targeted carveouts (minimal changes, mostly fast)**
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "cgi": {
+                "patterns": [
+                    "#^/admin/.*\\.php$#",
+                    "#^/legacy/.*\\.php$#"
+                ]
+            }
+        }
+    }
+}
+```
+
+Only specific paths use CGI. New code and simple scripts use fork mode
+(10x performance). Legacy code that calls `header()` directly stays
+in CGI mode.
+
+**Option 3: Find-replace (one-time effort, full performance)**
+
+In your PHP files, replace:
+```
+header(       →  Q::header(
+setcookie(    →  Q_Response::setCookie(
+```
+
+Two find-replaces. Your code now uses fork mode everywhere — 10x concurrent
+performance, preloaded classes, shared-nothing safety.
+
+### Installing php-cgi
+
+CGI carveout mode requires the `php-cgi` binary:
+
+```bash
+# Ubuntu/Debian
+sudo apt install php-cgi
+
+# macOS
+brew install php    # includes php-cgi
+
+# CentOS/RHEL
+sudo yum install php-cgi
+
+# Verify
+php-cgi --version
+```
 
 ---
 
@@ -1660,7 +1855,6 @@ the full 10x performance advantage, use Linux or macOS (or WSL).
 **Coming next:**
 
 - **Virtual hosts** — `Q.web.hosts.$hostname` config overrides for multi-domain serving
-- **CGI carveouts** — regex URL patterns that use `php-cgi` subprocess for full `header()`/`setcookie()` compatibility with legacy code (WordPress, etc.)
 - **Hot reload** — watch `classes/`, `handlers/`, `config/` for changes, auto-restart workers
 - **Scheduler** — cron-like timed events from config, executed by the event loop
 - **Request timeout** — kill workers that exceed N seconds
