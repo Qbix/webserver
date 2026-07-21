@@ -118,6 +118,14 @@ class Q_WebServer_Headers
 		$headers['Content-Length'] = strlen($body);
 		$headers['Connection'] = 'close';
 
+		// Merge Q_Response cookies into Set-Cookie headers
+		if (class_exists('Q_Response', false)) {
+			$cookieHeaders = Q_Response::cookieHeaders();
+			foreach ($cookieHeaders as $ch) {
+				$headers['Set-Cookie'] = $ch; // last one wins for single-value
+			}
+		}
+
 		static $reasons = array(
 			200=>'OK', 201=>'Created', 204=>'No Content',
 			301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
@@ -131,6 +139,17 @@ class Q_WebServer_Headers
 		$out = "HTTP/1.1 $status $reason\r\n";
 		foreach ($headers as $k => $v) {
 			$out .= "$k: $v\r\n";
+		}
+		// Multiple Set-Cookie headers (can't use the associative array for dupes)
+		if (class_exists('Q_Response', false)) {
+			$cookieHeaders = Q_Response::cookieHeaders();
+			if (count($cookieHeaders) > 1) {
+				// Remove the single Set-Cookie we added above
+				$out = preg_replace("/Set-Cookie:.*\r\n/", "", $out);
+				foreach ($cookieHeaders as $ch) {
+					$out .= "Set-Cookie: $ch\r\n";
+				}
+			}
 		}
 		@fwrite($client, $out . "\r\n" . $body);
 		return true;
@@ -337,7 +356,7 @@ class Q_WebServer_Headers
 	 */
 	static function resolveAccelPath($accelPath)
 	{
-		// Check configured mappings first
+		// 1. Check configured mappings first (absolute path overrides)
 		$mappings = Q_Config::get('Q', 'webserver', 'accel', 'mappings', array());
 		foreach ($mappings as $prefix => $diskPath) {
 			if (strpos($accelPath, $prefix) === 0) {
@@ -345,7 +364,6 @@ class Q_WebServer_Headers
 				$fsPath = rtrim($diskPath, DS) . DS
 					. ltrim(str_replace('/', DS, $relative), DS);
 				$real = realpath($fsPath);
-				// Ensure we don't escape the mapped directory
 				if ($real && strpos($real, realpath($diskPath)) === 0) {
 					return $real;
 				}
@@ -353,12 +371,21 @@ class Q_WebServer_Headers
 			}
 		}
 
-		// Default: resolve relative to APP_DIR (not web root —
-		// the point is to serve files OUTSIDE the web root)
+		// 2. Default: resolve relative to APP_DIR (project root).
+		//    By convention, private files live in files/ (sibling of web/).
+		//    X-Accel-Redirect: /files/private/doc.pdf
+		//    → APP_DIR/files/private/doc.pdf
 		if (defined('APP_DIR')) {
 			$fsPath = APP_DIR . DS . ltrim(str_replace('/', DS, $accelPath), DS);
 			$real = realpath($fsPath);
 			if ($real && strpos($real, realpath(APP_DIR)) === 0) {
+				// Ensure we're NOT serving from web/ — that defeats the purpose
+				if (isset(Q_WebServer::$rootDir)) {
+					$webRoot = realpath(rtrim(Q_WebServer::$rootDir, DS));
+					if ($webRoot && strpos($real, $webRoot) === 0) {
+						return null; // don't serve public files via accel
+					}
+				}
 				return $real;
 			}
 		}

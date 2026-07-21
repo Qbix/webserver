@@ -128,6 +128,93 @@ class Q
 		return json_decode($json, $assoc, $depth, $options);
 	}
 
+	/**
+	 * Captured response headers. PHP's headers_list() returns empty in CLI SAPI,
+	 * so we capture headers ourselves when scripts call header().
+	 * @property $_responseHeaders
+	 * @static
+	 */
+	static $_responseHeaders = array();
+	static $_responseCode = 200;
+
+	/**
+	 * Set a response header. Wraps PHP's header() and captures it.
+	 * Scripts can call either header() directly or Q::header() — both work.
+	 * But Q::header() ensures capture in CLI SAPI mode.
+	 * @method header
+	 * @static
+	 * @param {string} $header Full header string e.g. "Content-Type: text/html"
+	 * @param {boolean} $replace Replace existing header of same name
+	 * @param {integer} $code HTTP status code
+	 */
+	static function header($header, $replace = true, $code = 0)
+	{
+		// Delegate to Q_Response for proper tracking
+		$colonPos = strpos($header, ':');
+		if ($colonPos !== false) {
+			$name = trim(substr($header, 0, $colonPos));
+			$value = trim(substr($header, $colonPos + 1));
+			if (class_exists('Q_Response', false)) {
+				Q_Response::setHeader($name, $value, $replace);
+			} else {
+				// Fallback: direct capture
+				if ($replace) {
+					self::$_responseHeaders[$name] = $value;
+				} elseif (!isset(self::$_responseHeaders[$name])) {
+					self::$_responseHeaders[$name] = $value;
+				}
+			}
+		}
+		if ($code > 0) {
+			self::$_responseCode = $code;
+			if (class_exists('Q_Response', false)) {
+				Q_Response::code($code);
+			}
+		}
+		// Also call native header() (works in non-CLI SAPIs)
+		@header($header, $replace, $code);
+	}
+
+	/**
+	 * Get all captured response headers.
+	 * Falls back to headers_list() if available (non-CLI SAPI).
+	 * @method getResponseHeaders
+	 * @static
+	 * @return {array}
+	 */
+	static function getResponseHeaders()
+	{
+		// Try PHP native first (works in non-CLI SAPIs)
+		$native = headers_list();
+		if (!empty($native)) {
+			$result = array();
+			foreach ($native as $h) {
+				$p = strpos($h, ':');
+				if ($p !== false) {
+					$result[trim(substr($h, 0, $p))] = trim(substr($h, $p + 1));
+				}
+			}
+			return $result;
+		}
+		// CLI SAPI: merge Q_Response headers over Q:: captured headers
+		$headers = self::$_responseHeaders;
+		if (class_exists('Q_Response', false)) {
+			$headers = array_merge($headers, Q_Response::getHeaders());
+		}
+		return $headers;
+	}
+
+	/**
+	 * Clear captured headers (called between requests).
+	 * @method clearResponseHeaders
+	 * @static
+	 */
+	static function clearResponseHeaders()
+	{
+		self::$_responseHeaders = array();
+		self::$_responseCode = 200;
+	}
+
 	// ── Event system ────────────────────────────────────
 
 	/**
@@ -502,6 +589,227 @@ class Q_Socket
 // ── Q_Request ───────────────────────────────────────
 
 /**
+ * Minimal Q_Response — compatible subset of the Qbix Platform's Q_Response.
+ * Manages response headers, status codes, and cookies in CLI SAPI mode
+ * where PHP's header()/setcookie()/headers_list() don't work.
+ *
+ * Use Q::header() for simple cases, or Q_Response methods for full control.
+ *
+ * @class Q_Response
+ */
+class Q_Response
+{
+	/** @var array Response headers: name => value */
+	protected static $headers = array();
+	/** @var integer HTTP status code */
+	protected static $statusCode = 200;
+	/** @var string Status message */
+	protected static $statusMessage = 'OK';
+	/** @var array Cookies to set: name => [value, expires, path, domain, secure, httponly, samesite] */
+	public static $cookies = array();
+	/** @var array Cookies to remove */
+	protected static $cookiesToRemove = array();
+	/** @var string|null Redirect URL if set */
+	public static $redirected = null;
+
+	/**
+	 * Set a response header. Compatible with Q_Response::setHeader() from the Platform.
+	 * @method setHeader
+	 * @static
+	 * @param {string} $name Header name (e.g. 'Content-Type')
+	 * @param {string} $value Header value
+	 * @param {boolean} $replace Whether to replace existing header of same name
+	 */
+	static function setHeader($name, $value, $replace = true)
+	{
+		if ($replace || !isset(self::$headers[$name])) {
+			self::$headers[$name] = $value;
+		}
+		// Also store in Q's header capture
+		Q::$_responseHeaders[$name] = $value;
+		// Call native header() for non-CLI SAPIs
+		@header("$name: $value", $replace);
+	}
+
+	/**
+	 * Get a response header that was set.
+	 * @method getHeader
+	 * @static
+	 * @param {string} $name
+	 * @return {string|null}
+	 */
+	static function getHeader($name)
+	{
+		return self::$headers[$name] ?? null;
+	}
+
+	/**
+	 * Get all response headers.
+	 * @method getHeaders
+	 * @static
+	 * @return {array}
+	 */
+	static function getHeaders()
+	{
+		return self::$headers;
+	}
+
+	/**
+	 * Set the HTTP response status code.
+	 * Compatible with Q_Response::code() from the Platform.
+	 * @method code
+	 * @static
+	 * @param {integer} $code HTTP status code
+	 * @param {string} $message Optional status message
+	 */
+	static function code($code, $message = null)
+	{
+		self::$statusCode = (int) $code;
+		if ($message !== null) {
+			self::$statusMessage = $message;
+		}
+		Q::$_responseCode = (int) $code;
+		http_response_code($code);
+	}
+
+	/**
+	 * Get the current status code.
+	 * @method getStatusCode
+	 * @static
+	 * @return {integer}
+	 */
+	static function getStatusCode()
+	{
+		return self::$statusCode;
+	}
+
+	/**
+	 * Set a cookie. Compatible with Q_Response::setCookie() from the Platform.
+	 * Prevents duplicate cookies — if the same name+value is already set
+	 * and it's a session cookie, skips it.
+	 * @method setCookie
+	 * @static
+	 * @param {string} $name
+	 * @param {string} $value
+	 * @param {integer} $expires Timestamp, 0 = session cookie
+	 * @param {string} $path Cookie path (default: /)
+	 * @param {string|null} $domain
+	 * @param {boolean} $secure
+	 * @param {boolean} $httponly
+	 * @param {string|null} $samesite None, Lax, or Strict
+	 * @return {string|false}
+	 */
+	static function setCookie(
+		$name, $value, $expires = 0,
+		$path = '/', $domain = null,
+		$secure = false, $httponly = false,
+		$samesite = null
+	) {
+		// Skip if already set with same value and is a session cookie
+		if (isset($_COOKIE[$name]) && $_COOKIE[$name] === $value && !$expires) {
+			return $value;
+		}
+		self::$cookies[$name] = array($value, $expires, $path, $domain, $secure, $httponly, $samesite);
+		unset(self::$cookiesToRemove[$name]);
+		return $value;
+	}
+
+	/**
+	 * Get the value of a cookie that will be sent, falling back to $_COOKIE.
+	 * @method cookie
+	 * @static
+	 * @param {string} $name
+	 * @return {string|null}
+	 */
+	static function cookie($name)
+	{
+		return isset(self::$cookies[$name][0])
+			? self::$cookies[$name][0]
+			: ($_COOKIE[$name] ?? null);
+	}
+
+	/**
+	 * Clear a cookie.
+	 * @method clearCookie
+	 * @static
+	 * @param {string} $name
+	 * @param {string} $path
+	 */
+	static function clearCookie($name, $path = '/')
+	{
+		self::$cookiesToRemove[$name] = array($path);
+		unset(self::$cookies[$name]);
+	}
+
+	/**
+	 * Set redirect. Compatible with Q_Response::redirect() from the Platform.
+	 * @method redirect
+	 * @static
+	 * @param {string} $url
+	 * @param {array} $options
+	 * @return {boolean}
+	 */
+	static function redirect($url, $options = array())
+	{
+		$permanently = !empty($options['permanently']);
+		self::code($permanently ? 301 : 302);
+		self::setHeader('Location', $url);
+		self::$redirected = $url;
+		return true;
+	}
+
+	/**
+	 * Build Set-Cookie header strings from stored cookies.
+	 * Called by the server when assembling the response.
+	 * @method cookieHeaders
+	 * @static
+	 * @return {array} Array of Set-Cookie header strings
+	 */
+	static function cookieHeaders()
+	{
+		$headers = array();
+		// Remove cookies
+		foreach (self::$cookiesToRemove as $name => $args) {
+			$path = $args[0] ?? '/';
+			$headers[] = "$name=; Path=$path; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0";
+		}
+		// Set cookies
+		foreach (self::$cookies as $name => $args) {
+			list($value, $expires, $path, $domain, $secure, $httponly, $samesite) = $args;
+			$parts = array(urlencode($name) . '=' . urlencode($value));
+			if ($expires) {
+				$parts[] = 'Expires=' . gmdate('D, d M Y H:i:s T', $expires);
+				$parts[] = 'Max-Age=' . max(0, $expires - time());
+			}
+			$parts[] = 'Path=' . ($path ?: '/');
+			if ($domain) $parts[] = 'Domain=' . $domain;
+			if ($secure) $parts[] = 'Secure';
+			if ($httponly) $parts[] = 'HttpOnly';
+			if ($samesite) $parts[] = 'SameSite=' . $samesite;
+			$headers[] = implode('; ', $parts);
+		}
+		return $headers;
+	}
+
+	/**
+	 * Clear all response state between requests (in-process mode).
+	 * @method clear
+	 * @static
+	 */
+	static function clear()
+	{
+		self::$headers = array();
+		self::$statusCode = 200;
+		self::$statusMessage = 'OK';
+		self::$cookies = array();
+		self::$cookiesToRemove = array();
+		self::$redirected = null;
+	}
+}
+
+// ── Q_Request ───────────────────────────────────────
+
+/**
  * Minimal Q_Request — compatible subset of the Qbix Platform's Q_Request.
  * Provides convenient access to request data that the server has already parsed.
  *
@@ -628,6 +936,42 @@ class Q_Request
 	{
 		if ($name === null) return $_FILES;
 		return $_FILES[$name] ?? null;
+	}
+
+	/**
+	 * Check if running in CLI mode (command line, cron, not via web server).
+	 * In Qbix Server, scripts run in CLI SAPI but are dispatched as web
+	 * requests. This method returns false for server-dispatched requests
+	 * (because $_SERVER['REQUEST_METHOD'] is set) and true for genuine
+	 * CLI invocations.
+	 * Compatible with Q_Request::isInternal() from the Platform.
+	 * @method isInternal
+	 * @static
+	 * @return {boolean}
+	 */
+	static function isInternal()
+	{
+		// If REQUEST_METHOD is set, we're handling a web request
+		// (even though php_sapi_name() === 'cli')
+		if (!empty($_SERVER['REQUEST_METHOD']) && !empty($_SERVER['REQUEST_URI'])) {
+			return false;
+		}
+		return (php_sapi_name() === 'cli'
+			|| defined('STDIN')
+			|| !isset($_SERVER['REQUEST_METHOD']));
+	}
+
+	/**
+	 * Whether the server is running in CLI SAPI.
+	 * Always true for Qbix Server (same as FrankenPHP worker mode, Workerman).
+	 * Scripts should use isInternal() to check if they're handling a web request.
+	 * @method isCli
+	 * @static
+	 * @return {boolean}
+	 */
+	static function isCli()
+	{
+		return php_sapi_name() === 'cli';
 	}
 
 	/**

@@ -110,6 +110,9 @@ if (!$webDir || !is_dir($webDir)) {
 // Initialize Q with the project root (parent of web/)
 // This sets up autoloading from classes/ and handlers from handlers/
 $projectRoot = dirname($webDir);
+if (!defined('APP_DIR')) {
+	define('APP_DIR', $projectRoot);
+}
 Q::init($projectRoot);
 
 // Load .env file if present (sets $_ENV and getenv())

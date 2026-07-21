@@ -873,7 +873,40 @@ class Q_WebServer
 			return self::handlePhp($client, $parsed, $indexPhp);
 		}
 
-		// 8. Not found
+		// 8. Configurable fallback (SPA routing, custom 404 page, etc.)
+		//    Q.webserver.fallback can be:
+		//    - string: path to a static file relative to web/ (e.g. "index.html")
+		//    - object with "handler": event name to dispatch via Q::event()
+		//    - object with "file": static file + auto-detect Content-Type
+		$fallback = Q_Config::get('Q', 'webserver', 'fallback', null);
+		if ($fallback !== null) {
+			if (is_string($fallback)) {
+				// Static file (SPA catch-all: serve index.html for all routes)
+				$fbPath = self::$rootDir . str_replace('/', DS, $fallback);
+				if (is_file($fbPath)) {
+					return self::serveFile($client, $parsed, $fbPath);
+				}
+			} elseif (is_array($fallback)) {
+				if (!empty($fallback['handler'])) {
+					// Route to a handler — build a synthetic Q_Uri
+					$uri = Q_Uri::from(array(
+						'module' => dirname($fallback['handler']),
+						'action' => basename($fallback['handler']),
+						'_originalPath' => $path,
+					));
+					if ($uri) {
+						return self::handleRoute($client, $parsed, $uri);
+					}
+				} elseif (!empty($fallback['file'])) {
+					$fbPath = self::$rootDir . str_replace('/', DS, $fallback['file']);
+					if (is_file($fbPath)) {
+						return self::serveFile($client, $parsed, $fbPath);
+					}
+				}
+			}
+		}
+
+		// 9. Not found
 		self::sendResponse($client, 404, self::render404($path), 'text/html; charset=utf-8');
 		return false;
 	}
@@ -959,14 +992,10 @@ class Q_WebServer
 					// 3. Response
 					Q::event("$module/$action/response", $routed, false, true);
 
-					foreach (headers_list() as $h) {
-						if (strpos($h, ':') !== false) {
-							list($k, $v) = explode(':', $h, 2);
-							$headers[trim($k)] = trim($v);
-						}
-					}
+			$headers = Q::getResponseHeaders();
 					$code = http_response_code();
-					if ($code) $status = $code;
+					if ($code && $code !== 200) $status = $code;
+					if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
 				} catch (\Throwable $e) {
 					$status = 500;
 					ob_clean();
@@ -1011,14 +1040,10 @@ class Q_WebServer
 				echo 'Method Not Allowed';
 			}
 			Q::event("$module/$action/response", $routed, false, true);
-			foreach (headers_list() as $h) {
-				if (strpos($h, ':') !== false) {
-					list($k, $v) = explode(':', $h, 2);
-					$headers[trim($k)] = trim($v);
-				}
-			}
+			$headers = Q::getResponseHeaders();
 			$code = http_response_code();
-			if ($code) $status = $code;
+			if ($code && $code !== 200) $status = $code;
+			if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
@@ -1161,8 +1186,8 @@ if (class_exists('Q_Request',false)) Q_Request::$input = $raw;
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
-    foreach (headers_list() as $h) { if (strpos($h,':')!==false) { [$k,$v] = explode(':',$h,2); $headers[trim($k)] = trim($v); } }
-    $code = http_response_code(); if ($code) $status = $code;
+			$headers = Q::getResponseHeaders();
+    $code = http_response_code(); if (Q::$_responseCode !== 200) $status = Q::$_responseCode; if ($code) $status = $code;
 } catch (Throwable $e) { $status = 500; ob_clean(); echo $e->getMessage(); $headers['Content-Type']='text/plain'; }
 $body = ob_get_clean();
 echo json_encode(compact('status','body','headers'), JSON_UNESCAPED_SLASHES);
@@ -1729,6 +1754,8 @@ HTML
 		while (ob_get_level()) ob_end_clean();
 		header_remove();
 		http_response_code(200);
+		Q::clearResponseHeaders();
+		if (class_exists('Q_Response', false)) Q_Response::clear();
 		ob_start();
 		$status = 200;
 		$headers = array();
@@ -1746,14 +1773,10 @@ HTML
 					echo 'Not Found';
 				}
 			}
-			foreach (headers_list() as $h) {
-				if (strpos($h, ':') !== false) {
-					list($k, $v) = explode(':', $h, 2);
-					$headers[trim($k)] = trim($v);
-				}
-			}
+			$headers = Q::getResponseHeaders();
 			$code = http_response_code();
-			if ($code) $status = $code;
+			if ($code && $code !== 200) $status = $code;
+			if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
@@ -2076,6 +2099,8 @@ HTML
 	private static function resolveStatic($urlPath)
 	{
 		$rel = str_replace('/', DS, ltrim($urlPath, '/'));
+		// Block null bytes (directory traversal via null byte injection)
+		if (strpos($rel, "\0") !== false) return null;
 		$fsPath = realpath(self::$rootDir . $rel);
 		if (!$fsPath) return null;
 		$fsPath = str_replace(array('/','\\'), DS, $fsPath);
