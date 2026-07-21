@@ -205,6 +205,9 @@ if (file_exists($appConfig)) {
 	Q_Config::load($appConfig);
 }
 
+// Preload handlers if configured (Q.handlers.preload: true)
+Q::preload();
+
 // ── PID file ────────────────────────────────────────
 
 if ($opts['pid']) {
@@ -242,6 +245,12 @@ echo "  │" . str_pad("  http://{$opts['host']}:{$opts['port']}", $W) . "│\n"
 echo "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n";
 echo "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n";
 echo "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n";
+$nClasses = count(get_declared_classes());
+$nHandlers = Q::$preloadedHandlers;
+$preloadLabel = $nHandlers > 0
+	? "  Preloaded: {$nClasses} classes, {$nHandlers} handlers"
+	: "  Preloaded: {$nClasses} classes (handlers: lazy)";
+echo "  │" . str_pad($preloadLabel, $W) . "│\n";
 echo "  ├" . str_repeat('─', $W) . "┤\n";
 echo "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n";
 echo "  │" . str_pad("  Health:    /Q/health", $W) . "│\n";

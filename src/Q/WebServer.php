@@ -750,6 +750,25 @@ class Q_WebServer
 		$path = $parsed['path'];
 
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
+		// 1. Serve client JS files (before /Q/ check — socket.io.js is at /socket.io/)
+		$jsMap = array();
+		$jsPath = Q_Config::get('Q', 'socket', 'js', '/Q/socket.js');
+		if ($jsPath !== false) $jsMap[$jsPath] = __DIR__ . DS . 'socket.js';
+		$ioPath = Q_Config::get('Q', 'socket', 'io', '/socket.io');
+		if ($ioPath !== false) $jsMap[$ioPath . '/socket.io.js'] = __DIR__ . DS . 'socket.io.js';
+		if (isset($jsMap[$path])) {
+			$jsFile = $jsMap[$path];
+			if (file_exists($jsFile)) {
+				self::sendResponse($client, 200, file_get_contents($jsFile),
+					'application/javascript',
+					array('Cache-Control' => 'public, max-age=3600'));
+			} else {
+				self::sendResponse($client, 404, 'Not found');
+			}
+			return false;
+		}
+
+		// 2. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
 			if ($path === '/Q/ws') {
 				$upgraded = Q_WebSocket::upgrade(
@@ -779,7 +798,8 @@ class Q_WebServer
 				$client, $parsed['headers'],
 				function ($sk, $msg) use ($path) {
 					Q_WebSocket::dispatchEvent($sk, $msg, $path);
-				}
+				},
+				null, $path
 			);
 			return $upgraded;
 		}

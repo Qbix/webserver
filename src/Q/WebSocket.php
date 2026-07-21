@@ -32,7 +32,7 @@ class Q_WebSocket
 
 	// ── Upgrade + framing (unchanged) ───────────────
 
-	static function upgrade($socket, $headers, $onMessage = null, $channel = null)
+	static function upgrade($socket, $headers, $onMessage = null, $channel = null, $path = '/')
 	{
 		$key = $headers['sec-websocket-key'] ?? null;
 		if (!$key) return false;
@@ -46,10 +46,31 @@ class Q_WebSocket
 		$watcher = Q_Evented::onReadable($socket, function ($sock) use ($sk) {
 			Q_WebSocket::onData($sk, $sock);
 		});
+
+		// Socket.IO clients connect to configured path (default /socket.io)
+		// Set Q.socket.io to false to disable Socket.IO protocol
+		$ioPath = Q_Config::get('Q', 'socket', 'io', '/socket.io');
+		$proto = ($ioPath !== false && strpos($path, $ioPath) === 0) ? 'socketio' : 'json';
+
 		self::$clients[$sk] = array(
 			'socket' => $socket, 'watcher' => $watcher,
-			'channels' => array(), 'buffer' => '', 'onMessage' => $onMessage
+			'channels' => array(), 'buffer' => '', 'onMessage' => $onMessage,
+			'protocol' => $proto,
 		);
+
+		// Socket.IO: send Engine.IO OPEN handshake
+		if ($proto === 'socketio') {
+			$sid = base_convert(mt_rand(1000000, 9999999) . $sk, 10, 36);
+			$handshake = '0' . json_encode(array(
+				'sid' => $sid,
+				'upgrades' => array(),
+				'pingInterval' => 25000,
+				'pingTimeout' => 20000,
+				'maxPayload' => 1000000,
+			));
+			self::sendRaw($sk, $handshake);
+		}
+
 		if ($channel) self::subscribe($sk, $channel);
 		return true;
 	}
@@ -123,44 +144,44 @@ class Q_WebSocket
 	static function send($socketKey, $data)
 	{
 		if (!isset(self::$clients[$socketKey])) return;
-		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		self::encodeAndSend(self::$clients[$socketKey]['socket'], 0x1, $json);
+		$encoded = self::encodeSend($socketKey, $data);
+		self::encodeAndSend(self::$clients[$socketKey]['socket'], 0x1, $encoded);
 	}
 
 	static function broadcast($data)
 	{
-		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 		foreach (self::$clients as $sk => $c) {
-			self::encodeAndSend($c['socket'], 0x1, $json);
+			$encoded = self::encodeSend($sk, $data);
+			self::encodeAndSend($c['socket'], 0x1, $encoded);
 		}
 	}
 
 	static function broadcastTo($channel, $data)
 	{
 		if (!isset(self::$channels[$channel])) return;
-		$json = is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 		foreach (self::$channels[$channel] as $sk => $_) {
 			if (isset(self::$clients[$sk])) {
-				self::encodeAndSend(self::$clients[$sk]['socket'], 0x1, $json);
+				$encoded = self::encodeSend($sk, $data);
+				self::encodeAndSend(self::$clients[$sk]['socket'], 0x1, $encoded);
 			}
 		}
 	}
 
-	static function subscribe($sk, $channel)
+	static function subscribe($sk, $channel, $data = array())
 	{
 		if (!isset(self::$channels[$channel])) self::$channels[$channel] = array();
 		self::$channels[$channel][$sk] = true;
 		if (isset(self::$clients[$sk])) self::$clients[$sk]['channels'][$channel] = true;
 		// If a room worker exists for this channel, notify it
-		self::notifyRoomJoin($channel, $sk);
+		self::notifyRoomJoin($channel, $sk, $data);
 	}
 
-	static function unsubscribe($sk, $channel)
+	static function unsubscribe($sk, $channel, $data = array())
 	{
 		unset(self::$channels[$channel][$sk]);
 		if (empty(self::$channels[$channel])) unset(self::$channels[$channel]);
 		if (isset(self::$clients[$sk])) unset(self::$clients[$sk]['channels'][$channel]);
-		self::notifyRoomLeave($channel, $sk);
+		self::notifyRoomLeave($channel, $sk, $data);
 	}
 
 	static function disconnect($sk)
@@ -196,8 +217,22 @@ class Q_WebSocket
 
 	static function dispatchEvent($socketKey, $raw, $path = '/')
 	{
-		$msg = json_decode($raw, true);
-		if (!$msg || empty($msg['event'])) return;
+		$proto = self::$clients[$socketKey]['protocol'] ?? 'json';
+
+		if ($proto === 'socketio') {
+			$msg = self::parseSocketIO($socketKey, $raw);
+			if ($msg === null) return; // handled internally (ping/pong/connect)
+		} else {
+			// Bare WebSocket — plain JSON
+			$msg = json_decode($raw, true);
+			if (!$msg) return;
+			// Ack-only response (client responding to server RPC)
+			if (isset($msg['ack']) && !isset($msg['event'])) {
+				self::handleRpcResponse($msg['ack'], $msg['data'] ?? null);
+				return;
+			}
+			if (empty($msg['event'])) return;
+		}
 
 		$event = $msg['event'];
 
@@ -231,6 +266,157 @@ class Q_WebSocket
 		}
 	}
 
+	// ── Socket.IO protocol support ──────────────────
+
+	/**
+	 * Parse a Socket.IO/Engine.IO message. Returns normalized internal
+	 * format or null if the message was handled internally (ping, connect).
+	 */
+	static function parseSocketIO($socketKey, $raw)
+	{
+		if ($raw === '') return null;
+		$eioType = $raw[0];
+
+		switch ($eioType) {
+			case '2': // Engine.IO ping
+				self::sendRaw($socketKey, '3'); // pong
+				return null;
+			case '3': // Engine.IO pong
+				return null;
+			case '5': // Engine.IO upgrade
+				return null;
+			case '4': // Engine.IO message → Socket.IO packet
+				break;
+			default:
+				return null;
+		}
+
+		// Strip Engine.IO prefix "4"
+		$sio = substr($raw, 1);
+		if ($sio === '' || $sio === false) return null;
+		$sioType = $sio[0];
+		$rest = substr($sio, 1);
+
+		// Extract namespace from packet (before comma or ack digits)
+		$ns = '';
+		if (isset($rest[0]) && $rest[0] === '/') {
+			$commaPos = strpos($rest, ',');
+			if ($commaPos !== false) {
+				$ns = substr($rest, 1, $commaPos - 1); // strip leading /
+				$rest = substr($rest, $commaPos + 1);
+			}
+		}
+
+		switch ($sioType) {
+			case '0': // CONNECT to namespace
+				$sid = base_convert(mt_rand(1000000, 9999999) . microtime(true) * 1000, 10, 36);
+				$nsPrefix = $ns ? '/' . $ns . ',' : '';
+
+				// Try connect handler (optional — auto-accepts if no handler)
+				$connectEvent = $ns ? $ns . '/connect' : 'connect';
+				if (Q::canHandle($connectEvent)) {
+					// Return as event so it dispatches to the handler
+					return array('event' => $connectEvent, 'data' => array(),
+						'_ns' => $ns, '_nsConnect' => true, '_nsSid' => $sid);
+				}
+
+				// Auto-accept: send CONNECT ack
+				self::sendRaw($socketKey, '40' . $nsPrefix . '{"sid":"' . $sid . '"}');
+				// Store namespace membership
+				if (!isset(self::$clients[$socketKey]['namespaces'])) {
+					self::$clients[$socketKey]['namespaces'] = array();
+				}
+				self::$clients[$socketKey]['namespaces'][$ns] = true;
+				return null;
+
+			case '1': // DISCONNECT from namespace
+				$disconnectEvent = $ns ? $ns . '/disconnect' : 'disconnect';
+				if (isset(self::$clients[$socketKey]['namespaces'])) {
+					unset(self::$clients[$socketKey]['namespaces'][$ns]);
+				}
+				return array('event' => '_disconnect', 'data' => array(), '_ns' => $ns);
+
+			case '2': // EVENT (possibly with ack)
+				// Extract optional ack ID (digits before JSON array)
+				$ackId = null;
+				$i = 0;
+				while ($i < strlen($rest) && ctype_digit($rest[$i])) $i++;
+				if ($i > 0) {
+					$ackId = (int) substr($rest, 0, $i);
+					$rest = substr($rest, $i);
+				}
+				$arr = json_decode($rest, true);
+				if (!is_array($arr) || empty($arr)) return null;
+				$eventName = array_shift($arr);
+				$data = isset($arr[0]) ? $arr[0] : array();
+				// Prepend namespace to event name
+				if ($ns) $eventName = $ns . '/' . $eventName;
+				$msg = array('event' => $eventName, 'data' => $data);
+				if ($ackId !== null) $msg['ack'] = $ackId;
+				return $msg;
+
+			case '3': // ACK (client responding to server RPC)
+				$i = 0;
+				while ($i < strlen($rest) && ctype_digit($rest[$i])) $i++;
+				$ackId = ($i > 0) ? (int) substr($rest, 0, $i) : null;
+				$rest = substr($rest, $i);
+				$arr = json_decode($rest, true);
+				$result = (is_array($arr) && !empty($arr)) ? $arr[0] : null;
+				if ($ackId !== null) {
+					self::handleRpcResponse($ackId, $result);
+				}
+				return null;
+
+			default:
+				return null;
+		}
+	}
+
+	/**
+	 * Send raw text frame to a WebSocket client (no JSON wrapping).
+	 * Used for Socket.IO protocol frames.
+	 */
+	static function sendRaw($socketKey, $text)
+	{
+		if (!isset(self::$clients[$socketKey]['socket'])) return;
+		self::encodeAndSend(self::$clients[$socketKey]['socket'], 0x1, $text);
+	}
+
+	/**
+	 * Send a Socket.IO ACK response: 43<ackId>[data]
+	 */
+	/**
+	 * Send a Socket.IO ACK response: 43<ackId>[data]
+	 * or bare JSON: {"ack": ackId, "data": ...}
+	 */
+	static function sendAck($socketKey, $ackId, $data)
+	{
+		$proto = self::$clients[$socketKey]['protocol'] ?? 'json';
+		if ($proto === 'socketio') {
+			self::sendRaw($socketKey, '43' . $ackId . json_encode(array($data), JSON_UNESCAPED_SLASHES));
+		} else {
+			self::send($socketKey, array('ack' => $ackId, 'data' => $data));
+		}
+	}
+
+	/**
+	 * Encode outgoing data for the client's protocol.
+	 */
+	static function encodeSend($socketKey, $data)
+	{
+		$proto = self::$clients[$socketKey]['protocol'] ?? 'json';
+
+		if ($proto === 'socketio') {
+			$event = $data['event'] ?? 'message';
+			$payload = $data['data'] ?? $data;
+			$arr = array($event, $payload);
+			return '42' . json_encode($arr, JSON_UNESCAPED_SLASHES);
+		}
+
+		// Bare WebSocket — plain JSON
+		return json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+	}
+
 	static function spawnWorker($socketKey, $path)
 	{
 		if (!function_exists('pcntl_fork')) return;
@@ -247,30 +433,37 @@ class Q_WebSocket
 			fclose($pair[0]);
 			$pipe = $pair[1];
 			Q_Socket::$_pipe = $pipe;
-			Q_Socket::$_socketId = $socketKey;
+
+			$socket = new Q_Socket($socketKey);
 
 			$connectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_connect', null);
 			if ($connectHandler) {
 				Q::event($connectHandler, array(
-					'_socketId' => $socketKey, '_path' => $path,
+					'socket' => $socket, 'path' => $path,
 					'event' => '_connect', 'data' => array(),
 				));
 				Q_Socket::flush();
 			}
 
 			while (true) {
-				$header = @fread($pipe, 4);
-				if ($header === false || $header === '' || strlen($header) < 4) break;
-				$len = unpack('N', $header)[1];
-				if ($len <= 0 || $len > 10485760) break;
-				$json = '';
-				while (strlen($json) < $len) {
-					$chunk = @fread($pipe, $len - strlen($json));
-					if ($chunk === false || $chunk === '') break 2;
-					$json .= $chunk;
+				// Check message queue first (filled by __call when it
+				// reads non-RPC messages while waiting for a response)
+				if (!empty(Q_Socket::$_messageQueue)) {
+					$msg = array_shift(Q_Socket::$_messageQueue);
+				} else {
+					$header = @fread($pipe, 4);
+					if ($header === false || $header === '' || strlen($header) < 4) break;
+					$len = unpack('N', $header)[1];
+					if ($len <= 0 || $len > 10485760) break;
+					$json = '';
+					while (strlen($json) < $len) {
+						$chunk = @fread($pipe, $len - strlen($json));
+						if ($chunk === false || $chunk === '') break 2;
+						$json .= $chunk;
+					}
+					$msg = json_decode($json, true);
+					if (!$msg) continue;
 				}
-				$msg = json_decode($json, true);
-				if (!$msg) continue;
 
 				$event = $msg['event'] ?? '';
 				if ($event === '_disconnect') break;
@@ -280,16 +473,18 @@ class Q_WebSocket
 
 				$result = null;
 				$params = array(
-					'_socketId' => $socketKey,
-					'_path'     => $path,
-					'_ack'      => Q_Socket::$_ack,
-					'event'     => $event,
-					'data'      => $msg['data'] ?? array(),
+					'socket' => $socket,
+					'path'   => $path,
+					'event'  => $event,
+					'data'   => $msg['data'] ?? array(),
 				);
 				Q::event($mapped, $params, false, false, $result);
 
 				if (Q_Socket::$_ack !== null && $result !== null) {
-					Q_Socket::reply(array('ack' => Q_Socket::$_ack, 'data' => $result));
+					Q_Socket::_cmd(array(
+						'cmd' => 'ack', 'socketId' => $socket->id,
+						'ackId' => Q_Socket::$_ack, 'data' => $result,
+					));
 				}
 				Q_Socket::flush();
 			}
@@ -297,7 +492,7 @@ class Q_WebSocket
 			$disconnectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_disconnect', null);
 			if ($disconnectHandler) {
 				Q::event($disconnectHandler, array(
-					'_socketId' => $socketKey, 'event' => '_disconnect', 'data' => array(),
+					'socket' => $socket, 'event' => '_disconnect', 'data' => array(),
 				));
 				Q_Socket::flush();
 			}
@@ -423,7 +618,6 @@ class Q_WebSocket
 			fclose($pair[0]);
 			$pipe = $pair[1];
 			Q_Socket::$_pipe = $pipe;
-			Q_Socket::$_socketId = 0; // room process, no single socket
 
 			// Set up tick timer if configured
 			$tickCallback = null;
@@ -431,20 +625,20 @@ class Q_WebSocket
 				$tickCallback = function () use ($handler, $roomName, $params, $pipe) {
 					Q_Socket::$_ack = null;
 					$result = null;
+					$room = new Q_Room($roomName, 0, $params);
 					$p = array_merge($params, array(
-						'_room' => $roomName, 'event' => '_tick',
-						'data' => array(), '_socketId' => 0,
+						'room' => $room, 'event' => '_tick', 'data' => array(),
 					));
-					Q::event($handler, $p, false, false, $result);
+					Q::event($handler . '/tick', $p, false, false, $result);
 					Q_Socket::flush();
 				};
 			}
 
 			// Fire _init event
 			$result = null;
-			Q::event($handler, array_merge($params, array(
-				'_room' => $roomName, 'event' => '_init', 'data' => array(),
-				'_socketId' => 0,
+			$room = new Q_Room($roomName, 0, $params);
+			Q::event($handler . '/init', array_merge($params, array(
+				'room' => $room, 'event' => '_init', 'data' => array(),
 			)), false, false, $result);
 			Q_Socket::flush();
 
@@ -488,30 +682,34 @@ class Q_WebSocket
 					if ($event === '_shutdown') break 2;
 
 					Q_Socket::$_ack = isset($msg['ack']) ? $msg['ack'] : null;
-					Q_Socket::$_socketId = $msg['_socketId'] ?? 0;
+					$senderSocketId = $msg['_socketId'] ?? 0;
 
 					$result = null;
+					$room = new Q_Room($roomName, $senderSocketId, $params);
 					$p = array_merge($params, array(
-						'_room'     => $roomName,
-						'_socketId' => Q_Socket::$_socketId,
-						'_ack'      => Q_Socket::$_ack,
-						'event'     => $event,
-						'data'      => $msg['data'] ?? array(),
+						'room'  => $room,
+						'event' => $event,
+						'data'  => $msg['data'] ?? array(),
 					));
-					Q::event($handler, $p, false, false, $result);
+					// Lifecycle events: _join → handler/join
+					// User events: message → handler/message
+					$eventPath = $handler . '/' . ltrim($event, '_');
+					Q::event($eventPath, $p, false, false, $result);
 
 					if (Q_Socket::$_ack !== null && $result !== null) {
-						Q_Socket::send(Q_Socket::$_socketId,
-							array('ack' => Q_Socket::$_ack, 'data' => $result));
+						Q_Socket::_cmd(array(
+							'cmd' => 'ack', 'socketId' => $room->socketId,
+							'ackId' => Q_Socket::$_ack, 'data' => $result,
+						));
 					}
 					Q_Socket::flush();
 				}
 			}
 
 			// Fire _destroy event
-			Q::event($handler, array_merge($params, array(
-				'_room' => $roomName, 'event' => '_destroy', 'data' => array(),
-				'_socketId' => 0,
+			$room = new Q_Room($roomName, 0, $params);
+			Q::event($handler . '/destroy', array_merge($params, array(
+				'room' => $room, 'event' => '_destroy', 'data' => array(),
 			)), false, false, $result);
 			Q_Socket::flush();
 
@@ -559,7 +757,7 @@ class Q_WebSocket
 	 * @method notifyRoomJoin
 	 * @static
 	 */
-	static function notifyRoomJoin($channel, $socketKey)
+	static function notifyRoomJoin($channel, $socketKey, $data = array())
 	{
 		$config = self::matchRoomPattern($channel);
 		if (!$config) return;
@@ -572,7 +770,7 @@ class Q_WebSocket
 
 		self::$roomWorkers[$channel]['members'][$socketKey] = true;
 		self::sendToRoomWorker($channel, array(
-			'event' => '_join', 'data' => array(),
+			'event' => '_join', 'data' => $data,
 			'_socketId' => $socketKey,
 		));
 	}
@@ -582,13 +780,13 @@ class Q_WebSocket
 	 * @method notifyRoomLeave
 	 * @static
 	 */
-	static function notifyRoomLeave($channel, $socketKey)
+	static function notifyRoomLeave($channel, $socketKey, $data = array())
 	{
 		if (!isset(self::$roomWorkers[$channel])) return;
 		unset(self::$roomWorkers[$channel]['members'][$socketKey]);
 
 		self::sendToRoomWorker($channel, array(
-			'event' => '_leave', 'data' => array(),
+			'event' => '_leave', 'data' => $data,
 			'_socketId' => $socketKey,
 		));
 
@@ -624,8 +822,9 @@ class Q_WebSocket
 	static function dispatchEventInProcess($eventName, $params, $socketKey, $ack)
 	{
 		Q_Socket::$_directMode = true;
-		Q_Socket::$_socketId = $socketKey;
 		Q_Socket::$_ack = $ack;
+		$socket = new Q_Socket($socketKey);
+		$params['socket'] = $socket;
 		$result = null;
 		Q::event($eventName, $params, false, false, $result);
 		if ($ack !== null && $result !== null) {
@@ -635,6 +834,11 @@ class Q_WebSocket
 	}
 
 	// ── IPC command execution ───────────────────────
+
+	static function clientCount()
+	{
+		return count(self::$clients);
+	}
 
 	static function executeCommand($cmd)
 	{
@@ -649,11 +853,86 @@ class Q_WebSocket
 				self::broadcast($cmd['data']);
 				break;
 			case 'join':
-				self::subscribe($cmd['socketId'], $cmd['room']);
+				self::subscribe($cmd['socketId'], $cmd['room'], $cmd['data'] ?? array());
 				break;
 			case 'leave':
-				self::unsubscribe($cmd['socketId'], $cmd['room']);
+				self::unsubscribe($cmd['socketId'], $cmd['room'], $cmd['data'] ?? array());
+				break;
+			case 'ack':
+				self::sendAck($cmd['socketId'], $cmd['ackId'], $cmd['data']);
+				break;
+			case 'rpc':
+				self::handleRpc($cmd);
 				break;
 		}
+	}
+
+	// ── Server→Client RPC ───────────────────────────
+
+	/** @internal Maps rpcAckId → ['pipe' => resource, 'rpcId' => int] */
+	static $pendingRpc = array();
+	/** @internal Counter for server→client ack IDs */
+	static $rpcAckCounter = 0;
+
+	/**
+	 * Handle an RPC request from a child process.
+	 * Sends the method call to the client with an ack ID, then routes
+	 * the client's ack response back to the child's IPC pipe.
+	 */
+	static function handleRpc($cmd)
+	{
+		$socketKey = $cmd['socketId'];
+		$method = $cmd['method'];
+		$data = $cmd['data'] ?? array();
+		$rpcId = $cmd['rpcId'];
+
+		// Generate a unique ack ID for server→client
+		$ackId = ++self::$rpcAckCounter;
+
+		// Find which child pipe to route the response back to
+		$childPipe = null;
+		if (isset(self::$workers[$socketKey])) {
+			$childPipe = self::$workers[$socketKey]['pipe'];
+		}
+		if (!$childPipe) return;
+
+		// Store mapping so we can route the ack response back
+		self::$pendingRpc[$ackId] = array(
+			'pipe' => $childPipe,
+			'rpcId' => $rpcId,
+		);
+
+		// Send RPC call to client with ack ID
+		$proto = self::$clients[$socketKey]['protocol'] ?? 'json';
+		if ($proto === 'socketio') {
+			// Socket.IO: 42<ackId>["method", data]
+			$payload = '42' . $ackId . json_encode(array($method, $data), JSON_UNESCAPED_SLASHES);
+			self::sendRaw($socketKey, $payload);
+		} else {
+			// Bare: {"event":"method", "data":..., "ack": ackId}
+			self::send($socketKey, array('event' => $method, 'data' => $data, 'ack' => $ackId));
+		}
+	}
+
+	/**
+	 * Route an ack response from a client back to the child that
+	 * initiated the RPC call.
+	 * @return boolean True if this was an RPC ack and was handled
+	 */
+	static function handleRpcResponse($ackId, $result)
+	{
+		if (!isset(self::$pendingRpc[$ackId])) return false;
+
+		$pending = self::$pendingRpc[$ackId];
+		unset(self::$pendingRpc[$ackId]);
+
+		// Send response back to child via IPC pipe
+		$response = json_encode(array(
+			'_rpc' => $pending['rpcId'],
+			'result' => $result,
+		), JSON_UNESCAPED_SLASHES);
+		$packet = pack('N', strlen($response)) . $response;
+		@fwrite($pending['pipe'], $packet);
+		return true;
 	}
 }

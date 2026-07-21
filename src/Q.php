@@ -138,6 +138,18 @@ class Q
 	static $_responseCode = 200;
 
 	/**
+	 * Get the app name. Used to prefix handler function names.
+	 * Set via config: {"Q": {"app": "MyApp"}}
+	 * @method app
+	 * @static
+	 * @return {string} App name, or empty string if not set
+	 */
+	static function app()
+	{
+		return Q_Config::get('Q', 'app', '');
+	}
+
+	/**
 	 * Set a response header. Wraps PHP's header() and captures it.
 	 * Scripts can call either header() directly or Q::header() — both work.
 	 * But Q::header() ensures capture in CLI SAPI mode.
@@ -287,7 +299,9 @@ class Q
 	static function canHandle($eventName)
 	{
 		$parts = explode('/', $eventName);
-		$funcName = str_replace('-', '_', implode('_', $parts));
+		$baseName = str_replace('-', '_', implode('_', $parts));
+		$app = Q::app();
+		$funcName = ($app !== '' ? $app . '_' : '') . $baseName;
 		if (function_exists($funcName)) return true;
 
 		// Try to load from handlers/ directory
@@ -327,7 +341,9 @@ class Q
 		}
 
 		$parts = explode('/', $eventName);
-		$funcName = str_replace('-', '_', implode('_', $parts));
+		$baseName = str_replace('-', '_', implode('_', $parts));
+		$app = Q::app();
+		$funcName = ($app !== '' ? $app . '_' : '') . $baseName;
 
 		if (!function_exists($funcName)) {
 			if ($skipIncludes) return null;
@@ -481,6 +497,57 @@ class Q
 			self::$paths[] = $projectRoot;
 		}
 	}
+
+	/**
+	 * Preload all handler files if Q.handlers.preload is true.
+	 * Call this after config is loaded and before the server starts accepting
+	 * connections. Handlers are included once in the parent process and shared
+	 * via COW across all forked children.
+	 *
+	 * Off by default — handlers lazy-load via include_once on first call,
+	 * which is fine with opcache (edit a file, refresh, see the change).
+	 * Enable in production for full COW sharing of handler bytecode.
+	 *
+	 * @method preload
+	 * @static
+	 */
+	static function preload()
+	{
+		if (!Q_Config::get('Q', 'handlers', 'preload', false)) {
+			return;
+		}
+		foreach (self::$paths as $base) {
+			$handlersDir = $base . DS . 'handlers';
+			if (is_dir($handlersDir)) {
+				self::preloadDir($handlersDir);
+			}
+		}
+	}
+
+	/**
+	 * Recursively include all .php files in a directory.
+	 * @method preloadDir
+	 * @static
+	 * @param {string} $dir Directory to scan
+	 */
+	static function preloadDir($dir)
+	{
+		$entries = @scandir($dir);
+		if (!$entries) return;
+		foreach ($entries as $entry) {
+			if ($entry[0] === '.') continue;
+			$path = $dir . DS . $entry;
+			if (is_dir($path)) {
+				self::preloadDir($path);
+			} elseif (substr($entry, -4) === '.php') {
+				include_once $path;
+				self::$preloadedHandlers++;
+			}
+		}
+	}
+
+	/** @var integer Number of preloaded handler files */
+	static $preloadedHandlers = 0;
 }
 
 spl_autoload_register(array('Q', 'autoload'));
@@ -488,80 +555,117 @@ spl_autoload_register(array('Q', 'autoload'));
 // ── Q_Socket ────────────────────────────────────────
 
 /**
- * PHP API for WebSocket handlers — sending messages, managing rooms.
+ * WebSocket connection context. Passed to per-connection handlers as
+ * $params['socket']. Use instance methods to communicate with clients.
  *
- * Each WebSocket connection gets one PHP process. The server dispatches
- * messages via Q::event() to handlers. Handlers use Q_Socket to send
- * data back. Static variables in handlers persist across messages
- * (same process) and are wiped on disconnect (process dies).
+ *   function my_handler(&$params, &$result) {
+ *       extract($params); // $socket, $event, $data
+ *       $socket->reply(['hello' => 'world']);
+ *       $socket->join('chat/general', ['name' => 'Alice']);
+ *       $location = $socket->getLocation(); // RPC call to client
+ *   }
  *
  * @class Q_Socket
  */
 class Q_Socket
 {
-	/** @var resource IPC pipe to parent */
-	static $_pipe = null;
-	/** @var integer Current client's socket key */
-	static $_socketId = null;
-	/** @var integer|null Ack ID from current message */
-	static $_ack = null;
-	/** @var boolean True when running in-process (no fork) */
-	static $_directMode = false;
-	/** @var array Buffered outbound commands */
-	static $_buffer = array();
+	/** @var integer This socket's ID */
+	public $id;
+
+	function __construct($id) { $this->id = $id; }
+
+	/** Get a socket instance by ID */
+	static function byId($id) { return new self($id); }
+
+	/** Send data to this socket's client */
+	function reply($data) { self::_cmd(array('cmd' => 'send', 'socketId' => $this->id, 'data' => $data)); }
+
+	/** Send data to a specific client by socket ID */
+	function send($socketId, $data) { self::_cmd(array('cmd' => 'send', 'socketId' => $socketId, 'data' => $data)); }
+
+	/** Broadcast to all clients in a room */
+	function broadcast($room, $data) { self::_cmd(array('cmd' => 'broadcast', 'room' => $room, 'data' => $data)); }
+
+	/** Broadcast to ALL connected clients */
+	function broadcastAll($data) { self::_cmd(array('cmd' => 'broadcastAll', 'data' => $data)); }
+
+	/** Join a room, optionally forwarding data to the room's join handler */
+	function join($room, $data = array()) { self::_cmd(array('cmd' => 'join', 'socketId' => $this->id, 'room' => $room, 'data' => $data)); }
+
+	/** Leave a room, optionally forwarding data to the room's leave handler */
+	function leave($room, $data = array()) { self::_cmd(array('cmd' => 'leave', 'socketId' => $this->id, 'room' => $room, 'data' => $data)); }
 
 	/**
-	 * Send data to the client that owns this connection.
+	 * Call a method on the remote client. Blocks until the client responds.
+	 * The client must have registered a handler via qs.handle('methodName', fn).
+	 *
+	 * @method __call
+	 * @param {string} $method Method name to invoke on the client
+	 * @param {array} $args Arguments — first element is passed as data to client
+	 * @return {mixed} Return value from the client handler, or null on timeout
 	 */
-	static function reply($data)
+	function __call($method, $args)
 	{
-		self::send(self::$_socketId, $data);
+		$rpcId = ++self::$_rpcCounter;
+		$data = isset($args[0]) ? $args[0] : array();
+
+		// Flush any pending commands first
+		self::flush();
+
+		// Write RPC request directly to pipe (not buffered — need immediate send)
+		$cmd = json_encode(array(
+			'cmd' => 'rpc', 'socketId' => $this->id,
+			'method' => $method, 'data' => $data, 'rpcId' => $rpcId,
+		), JSON_UNESCAPED_SLASHES) . "\n";
+		@fwrite(self::$_pipe, $cmd);
+
+		// Block reading pipe until we get our RPC response (timeout 5s)
+		$deadline = microtime(true) + 5.0;
+		while (microtime(true) < $deadline) {
+			$remaining = $deadline - microtime(true);
+			if ($remaining <= 0) break;
+
+			$read = array(self::$_pipe);
+			$w = $e = null;
+			$sec = (int) $remaining;
+			$usec = (int) (($remaining - $sec) * 1000000);
+			if (@stream_select($read, $w, $e, $sec, $usec) < 1) break;
+
+			$header = @fread(self::$_pipe, 4);
+			if (!$header || strlen($header) < 4) break;
+			$len = unpack('N', $header)[1];
+			if ($len <= 0 || $len > 10485760) break;
+			$json = '';
+			while (strlen($json) < $len) {
+				$chunk = @fread(self::$_pipe, $len - strlen($json));
+				if ($chunk === false || $chunk === '') break 2;
+				$json .= $chunk;
+			}
+			$msg = json_decode($json, true);
+			if (!$msg) continue;
+
+			// Is this our RPC response?
+			if (isset($msg['_rpc']) && $msg['_rpc'] === $rpcId) {
+				return isset($msg['result']) ? $msg['result'] : null;
+			}
+
+			// Not our response — buffer for the main loop
+			self::$_messageQueue[] = $msg;
+		}
+		return null; // timeout
 	}
 
-	/**
-	 * Send data to a specific connected client.
-	 */
-	static function send($socketId, $data)
-	{
-		self::_command(array('cmd' => 'send', 'socketId' => $socketId, 'data' => $data));
-	}
+	// ── Internal IPC plumbing (not part of the public API) ──
 
-	/**
-	 * Broadcast to all clients in a room/channel.
-	 */
-	static function broadcast($room, $data)
-	{
-		self::_command(array('cmd' => 'broadcast', 'room' => $room, 'data' => $data));
-	}
+	/** @internal */ static $_pipe = null;
+	/** @internal */ static $_ack = null;
+	/** @internal */ static $_directMode = false;
+	/** @internal */ static $_buffer = array();
+	/** @internal */ static $_rpcCounter = 0;
+	/** @internal */ static $_messageQueue = array();
 
-	/**
-	 * Broadcast to ALL connected WebSocket clients.
-	 */
-	static function broadcastAll($data)
-	{
-		self::_command(array('cmd' => 'broadcastAll', 'data' => $data));
-	}
-
-	/**
-	 * Subscribe a client to a room/channel.
-	 */
-	static function join($socketId, $room)
-	{
-		self::_command(array('cmd' => 'join', 'socketId' => $socketId, 'room' => $room));
-	}
-
-	/**
-	 * Unsubscribe a client from a room/channel.
-	 */
-	static function leave($socketId, $room)
-	{
-		self::_command(array('cmd' => 'leave', 'socketId' => $socketId, 'room' => $room));
-	}
-
-	/**
-	 * Buffer a command or execute directly in-process.
-	 */
-	private static function _command($cmd)
+	/** @internal */
+	static function _cmd($cmd)
 	{
 		if (self::$_directMode) {
 			Q_WebSocket::executeCommand($cmd);
@@ -570,10 +674,7 @@ class Q_Socket
 		}
 	}
 
-	/**
-	 * Flush buffered commands to the IPC pipe.
-	 * Called automatically after each handler invocation.
-	 */
+	/** @internal Flush buffered commands to IPC pipe */
 	static function flush()
 	{
 		if (!self::$_pipe || empty(self::$_buffer)) return;
@@ -584,6 +685,48 @@ class Q_Socket
 		@fwrite(self::$_pipe, $out);
 		self::$_buffer = array();
 	}
+}
+
+// ── Q_Room ──────────────────────────────────────────
+
+/**
+ * Room context. Passed to room handlers as $params['room'].
+ * Wraps IPC commands with room context for cleaner handler code.
+ *
+ *   function chat_room_message(&$params, &$result) {
+ *       extract($params); // $room, $event, $data
+ *       $room->broadcast(['event' => 'chat/message', 'data' => $data]);
+ *   }
+ *
+ * @class Q_Room
+ */
+class Q_Room
+{
+	/** @var string Room name (e.g. 'chat/general') */
+	public $name;
+	/** @var integer Socket ID of the current message sender (0 for lifecycle events without a sender) */
+	public $socketId;
+	/** @var array Pattern params (e.g. ['room' => 'general'] from 'chat/$room') */
+	public $params;
+
+	function __construct($name, $socketId = 0, $params = array())
+	{
+		$this->name = $name;
+		$this->socketId = $socketId;
+		$this->params = $params;
+	}
+
+	/** Get a room instance by name */
+	static function byName($name) { return new self($name); }
+
+	/** Send to all members in this room */
+	function broadcast($data) { Q_Socket::_cmd(array('cmd' => 'broadcast', 'room' => $this->name, 'data' => $data)); }
+
+	/** Send to the member who sent the current message */
+	function reply($data) { Q_Socket::_cmd(array('cmd' => 'send', 'socketId' => $this->socketId, 'data' => $data)); }
+
+	/** Send to a specific member by socket ID */
+	function send($socketId, $data) { Q_Socket::_cmd(array('cmd' => 'send', 'socketId' => $socketId, 'data' => $data)); }
 }
 
 // ── Q_Request ───────────────────────────────────────

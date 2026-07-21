@@ -88,8 +88,10 @@ php qbixserver.php --root=./web --port=8080
 - [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
 - [Features](#-features)
 - [Server Headers](#-server-headers--what-your-php-can-send)
-- [WebSocket — Real-Time PHP](#-websocket--real-time-php)
-- [Example: A Complete Chat App](#-example-a-complete-chat-app)
+- [HTTP — Fork Per Request](#-http--fork-per-request)
+- [WebSocket — Process Per Connection](#-websocket--process-per-connection)
+- [Rooms — Process Per Room](#-rooms--process-per-room)
+- [Complete Example: Chat App With Rooms](#-complete-example-chat-app-with-rooms)
 - [Clean URL Routing](#️-clean-url-routing-optional)
 - [For PHP Developers](#-for-php-developers--the-micro-framework)
 - [Configuration](#-configuration)
@@ -319,7 +321,7 @@ php qbixserver.php --port=8080  # done
 | **HTTP/2** | Via amphp — multiplexed streams, header compression, TLS (optional) |
 | **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
 | **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
-| **WebSocket** | RFC 6455 upgrade on any path |
+| **WebSocket** | Socket.IO v5 compatible + bare WebSocket. Server→client RPC. Client JS served at `/Q/socket.js` and `/socket.io/socket.io.js`. |
 | **Dashboard** | Live dashboard at `/Q/dashboard` — real-time request log, throughput sparkline, top paths, response times, memory, WebSocket connections, active rooms, status breakdown. Updates live via WebSocket. |
 | **Health check** | JSON at `/Q/health` — all stats for load balancers and monitoring. Also available at `/Q/stats` with full detail. |
 | **Control panel** | Password-protected at `/Q/panel` — manage apps and scripts |
@@ -531,67 +533,172 @@ update themselves without any manual invalidation calls.
 
 ---
 
-## 🔌 WebSocket — Real-Time PHP
+## 🌐 HTTP — Fork Per Request
 
-Each WebSocket connection gets **one PHP process** — forked from the preloaded
-parent, stays alive for the entire connection. The server dispatches each message
-to a handler via `Q::event()`. Static variables in handlers persist across
-messages. When the client disconnects, the process exits — all state wiped.
+Every PHP request forks from the preloaded parent, handles the request, and dies.
+No cleanup needed — the OS reclaims everything.
 
-Same mental model as HTTP handlers, same `handlers/` directory, same `Q::event()`.
-The only difference: the process lives longer.
+### Static files
 
-### Handlers
+Drop files in `web/`. They're served directly:
+
+```
+web/
+├── index.html        ← GET /index.html
+├── style.css         ← GET /style.css
+└── app.js            ← GET /app.js
+```
+
+### PHP scripts
+
+PHP files in `web/` execute as scripts — same as Apache or nginx + php-fpm:
 
 ```php
 <?php
-// handlers/chat/message.php
-function chat_message(&$params, &$result) {
-    // Static vars persist across messages (same process!)
-    // Wiped on disconnect (process dies)
-    static $messageCount = 0;
-    $messageCount++;
+// web/api/users.php — GET /api/users.php
+Q::header('Content-Type: application/json');
+$users = MyApp\Users::recent(20);
+echo json_encode($users);
+```
 
-    $text = $params['data']['text'];
-    $userId = $params['data']['userId'];
+### Clean URL handlers
 
-    MyApp\Chat::save($userId, $text);
+With [routing configured](#️-clean-url-routing-optional), handlers in `handlers/`
+map to clean URLs:
 
-    Q_Socket::broadcast('chat/main', [
-        'event' => 'chat/message',
-        'data'  => ['user' => $userId, 'text' => $text],
-    ]);
-
-    $result = ['count' => $messageCount];
+```php
+<?php
+// handlers/api/users/get.php — GET /api/users
+function api_users_get(&$params, &$result) {
+    Q::header('Content-Type: application/json');
+    echo json_encode(MyApp\Users::recent(20));
 }
 ```
+
+### What happens per request
+
+```
+Browser: GET /api/users
+  → Parent forks child process (COW — ~5MB delta)
+  → Child runs handler (classes already loaded)
+  → Child sends response and exits
+  → OS reclaims all memory
+```
+
+No memory leaks. No state from one request bleeding into the next.
+`exit()` only kills the child — the server keeps running.
+
+---
+
+## 🔌 WebSocket — Process Per Connection
+
+Each WebSocket connection gets **one PHP process**. It stays alive for the entire
+connection. Static variables persist across messages. When the client disconnects,
+the process dies — all state wiped.
+
+### How it works
+
+```
+Browser: connects to ws://localhost:8080/ws
+  → Parent forks a child process for this connection
+  → Every message the client sends goes to this child
+  → Child runs Q::event('chat/message', ...) for each message
+  → Static variables persist between messages (same process!)
+  → Client disconnects → child process exits
+  → OS reclaims all memory
+```
+
+### A simple counter
+
+```php
+<?php
+// handlers/counter/increment.php
+function counter_increment(&$params, &$result) {
+    static $count = 0;  // persists across messages from THIS client
+    $count++;
+    $result = ['count' => $count];
+}
+```
+
+```javascript
+// Client — standard socket.io-client
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:8080', {transports: ['websocket']});
+
+socket.emit('counter/increment', {}, (res) => {
+    console.log(res.count); // 1
+});
+socket.emit('counter/increment', {}, (res) => {
+    console.log(res.count); // 2 — same process, same static var
+});
+```
+
+### Authentication
+
+The per-connection process is the natural place for auth. Validate once,
+store in a static variable, use for every subsequent message:
+
+```php
+<?php
+// handlers/auth/login.php
+function auth_login(&$params, &$result) {
+    static $user = null;
+
+    if ($user) {
+        $result = ['error' => 'already authenticated'];
+        return;
+    }
+
+    $user = MyApp\Auth::validate($params['data']['token']);
+    if (!$user) {
+        $result = ['error' => 'invalid token'];
+        return;
+    }
+
+    $result = ['userId' => $user['id'], 'name' => $user['name']];
+}
+```
+
+### Joining rooms
+
+A per-connection handler decides when to join a room. This is your access control —
+the client can't join a room directly, only ask:
 
 ```php
 <?php
 // handlers/chat/join.php
 function chat_join(&$params, &$result) {
-    Q_Socket::join($params['_socketId'], $params['data']['room']);
-    $result = ['joined' => $params['data']['room']];
+    static $user = null;  // set by auth/login handler (shared static scope)
+    $socket = $params['socket']; // Q_Socket instance
+
+    $room = $params['data']['room'] ?? '';
+    if (!$room) return;
+
+    // Your access control logic
+    if (!MyApp\Rooms::canAccess($user, $room)) {
+        $result = ['error' => 'forbidden'];
+        return;
+    }
+
+    // Pass user info to the room — the room's join handler gets this in $params['data']
+    $socket->join("chat/$room", [
+        'userId' => $user['id'],
+        'name'   => $user['name'],
+    ]);
+    $result = ['joined' => $room];
 }
 ```
 
-```php
-<?php
-// handlers/auth/connect.php — authenticate on first message
-function auth_connect(&$params, &$result) {
-    $userId = MyApp\Auth::validate($params['data']['token']);
-    if (!$userId) {
-        Q_Socket::reply(['error' => 'invalid token']);
-        return;
-    }
-    Q_Socket::join($params['_socketId'], "user/$userId");
-    $result = ['authenticated' => true];
-}
-```
+The third argument to `$socket->join()` is forwarded to the room's `join`
+handler as `$params['data']`. This is how the per-connection handler (which did
+auth) passes identity to the room process (which doesn't know who anyone is).
+
+Leaving works the same way — call `$socket->leave()` from a handler, or it
+happens automatically on disconnect:
 
 ### Config
 
-Map event names to handlers. Also supports `_connect` and `_disconnect` lifecycle events:
+Map WebSocket event names to handler files:
 
 ```json
 {
@@ -599,10 +706,10 @@ Map event names to handlers. Also supports `_connect` and `_disconnect` lifecycl
         "webserver": {
             "sockets": {
                 "events": {
-                    "_connect": "auth/connect",
+                    "_connect":    "auth/login",
                     "_disconnect": "chat/leave",
-                    "chat/message": "chat/message",
-                    "chat/join": "chat/join",
+                    "chat/join":   "chat/join",
+                    "chat/message":"chat/message",
                     "chat/typing": "chat/typing"
                 }
             }
@@ -612,108 +719,315 @@ Map event names to handlers. Also supports `_connect` and `_disconnect` lifecycl
 ```
 
 If no mapping is configured, the event name is used directly as the handler path.
+`_connect` and `_disconnect` are lifecycle events fired automatically.
 
-### The JS client (qbix-socket.js)
+### The client
 
-```html
-<script src="/qbix-socket.js"></script>
-<script>
-var qs = new QSocket('ws://' + location.host + '/ws/chat');
+```javascript
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:8080', {transports: ['websocket']});
 
-qs.on('connect', function() {
-    qs.emit('auth/connect', {token: myToken}, function(ack) {
-        if (ack.authenticated) qs.emit('chat/join', {room: 'lobby'});
+socket.on('connect', () => {
+    socket.emit('auth/login', {token: myToken}, (res) => {
+        if (res.userId) {
+            socket.emit('chat/join', {room: 'general'});
+        }
     });
 });
 
-qs.on('chat/message', function(data) {
+socket.on('chat/message', (data) => {
     console.log(data.user + ': ' + data.text);
 });
 
-qs.emit('chat/message', {text: 'hello', userId: myId}, function(ack) {
-    console.log('Message #' + ack.count);
+socket.emit('chat/message', {text: 'hello'}, (res) => {
+    console.log('Saved as message #' + res.id);
+});
+```
+### Context objects
+
+Every handler receives context objects in `$params`. Use `extract($params)` to
+get clean variables:
+
+```php
+function chat_message(&$params, &$result) {
+    extract($params); // $socket, $event, $data
+    $socket->reply(['received' => true]);
+}
+```
+
+**Per-connection handlers** get `$socket` — a `Q_Socket` instance:
+
+| Method / Property | What it does |
+|---|---|
+| `$socket->id` | This socket's numeric ID |
+| `$socket->reply($data)` | Send to this client (fire and forget) |
+| `$socket->send($socketId, $data)` | Send to a specific client |
+| `$socket->broadcast($room, $data)` | Send to all clients in a room |
+| `$socket->broadcastAll($data)` | Send to ALL connected clients |
+| `$socket->join($room, $data)` | Join a room, forwarding `$data` to the room's join handler |
+| `$socket->leave($room, $data)` | Leave a room, forwarding `$data` to the room's leave handler |
+| `$socket->anyMethod($data)` | **RPC** — calls a method on the client, blocks until response (5s timeout) |
+
+**Room handlers** get `$room` — a `Q_Room` instance:
+
+| Method / Property | What it does |
+|---|---|
+| `$room->name` | Room name (e.g. `'chat/general'`) |
+| `$room->socketId` | Current sender's socket ID |
+| `$room->params` | Pattern params (e.g. `['room' => 'general']`) |
+| `$room->broadcast($data)` | Send to all members (fire and forget) |
+| `$room->reply($data)` | Send to the member who sent the current message |
+| `$room->send($socketId, $data)` | Send to a specific member |
+
+All send methods (`reply`, `broadcast`, `send`, `broadcastAll`) are **fire and
+forget** — they queue the message and return immediately. Only `__call` (RPC)
+blocks.
+
+### Protocol
+
+Two wire formats, auto-detected by path:
+
+**Socket.IO** (connect to `/socket.io/`) — full Socket.IO v5 wire protocol.
+The server bundles the client JS — no npm needed:
+
+```html
+<script src="/socket.io/socket.io.js"></script>
+<script>
+var socket = io('http://localhost:8080', {transports: ['websocket']});
+socket.emit('chat/message', {text: 'hello'});
+socket.on('chat/message', function(data) { console.log(data); });
+</script>
+```
+
+Or use the npm package:
+
+```javascript
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:8080', {transports: ['websocket']});
+```
+
+Acks work both directions. Server→client RPC uses native ack callbacks:
+
+```javascript
+socket.emit('game/score', {id: 42}, (response) => console.log(response.rank));
+socket.on('getLocation', (data, callback) => callback({lat: 40.7, lng: -74.0}));
+```
+
+Supported: events, acks (both directions), namespaces, ping/pong.
+Not supported: HTTP long-polling, binary attachments.
+
+**Bare WebSocket** (connect to any other path) — plain JSON, no framing.
+Works with any language's WebSocket library.
+
+The server serves a minimal client at `/Q/socket.js` (~100 lines, no
+dependencies). Drop it in a `<script>` tag:
+
+```html
+<script src="/Q/socket.js"></script>
+<script>
+var socket = new QSocket('/ws');
+
+socket.on('chat/message', function(data) {
+    console.log(data.text);
+});
+socket.emit('chat/message', {text: 'hello'}, function(res) {
+    console.log('sent, id=' + res.id);
+});
+
+// Server→client RPC
+socket.handle('getLocation', function() {
+    return {lat: 40.7, lng: -74.0};
 });
 </script>
 ```
 
-Auto-reconnects with exponential backoff. Ack callbacks for request-response.
-
-### Q_Socket API
-
-| Method | What it does |
-|---|---|
-| `Q_Socket::reply($data)` | Send to this connection's client |
-| `Q_Socket::send($socketId, $data)` | Send to a specific client |
-| `Q_Socket::broadcast($room, $data)` | Send to all clients in a room |
-| `Q_Socket::broadcastAll($data)` | Send to ALL connected clients |
-| `Q_Socket::join($socketId, $room)` | Subscribe a client to a room |
-| `Q_Socket::leave($socketId, $room)` | Unsubscribe from a room |
-
-### Protocol and callbacks
-
-Simple JSON over WebSocket — no Socket.IO, no custom framing:
-
-```
-Client → Server:  {"event": "chat/message", "data": {...}, "ack": 42}
-Server → Client:  {"ack": 42, "data": {...}}                (callback)
-Server → Client:  {"event": "chat/message", "data": {...}}   (broadcast)
-```
-
-The `ack` field triggers a callback. The PHP handler's `$result` is sent back
-as the callback response. All JSON-serializable types are preserved in both
-directions — strings, numbers, booleans, arrays, nested objects:
+Same API as `socket.io-client` — `on()`, `emit()`, `handle()`. Auto-reconnect
+with backoff. Or use raw `WebSocket` directly:
 
 ```javascript
-// JS: send with callback — receive structured response
-qs.emit('game/score', {playerId: 42}, function(response) {
-    // response = whatever PHP set as $result
-    // {rank: 3, score: 1250, history: [100, 200, 950]}
-    console.log('Rank:', response.rank);
-    console.log('History:', response.history); // array preserved
-});
+const ws = new WebSocket('ws://localhost:8080/ws');
+ws.send(JSON.stringify({event: 'chat/message', data: {text: 'hello'}}));
+ws.send(JSON.stringify({event: 'chat/message', data: {text: 'hi'}, ack: 1}));
 ```
+
+```python
+# Any language — just JSON over WebSocket
+import websocket, json
+ws = websocket.WebSocket()
+ws.connect("ws://localhost:8080/ws")
+ws.send(json.dumps({"event": "chat/message", "data": {"text": "hello"}}))
+```
+
+Handlers don't know which protocol the client is using — the server
+translates at the wire level. Same handlers, same rooms, same everything.
+
+### Namespaces
+
+Socket.IO namespaces map to handler path prefixes. The default namespace `/`
+maps to the root `handlers/` directory:
+
+```
+Namespace    Client emit              Handler path            Room "general"
+─────────   ────────────             ────────────            ──────────────
+/           emit('message', ...)     message                 general
+/chat       emit('message', ...)     chat/message            chat/general
+/admin      emit('auth', ...)        admin/auth              admin/general
+```
+
+```javascript
+// Client connects to namespaces
+const main = io('http://localhost:8080');          // default /
+const chat = io('http://localhost:8080/chat');     // /chat
+const admin = io('http://localhost:8080/admin');   // /admin
+
+chat.emit('message', {text: 'hello'});   // → handlers/chat/message.php
+admin.emit('auth', {token: '...'});      // → handlers/admin/auth.php
+```
+
+Namespace connect/disconnect handlers are optional. If you define one, it runs
+as access control. If you don't, the namespace auto-accepts:
 
 ```php
 <?php
-// PHP: handler sets $result — becomes the callback data
-function game_score(&$params, &$result) {
-    $id = $params['data']['playerId'];
-    $result = [
-        'rank'    => MyApp\Scores::getRank($id),
-        'score'   => MyApp\Scores::getTotal($id),
-        'history' => MyApp\Scores::getRecent($id, 10), // array of ints
-    ];
-    // $result is JSON-encoded and sent to the client's callback
+// handlers/admin/connect.php — optional, runs on namespace connect
+function MyApp_admin_connect(&$params, &$result) {
+    extract($params); // $socket, $data
+    if (!MyApp\Auth::isAdmin($data['token'] ?? '')) {
+        $result = ['error' => 'forbidden'];
+        return false; // reject namespace connection
+    }
 }
 ```
 
-No manual serialization needed. PHP arrays become JS arrays. PHP associative
-arrays become JS objects. Nested structures work naturally.
+### Server→Client RPC
 
-### Architecture
+PHP handlers can call methods on the client using `$socket->methodName()`.
+The call blocks until the client responds (5s timeout):
+
+```php
+<?php
+// handlers/location/check.php
+function MyApp_location_check(&$params, &$result) {
+    extract($params); // $socket, $event, $data
+
+    $location = $socket->getLocation();
+    $prefs = $socket->getPreferences(['keys' => ['theme', 'lang']]);
+
+    $result = [
+        'lat' => $location['lat'],
+        'theme' => $prefs['theme'],
+    ];
+}
+```
+
+Any method name that isn't `reply`, `send`, `broadcast`, `broadcastAll`,
+`join`, or `leave` goes through `__call` → IPC → WebSocket → client → response.
+
+**With `socket.io-client`** — server→client RPC uses native ack callbacks:
+
+```javascript
+const socket = io('http://localhost:8080', {transports: ['websocket']});
+
+socket.on('getLocation', (data, callback) => {
+    callback({lat: 40.7, lng: -74.0});
+});
+
+socket.on('getPreferences', (data, callback) => {
+    callback({theme: 'dark', lang: data.keys});
+});
+```
+
+**With `/Q/socket.js`** — use `handle()`:
+
+```javascript
+var socket = new QSocket('/ws');
+
+socket.handle('getLocation', function() {
+    return {lat: 40.7, lng: -74.0};
+});
+
+// Async handlers work too
+socket.handle('getPosition', async function() {
+    var pos = await new Promise(function(resolve) {
+        navigator.geolocation.getCurrentPosition(resolve);
+    });
+    return {lat: pos.coords.latitude, lng: pos.coords.longitude};
+});
+```
+
+**With bare WebSocket** — the client receives `{"event":"getLocation","data":{},"ack":7}`
+and responds with `{"ack":7,"data":{"lat":40.7}}`.
+
+### App namespacing
+
+When building an app, prefix your handler functions with your app name to
+avoid collisions. Set the app name in config:
+
+```json
+{
+    "Q": {
+        "app": "Chess"
+    }
+}
+```
 
 ```
-Browser ←─WebSocket─→ Parent (event loop)
-                           │
-               connect:    fork child, create IPC pipe
-               message:    parent writes to child's pipe
-                           child runs Q::event() handler
-                           child calls Q_Socket::broadcast()
-                           parent reads pipe, sends to sockets
-               disconnect: parent signals, child exits
+handlers/game/move.php    →  function Chess_game_move(&$params, &$result)
+handlers/chat/message.php →  function Chess_chat_message(&$params, &$result)
+handlers/connect.php      →  function Chess_connect(&$params, &$result)
 ```
 
-One process per connection. Each handler is a thin wrapper calling preloaded
-class methods — the per-connection COW delta is typically ~40-200KB (just
-static variables, call stack, and IPC buffer). The 30MB+ class base is shared.
-On an 8GB server, that's **40,000+ concurrent WebSocket users**. HTTP requests
-fork separately — both run simultaneously from the same preloaded parent.
+Handler file paths stay the same — the app prefix is only on the function name.
+Read it at runtime with `Q::app()`. Same for classes — use PHP namespaces:
 
-### Room processes — ephemeral shared state
+```php
+<?php
+// classes/Chess/Game.php
+namespace Chess;
+class Game { /* ... */ }
+```
 
-For use cases where multiple connections need shared in-memory state — game ticks,
-cursor aggregation, live vote tallies — configure a room process. One process per
-active room, lives as long as the room has members, dies when the last user leaves:
+If `Q.app` is not set, functions use no prefix: `game_move`, `chat_message`.
+Small standalone projects don't need it.
+
+### When to use per-connection
+
+Use per-connection processes for **user-specific state**: authentication,
+preferences, per-user rate limiting, message history, notification
+subscriptions. Each user's data lives in their own process and can never
+leak to another user.
+
+---
+
+## 🏠 Rooms — Process Per Room
+
+For use cases where multiple connections need **shared in-memory state** — chat
+messages, game positions, cursor aggregation, live vote tallies — use room
+processes.
+
+One process per active room. All members' messages go to the same process.
+State is shared across all of them. When the last member leaves, the process
+dies.
+
+### The lifecycle
+
+```
+1. Client A's handler calls $socket->join('chat/general', ['userId'=>1, 'name'=>'Alice'])
+2. Parent sees 'chat/general' matches pattern 'chat/$room'
+3. Parent forks a room process → init handler fires
+4. Parent sends _join to room → join handler fires (with socketId + data)
+5. Client B joins the same room → join fires again (no new fork)
+6. Both clients' messages are forwarded to the room process
+7. Client A disconnects → leave fires (data is empty — unplanned disconnect)
+8. Client B disconnects → leave fires → room is empty
+9. destroy fires → room process exits
+```
+
+The client never talks to the room process directly. Per-connection handlers
+call `$socket->join()` — that's the gateway. Access control lives there.
+User identity flows through the third argument.
+
+### Config
 
 ```json
 {
@@ -721,8 +1035,9 @@ active room, lives as long as the room has members, dies when the last user leav
         "webserver": {
             "sockets": {
                 "rooms": {
-                    "game/$id": {"handler": "game/room", "tick": 100},
-                    "collab/$id": {"handler": "collab/room"}
+                    "chat/$room":  {"handler": "chat/room"},
+                    "game/$id":    {"handler": "game/room", "tick": 100},
+                    "collab/$doc": {"handler": "collab/room", "tick": 50}
                 }
             }
         }
@@ -730,77 +1045,228 @@ active room, lives as long as the room has members, dies when the last user leav
 }
 ```
 
+The pattern uses `$name` placeholders — `chat/$room` matches `chat/general`,
+`chat/dev`, etc. The `tick` option (in ms) fires `tick` events on a timer,
+even when no messages arrive.
+
+The `handler` value is a path prefix. Each event dispatches to its own handler
+file under that prefix — just like HTTP handlers:
+
+```
+"chat/$room": {"handler": "chat/room"}
+
+handlers/chat/room/
+├── init.php          ← room created (first user joins)
+├── join.php          ← user enters
+├── leave.php         ← user exits or disconnects
+├── tick.php          ← timer fired (if configured)
+├── destroy.php       ← room shutting down (last user left)
+├── message.php       ← "message" event from a member
+└── typing.php        ← "typing" event from a member
+```
+
+Same pattern as HTTP: one file per event, function name matches the path.
+
+### Room events
+
+| Event | Handler file | `$params` has |
+|---|---|---|
+| `_init` | `handler/init.php` | `room`, `event`, `data` |
+| `_join` | `handler/join.php` | `room`, `event`, `data` (from `$socket->join()`) |
+| `_leave` | `handler/leave.php` | `room`, `event`, `data` (from `$socket->leave()`, or empty on disconnect) |
+| `_tick` | `handler/tick.php` | `room`, `event`, `data` |
+| `_destroy` | `handler/destroy.php` | `room`, `event`, `data` |
+| *user event* | `handler/eventname.php` | `room`, `event`, `data` |
+
+### Example: chat room handlers
+
 ```php
 <?php
-// handlers/game/room.php — one process per room
-function game_room(&$params, &$result) {
-    static $players = [];
-    static $tick = 0;
+// handlers/chat/room/join.php
+function chat_room_join(&$params, &$result) {
+    $room   = $params['room']; // Q_Room instance
+    $sid    = $room->socketId;
+    $userId = $params['data']['userId'] ?? null;
+    $name   = $params['data']['name'] ?? 'anon';
 
-    switch ($params['event']) {
-        case '_init':
-            // Room just created
-            break;
+    ChatRoom::$names[$sid] = $name;
 
-        case '_join':
-            $players[$params['_socketId']] = ['x' => 0, 'y' => 0, 'hp' => 100];
-            Q_Socket::send($params['_socketId'], [
-                'event' => 'game/state',
-                'data'  => ['players' => $players],
-            ]);
-            break;
+    // Track multiple sockets per user (tabs, devices)
+    $isNew = true;
+    if ($userId) {
+        if (!isset(ChatRoom::$users[$userId])) ChatRoom::$users[$userId] = [];
+        $isNew = empty(ChatRoom::$users[$userId]);
+        ChatRoom::$users[$userId][$sid] = true;
+    }
 
-        case 'player/move':
-            $sid = $params['_socketId'];
-            $players[$sid]['x'] = $params['data']['x'];
-            $players[$sid]['y'] = $params['data']['y'];
-            $result = ['moved' => true];  // ack callback to sender
-            break;
+    // Send history to the new socket
+    $room->reply([
+        'event' => 'chat/history',
+        'data'  => ['messages' => ChatRoom::$history],
+    ]);
 
-        case '_tick':
-            // Called every 100ms (configured above)
-            $tick++;
-            Q_Socket::broadcast($params['_room'], [
-                'event' => 'game/state',
-                'data'  => ['players' => $players, 'tick' => $tick],
-            ]);
-            break;
-
-        case '_leave':
-            unset($players[$params['_socketId']]);
-            Q_Socket::broadcast($params['_room'], [
-                'event' => 'game/left',
-                'data'  => ['socketId' => $params['_socketId']],
-            ]);
-            break;
-
-        case '_destroy':
-            // Room shutting down — last player left
-            break;
+    if ($isNew) {
+        $room->broadcast([
+            'event' => 'chat/joined',
+            'data'  => ['name' => $name],
+        ]);
     }
 }
 ```
 
-Room lifecycle events: `_init` (room created), `_join` (user enters), `_leave`
-(user exits), `_tick` (timer fires), `_destroy` (room shutting down).
+```php
+<?php
+// handlers/chat/room/message.php
+function chat_room_message(&$params, &$result) {
+    $room = $params['room'];
+    $name = ChatRoom::$names[$room->socketId] ?? 'anon';
+    $text = $params['data']['text'] ?? '';
+    if (!$text) return;
 
-The room process uses the same handler pattern — static variables are your state.
-`$players` persists across all messages from all users in the room. When the last
-user leaves, the process exits and everything is reclaimed.
+    $msg = ['name' => $name, 'text' => $text, 'time' => date('c')];
+    ChatRoom::$history[] = $msg;
+    if (count(ChatRoom::$history) > 50) array_shift(ChatRoom::$history);
 
+    $room->broadcast([
+        'event' => 'chat/message',
+        'data'  => $msg,
+    ]);
+    $result = ['sent' => true];
+}
 ```
-Per-connection process:   User state — auth, preferences, message history
-Room process:             Shared state — positions, scores, cursors, votes
-Both use:                 Same handlers/, same Q_Socket API, same static vars
+
+```php
+<?php
+// handlers/chat/room/leave.php
+function chat_room_leave(&$params, &$result) {
+    $room = $params['room'];
+    $sid  = $room->socketId;
+    $name = ChatRoom::$names[$sid] ?? 'anon';
+    unset(ChatRoom::$names[$sid]);
+
+    $reallyGone = true;
+    foreach (ChatRoom::$users as $uid => &$sockets) {
+        if (isset($sockets[$sid])) {
+            unset($sockets[$sid]);
+            if (!empty($sockets)) $reallyGone = false;
+            else unset(ChatRoom::$users[$uid]);
+            break;
+        }
+    }
+    if ($reallyGone) {
+        $room->broadcast([
+            'event' => 'chat/left',
+            'data'  => ['name' => $name],
+        ]);
+    }
+}
 ```
+
+```php
+<?php
+// classes/ChatRoom.php — static properties for room state
+// Preloaded into the parent process, shared via COW.
+// Each room process gets its own copy-on-write fork —
+// static properties start fresh and accumulate room-specific state.
+// When the room process dies, everything is reclaimed. No cleanup needed.
+class ChatRoom
+{
+    static $users = [];    // userId => [socketId => true, ...]
+    static $names = [];    // socketId => name
+    static $history = [];  // recent messages
+}
+```
+
+Why class statics instead of `static` variables inside functions? Because each
+handler is now a separate file. A `static $users` in `join.php` wouldn't be
+visible in `leave.php`. Class statics (or globals) are shared across all
+handlers in the same room process.
+
+Copy-on-write handles the rest: the parent's `ChatRoom::$users` starts as `[]`.
+When a room process forks and writes to it, only that room's pages are copied.
+When the room dies, the OS reclaims everything. No `unset()`, no destructors,
+no cleanup.
+
+### Example: game with tick timer
+
+```php
+<?php
+// handlers/game/room/join.php
+function game_room_join(&$params, &$result) {
+    $room = $params['room'];
+    GameRoom::$players[$room->socketId] = [
+        'x' => 0, 'y' => 0, 'hp' => 100,
+    ];
+    $room->reply([
+        'event' => 'game/state',
+        'data'  => ['players' => GameRoom::$players],
+    ]);
+}
+```
+
+```php
+<?php
+// handlers/game/room/move.php — client sends "move" event
+function game_room_move(&$params, &$result) {
+    $room = $params['room'];
+    GameRoom::$players[$room->socketId]['x'] = $params['data']['x'];
+    GameRoom::$players[$room->socketId]['y'] = $params['data']['y'];
+    $result = ['ok' => true];
+}
+```
+
+```php
+<?php
+// handlers/game/room/tick.php — called every 100ms
+function game_room_tick(&$params, &$result) {
+    $room = $params['room'];
+    GameRoom::$tick++;
+    $room->broadcast([
+        'event' => 'game/state',
+        'data'  => ['players' => GameRoom::$players, 'tick' => GameRoom::$tick],
+    ]);
+}
+```
+
+```php
+<?php
+// handlers/game/room/leave.php
+function game_room_leave(&$params, &$result) {
+    unset(GameRoom::$players[$params['room']->socketId]);
+}
+```
+
+```php
+<?php
+// classes/GameRoom.php
+class GameRoom
+{
+    static $players = [];
+    static $tick = 0;
+}
+```
+
+### Per-connection vs rooms
+
+Both use the same handler pattern, same `Q_Socket` API, same directory structure.
+
+| Use case | Model | Why |
+|---|---|---|
+| Auth, user prefs | Per-connection | Private to each user |
+| Chat messages | Room | All members see all messages |
+| Game state | Room + tick | Shared positions, periodic broadcast |
+| Typing indicators | Either | Stateless — just relay |
+| Notifications | Per-connection | User-specific subscriptions |
+| Collaborative editing | Room + tick | Shared document state |
+| Live voting/polling | Room | Shared tally, instant broadcast |
 
 ---
 
-## 📖 Example: A Complete Chat App
+## 📖 Complete Example: Chat App With Rooms
 
-Everything below fits in one small project. HTTP handles pages and REST.
-WebSocket handles real-time messaging. Both use the same `classes/` and
-`handlers/` directories.
+All three models in one project. HTTP handles pages and login.
+Per-connection WebSocket handles auth and room joining. Room processes
+handle the actual chat.
 
 ### Project structure
 
@@ -811,23 +1277,27 @@ chat/
 │   └── server.json
 ├── web/
 │   ├── index.html              ← static: the chat UI
-│   ├── qbix-socket.js          ← static: WebSocket client
-│   ├── api/
-│   │   ├── messages.php        ← HTTP: GET recent messages
-│   │   └── login.php           ← HTTP: POST authenticate, return token
-│   └── style.css
+│   └── api/
+│   └── api/
+│       ├── messages.php        ← HTTP: GET recent messages from DB
+│       └── login.php           ← HTTP: POST authenticate, return token
 ├── classes/
-│   └── Chat/
-│       ├── Auth.php            ← shared: token validation
-│       ├── Messages.php        ← shared: DB read/write
-│       └── Rooms.php           ← shared: room membership
+│   ├── Chat/
+│   │   ├── Auth.php            ← shared: token validation
+│   │   └── Messages.php        ← shared: DB read/write
+│   └── ChatRoom.php            ← room state: static properties
 └── handlers/
-    └── chat/
-        ├── connect.php         ← socket: authenticate on connect
-        ├── disconnect.php      ← socket: set user offline
-        ├── message.php         ← socket: broadcast a message
-        ├── join.php            ← socket: join a room
-        └── typing.php          ← socket: broadcast typing indicator
+    ├── auth/
+    │   └── login.php           ← per-connection: authenticate
+    ├── chat/
+    │   ├── join.php            ← per-connection: access control + join room
+    │   └── room/
+    │       ├── join.php        ← room: new member arrived
+    │       ├── message.php     ← room: broadcast a message
+    │       ├── typing.php      ← room: relay typing indicator
+    │       └── leave.php       ← room: member left
+    └── user/
+        └── disconnect.php      ← per-connection: cleanup
 ```
 
 ### Config
@@ -836,16 +1306,14 @@ chat/
 {
     "Q": {
         "webserver": {
-            "preload": {
-                "classes": ["Chat\\Auth", "Chat\\Messages", "Chat\\Rooms"]
-            },
             "sockets": {
                 "events": {
-                    "_connect":    "chat/connect",
-                    "_disconnect": "chat/disconnect",
-                    "chat/message":"chat/message",
-                    "chat/join":   "chat/join",
-                    "chat/typing": "chat/typing"
+                    "_connect":    "auth/login",
+                    "_disconnect": "user/disconnect",
+                    "chat/join":   "chat/join"
+                },
+                "rooms": {
+                    "chat/$room": {"handler": "chat/room"}
                 }
             }
         }
@@ -853,147 +1321,180 @@ chat/
 }
 ```
 
-### HTTP scripts — pages and REST
+Note: `message`, `typing` are NOT in the events map. Once a user joins a room,
+their messages are forwarded directly to the room process and dispatched as
+`chat/room/message`, `chat/room/typing`, etc.
+
+### Per-connection handlers
 
 ```php
 <?php
-// web/api/login.php — authenticate, return a token
-$email    = $_POST['email'] ?? '';
-$password = $_POST['password'] ?? '';
-
-$user = Chat\Auth::login($email, $password);
-if (!$user) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Invalid credentials']);
-    exit;
-}
-
-Q::header('Content-Type: application/json');
-echo json_encode([
-    'token'  => Chat\Auth::createToken($user['id']),
-    'userId' => $user['id'],
-    'name'   => $user['name'],
-]);
-```
-
-```php
-<?php
-// web/api/messages.php — recent messages (REST)
-$room  = $_GET['room'] ?? 'general';
-$limit = min((int)($_GET['limit'] ?? 50), 200);
-
-Q::header('Content-Type: application/json');
-Q::header('Cache-Control: public, max-age=5');
-echo json_encode(Chat\Messages::recent($room, $limit));
-```
-
-Simple PHP scripts. `Chat\Auth` and `Chat\Messages` are autoloaded from `classes/`.
-Preloaded into memory — zero autoloader cost per request.
-
-### WebSocket handlers — real-time events
-
-```php
-<?php
-// handlers/chat/connect.php — runs when WebSocket connects
-function chat_connect(&$params, &$result) {
-    // _connect fires automatically — authenticate via token
-    // (called from client's first emit after connect)
-}
-```
-
-```php
-<?php
-// handlers/chat/message.php — runs on each "chat/message" event
-function chat_message(&$params, &$result) {
-    static $userId = null;   // persists across messages
-    static $userName = null; // same process = same state
-
-    // First message includes auth token
-    if (!$userId) {
-        $token = $params['data']['token'] ?? '';
-        $user = Chat\Auth::validateToken($token);
-        if (!$user) {
-            Q_Socket::reply(['error' => 'not authenticated']);
-            return;
-        }
-        $userId = $user['id'];
-        $userName = $user['name'];
+// handlers/auth/login.php — authenticate on connect
+function auth_login(&$params, &$result) {
+    $token = $params['data']['token'] ?? '';
+    $user = Chat\Auth::validateToken($token);
+    if (!$user) {
+        $result = ['error' => 'invalid token'];
+        return;
     }
-
-    $text = $params['data']['text'] ?? '';
-    if (!$text) return;
-
-    // Save to database
-    $id = Chat\Messages::save($userId, $params['data']['room'] ?? 'general', $text);
-
-    // Broadcast to everyone in the room
-    Q_Socket::broadcast($params['data']['room'] ?? 'general', [
-        'event' => 'chat/message',
-        'data'  => [
-            'id'   => $id,
-            'user' => $userName,
-            'text' => $text,
-            'time' => date('c'),
-        ],
-    ]);
-
-    $result = ['id' => $id]; // ack back to sender
+    // Store for later use by chat/join (same process, shared globals)
+    $GLOBALS['user'] = $user;
+    $result = ['userId' => $user['id'], 'name' => $user['name']];
 }
 ```
 
 ```php
 <?php
-// handlers/chat/join.php
+// handlers/chat/join.php — access control, then join room
 function chat_join(&$params, &$result) {
+    $socket = $params['socket']; // Q_Socket instance
+    $user = $GLOBALS['user'] ?? null;
+    if (!$user) {
+        $result = ['error' => 'not authenticated'];
+        return;
+    }
     $room = $params['data']['room'] ?? 'general';
-    Q_Socket::join($params['_socketId'], $room);
+
+    // Pass user identity to the room process
+    $socket->join("chat/$room", [
+        'userId' => $user['id'],
+        'name'   => $user['name'],
+    ]);
     $result = ['joined' => $room];
 }
 ```
 
+### Room handlers
+
 ```php
 <?php
-// handlers/chat/typing.php — lightweight, no DB
-function chat_typing(&$params, &$result) {
-    Q_Socket::broadcast($params['data']['room'] ?? 'general', [
-        'event' => 'chat/typing',
-        'data'  => ['user' => $params['data']['user']],
+// handlers/chat/room/join.php
+function chat_room_join(&$params, &$result) {
+    $room   = $params['room']; // Q_Room instance
+    $sid    = $room->socketId;
+    $userId = $params['data']['userId'] ?? null;
+    $name   = $params['data']['name'] ?? 'anon';
+    ChatRoom::$names[$sid] = $name;
+
+    $isNew = true;
+    if ($userId) {
+        if (!isset(ChatRoom::$users[$userId])) ChatRoom::$users[$userId] = [];
+        $isNew = empty(ChatRoom::$users[$userId]);
+        ChatRoom::$users[$userId][$sid] = true;
+    }
+
+    $room->reply([
+        'event' => 'chat/history',
+        'data'  => ['messages' => ChatRoom::$history],
     ]);
+    if ($isNew) {
+        $room->broadcast([
+            'event' => 'chat/joined',
+            'data'  => ['name' => $name],
+        ]);
+    }
 }
 ```
 
 ```php
 <?php
-// handlers/chat/disconnect.php — cleanup on WebSocket close
-function chat_disconnect(&$params, &$result) {
-    // Process is about to die — do any cleanup
-    // e.g. set user offline, leave all rooms
+// handlers/chat/room/message.php
+function chat_room_message(&$params, &$result) {
+    $room = $params['room'];
+    $name = ChatRoom::$names[$room->socketId] ?? 'anon';
+    $text = $params['data']['text'] ?? '';
+    if (!$text) return;
+
+    $msg = ['name' => $name, 'text' => $text, 'time' => date('c')];
+    ChatRoom::$history[] = $msg;
+    if (count(ChatRoom::$history) > 50) array_shift(ChatRoom::$history);
+
+    Chat\Messages::save($name, $text, $room->name);
+
+    $room->broadcast([
+        'event' => 'chat/message',
+        'data'  => $msg,
+    ]);
+    $result = ['sent' => true];
 }
 ```
 
-### The symmetry
+```php
+<?php
+// handlers/chat/room/leave.php
+function chat_room_leave(&$params, &$result) {
+    $room = $params['room'];
+    $sid  = $room->socketId;
+    $name = ChatRoom::$names[$sid] ?? 'anon';
+    unset(ChatRoom::$names[$sid]);
+
+    $reallyGone = true;
+    foreach (ChatRoom::$users as $uid => &$sockets) {
+        if (isset($sockets[$sid])) {
+            unset($sockets[$sid]);
+            if (!empty($sockets)) $reallyGone = false;
+            else unset(ChatRoom::$users[$uid]);
+            break;
+        }
+    }
+    if ($reallyGone) {
+        $room->broadcast([
+            'event' => 'chat/left',
+            'data'  => ['name' => $name],
+        ]);
+    }
+}
+```
+
+### The client
+
+```javascript
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:8080', {transports: ['websocket']});
+
+socket.on('connect', () => {
+    socket.emit('auth/login', {token: myToken}, (res) => {
+        if (res.userId) socket.emit('chat/join', {room: 'general'});
+    });
+});
+
+socket.on('chat/history', (data) => {
+    data.messages.forEach(renderMessage);
+});
+socket.on('chat/message', (data) => {
+    renderMessage(data);
+});
+socket.on('chat/joined', (data) => {
+    showNotice(data.name + ' joined');
+});
+socket.on('chat/left', (data) => {
+    showNotice(data.name + ' left');
+});
+
+document.getElementById('send').onclick = () => {
+    socket.emit('message', {text: input.value});
+};
+```
+
+### The three models in action
 
 ```
-HTTP request:     browser → GET /api/messages.php → fork → run → respond → die
-WebSocket event:  browser → {"event":"chat/message"} → same process → handler → persist
-
-Both use:
-  classes/Chat/Auth.php         ← autoloaded, preloaded
-  classes/Chat/Messages.php     ← autoloaded, preloaded
-  handlers/chat/message.php     ← loaded on first use
-
-HTTP scripts live in:    web/          (direct execution)
-Socket handlers live in: handlers/     (inverted control — server calls you)
-Shared code lives in:    classes/      (used by both)
+HTTP:           GET /api/messages   → fork → query DB → respond → die
+Per-connection: auth/login          → validate token → store in $GLOBALS
+                chat/join           → check access → $socket->join() with user data
+Room:           chat/room/join      → ChatRoom::$users, $names, $history
+                chat/room/message   → broadcast to all, persist to DB
+                chat/room/leave     → multi-tab aware departure
 ```
 
 ### Run it
 
 ```bash
-php qbixserver.php --root=./web --port=8080 --workers=4
+php qbixserver.php --root=./web --port=8080
 ```
 
-One command. Static files, REST API, and WebSocket chat — all from one PHP server.
+One command. Static files, REST API, authentication, access-controlled rooms,
+multi-tab awareness, and shared real-time chat — all from one PHP server.
 
 ---
 
@@ -1600,6 +2101,9 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `rateLimit.enabled` | false | Enable per-IP rate limiting |
 | `rateLimit.requests` | 100 | Requests per window |
 | `rateLimit.window` | 60 | Window in seconds |
+| `socket.io` | `"/socket.io"` | Socket.IO endpoint. Protocol detection + client JS at `{path}/socket.io.js`. `false` to disable. |
+| `socket.js` | `"/Q/socket.js"` | Path to serve the minimal bare-WebSocket client (3KB). `false` to disable. |
+| `app` | `""` | App name — prefixes handler function names (e.g. `"Chess"` → `Chess_chat_message()`) |
 | `webserver.fallback` | null | Catch-all: `"index.html"`, `{"handler":"app/notfound"}`, or `{"file":"404.html"}` |
 | `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
 | `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
@@ -2041,10 +2545,10 @@ the full 10x performance advantage, use Linux or macOS (or WSL).
 **Coming next:**
 
 - **Virtual hosts** — `Q.web.hosts.$hostname` config overrides for multi-domain serving
-- **Room processes** — ephemeral per-room coordinators for shared state (game ticks, cursor aggregation, live vote tallies) alongside per-connection processes
 - **Hot reload** — watch `classes/`, `handlers/`, `config/` for changes, auto-restart workers
 - **Scheduler** — cron-like timed events from config, executed by the event loop
 - **Request timeout** — kill workers that exceed N seconds
+- **Server-initiated ping** — parent sends Engine.IO pings on a timer (currently only responds to client pings)
 
 ---
 
@@ -2070,14 +2574,14 @@ Does this data matter after disconnect?
 
 Does anyone else need to see it?
   No  → just update your static var
-  Yes → Q_Socket::broadcast()
+  Yes → $room->broadcast()
 ```
 
 Ephemeral state lives in RAM — static variables in the per-connection process.
 It's fast (no I/O), isolated (per-user process boundary), and self-cleaning
 (process dies on disconnect, OS reclaims everything). When you need durability,
 call your preloaded classes to write to a database. When you need to notify
-others, call `Q_Socket::broadcast()`.
+others, call `$room->broadcast()`.
 
 The same `handlers/` directory serves HTTP requests, WebSocket messages, and
 routed clean URLs. The same `classes/` directory is preloaded and shared across
@@ -2087,7 +2591,8 @@ all of them. One server, one codebase, one mental model.
 Static files:    GET /style.css            → web/style.css
 PHP scripts:     GET /page.php             → web/page.php
 Routed:          GET /api/users            → handlers/api/users/get.php
-WebSocket:       {"event":"chat/message"}  → handlers/chat/message.php
+Socket.IO:       42["chat/message",{...}]  → handlers/chat/message.php
+Bare WebSocket:  {"event":"chat/message"}  → handlers/chat/message.php
 Legacy:          GET /wp-admin/post.php    → php-cgi (full compatibility)
 ```
 
