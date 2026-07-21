@@ -29,7 +29,7 @@ Same hardware. Same PHP code. **10x more users served.**
 | 👥 **Concurrent PHP** (8GB) | ~160 workers | **~1,600 workers** |
 | 🔒 **Access-controlled files** | Public URLs or hacky rewrites | `X-Accel-Redirect` — PHP checks access, server streams the file |
 | 🧩 **Cache invalidation** | Whole-page only (purge everything) | `X-Cache-Tree` — invalidate one component, keep the rest cached |
-| 🌐 **WebSocket** | Needs a separate server | Built in |
+| 🌐 **WebSocket** | Needs a separate server | Built in — 40K+ concurrent connections per server |
 | ⚙️ **Setup** | Install nginx, configure proxy_pass, php-fpm pool, sockets... | `php qbixserver.php --port=8080` |
 
 Static file throughput is 55–73% of nginx (C will always beat PHP on raw I/O).  
@@ -50,6 +50,9 @@ dramatically faster and more scalable.
 - [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
 - [Features](#-features)
 - [Server Headers](#-server-headers--what-your-php-can-send)
+- [WebSocket — Real-Time PHP](#-websocket--real-time-php)
+- [Example: A Complete Chat App](#-example-a-complete-chat-app)
+- [Clean URL Routing](#️-clean-url-routing-optional)
 - [For PHP Developers](#-for-php-developers--the-micro-framework)
 - [Configuration](#-configuration)
 - [Three Ways to Run](#-three-ways-to-run)
@@ -83,7 +86,7 @@ Open [http://localhost:8080](http://localhost:8080). That's it.
 # Or serve an existing directory
 php qbixserver.php --root=/var/www/mysite --port=80
 
-# Or use the PHAR (single file, 196KB)
+# Or use the PHAR (single file, ~250KB)
 php bin/qbixserver.phar --root=./public --port=8080
 ```
 
@@ -463,6 +466,468 @@ update themselves without any manual invalidation calls.
 
 ---
 
+## 🔌 WebSocket — Real-Time PHP
+
+Each WebSocket connection gets **one PHP process** — forked from the preloaded
+parent, stays alive for the entire connection. The server dispatches each message
+to a handler via `Q::event()`. Static variables in handlers persist across
+messages. When the client disconnects, the process exits — all state wiped.
+
+Same mental model as HTTP handlers, same `handlers/` directory, same `Q::event()`.
+The only difference: the process lives longer.
+
+### Handlers
+
+```php
+<?php
+// handlers/chat/message.php
+function chat_message(&$params, &$result) {
+    // Static vars persist across messages (same process!)
+    // Wiped on disconnect (process dies)
+    static $messageCount = 0;
+    $messageCount++;
+
+    $text = $params['data']['text'];
+    $userId = $params['data']['userId'];
+
+    MyApp\Chat::save($userId, $text);
+
+    Q_Socket::broadcast('chat/main', [
+        'event' => 'chat/message',
+        'data'  => ['user' => $userId, 'text' => $text],
+    ]);
+
+    $result = ['count' => $messageCount];
+}
+```
+
+```php
+<?php
+// handlers/chat/join.php
+function chat_join(&$params, &$result) {
+    Q_Socket::join($params['_socketId'], $params['data']['room']);
+    $result = ['joined' => $params['data']['room']];
+}
+```
+
+```php
+<?php
+// handlers/auth/connect.php — authenticate on first message
+function auth_connect(&$params, &$result) {
+    $userId = MyApp\Auth::validate($params['data']['token']);
+    if (!$userId) {
+        Q_Socket::reply(['error' => 'invalid token']);
+        return;
+    }
+    Q_Socket::join($params['_socketId'], "user/$userId");
+    $result = ['authenticated' => true];
+}
+```
+
+### Config
+
+Map event names to handlers. Also supports `_connect` and `_disconnect` lifecycle events:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "sockets": {
+                "events": {
+                    "_connect": "auth/connect",
+                    "_disconnect": "chat/leave",
+                    "chat/message": "chat/message",
+                    "chat/join": "chat/join",
+                    "chat/typing": "chat/typing"
+                }
+            }
+        }
+    }
+}
+```
+
+If no mapping is configured, the event name is used directly as the handler path.
+
+### The JS client (qbix-socket.js)
+
+```html
+<script src="/qbix-socket.js"></script>
+<script>
+var qs = new QSocket('ws://' + location.host + '/ws/chat');
+
+qs.on('connect', function() {
+    qs.emit('auth/connect', {token: myToken}, function(ack) {
+        if (ack.authenticated) qs.emit('chat/join', {room: 'lobby'});
+    });
+});
+
+qs.on('chat/message', function(data) {
+    console.log(data.user + ': ' + data.text);
+});
+
+qs.emit('chat/message', {text: 'hello', userId: myId}, function(ack) {
+    console.log('Message #' + ack.count);
+});
+</script>
+```
+
+Auto-reconnects with exponential backoff. Ack callbacks for request-response.
+
+### Q_Socket API
+
+| Method | What it does |
+|---|---|
+| `Q_Socket::reply($data)` | Send to this connection's client |
+| `Q_Socket::send($socketId, $data)` | Send to a specific client |
+| `Q_Socket::broadcast($room, $data)` | Send to all clients in a room |
+| `Q_Socket::broadcastAll($data)` | Send to ALL connected clients |
+| `Q_Socket::join($socketId, $room)` | Subscribe a client to a room |
+| `Q_Socket::leave($socketId, $room)` | Unsubscribe from a room |
+
+### Protocol
+
+```
+Client → Server:  {"event": "chat/message", "data": {...}, "ack": 42}
+Server → Client:  {"ack": 42, "data": {...}}                (callback)
+Server → Client:  {"event": "chat/message", "data": {...}}   (broadcast)
+```
+
+### Architecture
+
+```
+Browser ←─WebSocket─→ Parent (event loop)
+                           │
+               connect:    fork child, create IPC pipe
+               message:    parent writes to child's pipe
+                           child runs Q::event() handler
+                           child calls Q_Socket::broadcast()
+                           parent reads pipe, sends to sockets
+               disconnect: parent signals, child exits
+```
+
+One process per connection. Each handler is a thin wrapper calling preloaded
+class methods — the per-connection COW delta is typically ~40-200KB (just
+static variables, call stack, and IPC buffer). The 30MB+ class base is shared.
+On an 8GB server, that's **40,000+ concurrent WebSocket users**. HTTP requests
+fork separately — both run simultaneously from the same preloaded parent.
+
+---
+
+## 📖 Example: A Complete Chat App
+
+Everything below fits in one small project. HTTP handles pages and REST.
+WebSocket handles real-time messaging. Both use the same `classes/` and
+`handlers/` directories.
+
+### Project structure
+
+```
+chat/
+├── qbixserver.php
+├── config/
+│   └── server.json
+├── web/
+│   ├── index.html              ← static: the chat UI
+│   ├── qbix-socket.js          ← static: WebSocket client
+│   ├── api/
+│   │   ├── messages.php        ← HTTP: GET recent messages
+│   │   └── login.php           ← HTTP: POST authenticate, return token
+│   └── style.css
+├── classes/
+│   └── Chat/
+│       ├── Auth.php            ← shared: token validation
+│       ├── Messages.php        ← shared: DB read/write
+│       └── Rooms.php           ← shared: room membership
+└── handlers/
+    └── chat/
+        ├── connect.php         ← socket: authenticate on connect
+        ├── disconnect.php      ← socket: set user offline
+        ├── message.php         ← socket: broadcast a message
+        ├── join.php            ← socket: join a room
+        └── typing.php          ← socket: broadcast typing indicator
+```
+
+### Config
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "preload": {
+                "classes": ["Chat\\Auth", "Chat\\Messages", "Chat\\Rooms"]
+            },
+            "sockets": {
+                "events": {
+                    "_connect":    "chat/connect",
+                    "_disconnect": "chat/disconnect",
+                    "chat/message":"chat/message",
+                    "chat/join":   "chat/join",
+                    "chat/typing": "chat/typing"
+                }
+            }
+        }
+    }
+}
+```
+
+### HTTP scripts — pages and REST
+
+```php
+<?php
+// web/api/login.php — authenticate, return a token
+$email    = $_POST['email'] ?? '';
+$password = $_POST['password'] ?? '';
+
+$user = Chat\Auth::login($email, $password);
+if (!$user) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Invalid credentials']);
+    exit;
+}
+
+header('Content-Type: application/json');
+echo json_encode([
+    'token'  => Chat\Auth::createToken($user['id']),
+    'userId' => $user['id'],
+    'name'   => $user['name'],
+]);
+```
+
+```php
+<?php
+// web/api/messages.php — recent messages (REST)
+$room  = $_GET['room'] ?? 'general';
+$limit = min((int)($_GET['limit'] ?? 50), 200);
+
+header('Content-Type: application/json');
+header('Cache-Control: public, max-age=5');
+echo json_encode(Chat\Messages::recent($room, $limit));
+```
+
+Simple PHP scripts. `Chat\Auth` and `Chat\Messages` are autoloaded from `classes/`.
+Preloaded into memory — zero autoloader cost per request.
+
+### WebSocket handlers — real-time events
+
+```php
+<?php
+// handlers/chat/connect.php — runs when WebSocket connects
+function chat_connect(&$params, &$result) {
+    // _connect fires automatically — authenticate via token
+    // (called from client's first emit after connect)
+}
+```
+
+```php
+<?php
+// handlers/chat/message.php — runs on each "chat/message" event
+function chat_message(&$params, &$result) {
+    static $userId = null;   // persists across messages
+    static $userName = null; // same process = same state
+
+    // First message includes auth token
+    if (!$userId) {
+        $token = $params['data']['token'] ?? '';
+        $user = Chat\Auth::validateToken($token);
+        if (!$user) {
+            Q_Socket::reply(['error' => 'not authenticated']);
+            return;
+        }
+        $userId = $user['id'];
+        $userName = $user['name'];
+    }
+
+    $text = $params['data']['text'] ?? '';
+    if (!$text) return;
+
+    // Save to database
+    $id = Chat\Messages::save($userId, $params['data']['room'] ?? 'general', $text);
+
+    // Broadcast to everyone in the room
+    Q_Socket::broadcast($params['data']['room'] ?? 'general', [
+        'event' => 'chat/message',
+        'data'  => [
+            'id'   => $id,
+            'user' => $userName,
+            'text' => $text,
+            'time' => date('c'),
+        ],
+    ]);
+
+    $result = ['id' => $id]; // ack back to sender
+}
+```
+
+```php
+<?php
+// handlers/chat/join.php
+function chat_join(&$params, &$result) {
+    $room = $params['data']['room'] ?? 'general';
+    Q_Socket::join($params['_socketId'], $room);
+    $result = ['joined' => $room];
+}
+```
+
+```php
+<?php
+// handlers/chat/typing.php — lightweight, no DB
+function chat_typing(&$params, &$result) {
+    Q_Socket::broadcast($params['data']['room'] ?? 'general', [
+        'event' => 'chat/typing',
+        'data'  => ['user' => $params['data']['user']],
+    ]);
+}
+```
+
+```php
+<?php
+// handlers/chat/disconnect.php — cleanup on WebSocket close
+function chat_disconnect(&$params, &$result) {
+    // Process is about to die — do any cleanup
+    // e.g. set user offline, leave all rooms
+}
+```
+
+### The symmetry
+
+```
+HTTP request:     browser → GET /api/messages.php → fork → run → respond → die
+WebSocket event:  browser → {"event":"chat/message"} → same process → handler → persist
+
+Both use:
+  classes/Chat/Auth.php         ← autoloaded, preloaded
+  classes/Chat/Messages.php     ← autoloaded, preloaded
+  handlers/chat/message.php     ← loaded on first use
+
+HTTP scripts live in:    web/          (direct execution)
+Socket handlers live in: handlers/     (inverted control — server calls you)
+Shared code lives in:    classes/      (used by both)
+```
+
+### Run it
+
+```bash
+php qbixserver.php --root=./web --port=8080 --workers=4
+```
+
+One command. Static files, REST API, and WebSocket chat — all from one PHP server.
+
+---
+
+## 🛤️ Clean URL Routing (Optional)
+
+Add `Q.routes` to your config and the server maps clean URLs to handlers —
+same event pipeline as the [Qbix Platform](https://github.com/Qbix/Platform).
+No `.php` suffixes, no rewrite rules.
+
+### Config
+
+```json
+{
+    "Q": {
+        "routes": {
+            "":                {"module": "app", "action": "welcome"},
+            "$module/$action": {}
+        }
+    }
+}
+```
+
+Route patterns use `$variable` for dynamic segments. Literal segments match
+exactly. The matched `module` and `action` determine which handlers fire.
+
+### Handler directory structure
+
+```
+handlers/
+└── api/
+    └── users/
+        ├── validate.php    ← runs first (validate input)
+        ├── get.php         ← runs on GET requests
+        ├── post.php        ← runs on POST requests
+        ├── put.php         ← runs on PUT requests
+        ├── delete.php      ← runs on DELETE requests
+        └── response.php    ← runs last (transform output)
+```
+
+### Dispatch pipeline
+
+For `GET /api/users`, the server fires three events in order:
+
+```
+1.  api/users/validate   ← validate input, check auth
+2.  api/users/get        ← handle the GET method
+3.  api/users/response   ← post-process, add headers
+```
+
+This is the same pipeline as `Q_Dispatcher` in the full Qbix Platform.
+Your handlers work identically when you upgrade.
+
+### Example handlers
+
+```php
+<?php
+// handlers/api/users/validate.php — runs before every method
+function api_users_validate(&$params, &$result) {
+    if (empty($_SERVER['HTTP_AUTHORIZATION'])) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required']);
+        exit; // safe — forked process
+    }
+}
+```
+
+```php
+<?php
+// handlers/api/users/get.php — handles GET /api/users
+function api_users_get(&$params, &$result) {
+    header('Content-Type: application/json');
+    echo json_encode(MyApp\Users::list($_GET));
+}
+```
+
+```php
+<?php
+// handlers/api/users/post.php — handles POST /api/users
+function api_users_post(&$params, &$result) {
+    $user = MyApp\Users::create($_POST);
+    http_response_code(201);
+    header('Content-Type: application/json');
+    echo json_encode($user);
+}
+```
+
+### Priority
+
+```
+1. Static files           /style.css           → web/style.css
+2. PHP scripts            /legacy.php          → web/legacy.php
+3. Routed handlers        /api/users           → handlers/api/users/get.php
+4. index.php fallback     /anything            → web/index.php (if exists)
+5. 404
+```
+
+Static files and `.php` scripts take priority. Routing only activates when
+`Q.routes` is configured and no file matches. This means you can mix
+routed handlers with direct PHP scripts — migrate gradually.
+
+### The full symmetry
+
+```
+Static files:    GET /style.css            → web/style.css
+PHP scripts:     GET /page.php             → web/page.php (direct execution)
+HTTP routed:     GET /api/users            → handlers/api/users/get.php
+WebSocket:       {"event":"chat/message"}  → handlers/chat/message.php
+
+All four use classes/ (preloaded, shared)
+The last three use handlers/ (loaded on demand)
+```
+
+Drop files. They work. No framework to learn, no boilerplate to write.
+When you outgrow it, the same handlers run on the full Qbix Platform.
+
+---
+
 ## 📂 For PHP Developers — The Micro-Framework
 
 Qbix Server isn't just a static file server with PHP bolted on. It's a micro-framework
@@ -538,6 +1003,14 @@ what you get:
 | `Q_Config::get('section', 'key', $default)` | Read from `config/server.json` |
 | `Q_Config::set('section', 'key', $value)` | Set a config value at runtime |
 | `Q_Config::expect('section', 'key')` | Read config or throw if missing |
+| `Q_Request::method()` | HTTP method: GET, POST, PUT, DELETE |
+| `Q_Request::input()` | Raw request body (replaces `php://input`) |
+| `Q_Request::json()` | Request body parsed as JSON |
+| `Q_Request::header('X-Custom')` | Get any request header |
+| `Q_Request::ip()` | Client IP (proxy-resolved) |
+| `Q_Request::files('avatar')` | Uploaded files from `$_FILES` |
+| `Q_Request::isAjax()` | True if X-Requested-With: XMLHttpRequest |
+| `Q_Request::isJson()` | True if Content-Type is application/json |
 
 ```php
 <?php
@@ -895,7 +1368,7 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 php qbixserver.php --root=./web --port=8080
 ```
 
-### 2. PHAR — single 196KB file (needs PHP)
+### 2. PHAR — single ~250KB file (needs PHP)
 
 ```bash
 php bin/qbixserver.phar --root=./web --port=8080

@@ -112,6 +112,30 @@ if (!$webDir || !is_dir($webDir)) {
 $projectRoot = dirname($webDir);
 Q::init($projectRoot);
 
+// Load .env file if present (sets $_ENV and getenv())
+$envFile = $projectRoot . DIRECTORY_SEPARATOR . '.env';
+if (file_exists($envFile)) {
+	$lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+	foreach ($lines as $line) {
+		$line = trim($line);
+		if ($line === '' || $line[0] === '#') continue;
+		if (strpos($line, '=') === false) continue;
+		list($name, $value) = explode('=', $line, 2);
+		$name = trim($name);
+		$value = trim($value);
+		// Strip surrounding quotes
+		if (strlen($value) >= 2
+			&& (($value[0] === '"' && $value[strlen($value)-1] === '"')
+			|| ($value[0] === "'" && $value[strlen($value)-1] === "'"))
+		) {
+			$value = substr($value, 1, -1);
+		}
+		$_ENV[$name] = $value;
+		$_SERVER[$name] = $value;
+		putenv("$name=$value");
+	}
+}
+
 // ── Load config ─────────────────────────────────────
 
 // Default server config

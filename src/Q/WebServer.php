@@ -494,6 +494,9 @@ class Q_WebServer
 		// Resolve proxy headers for real client IP
 		$directIp = self::$clientInfo[$key]['ip'] ?? '0.0.0.0';
 		$parsed['clientIp'] = Q_WebServer_Proxy::clientIp($directIp, $parsed['headers']);
+		$parsed['_remoteAddr'] = $parsed['clientIp'];
+		$peer = stream_socket_get_name($client, true);
+		$parsed['_remotePort'] = $peer ? (int) substr(strrchr($peer, ':'), 1) : 0;
 
 		// Determine keep-alive before handling request
 		$maxKeepAlive = (int) Q_Config::get('Q', 'webserver', 'keepAlive', 'max', 100);
@@ -765,7 +768,19 @@ class Q_WebServer
 			if ($handled) return false;
 		}
 
-		// 2. Blocked paths
+		// 2. WebSocket upgrade on any path
+		$upgrade = strtolower($parsed['headers']['upgrade'] ?? '');
+		if ($upgrade === 'websocket' && $path !== '/Q/ws') {
+			$upgraded = Q_WebSocket::upgrade(
+				$client, $parsed['headers'],
+				function ($sk, $msg) use ($path) {
+					Q_WebSocket::dispatchEvent($sk, $msg, $path);
+				}
+			);
+			return $upgraded;
+		}
+
+		// 3. Blocked paths
 		if (self::isBlocked($path)) {
 			self::sendResponse($client, 403, 'Forbidden');
 			return false;
@@ -838,14 +853,187 @@ class Q_WebServer
 			}
 		}
 
-		// 6. Clean URL → route through index.php
+		// 6. Route dispatch — if Q.routes configured, match URL to handler
+		//    Q_Uri caches compiled patterns and path→URI results in memory.
+		static $routingEnabled = null;
+		if ($routingEnabled === null) {
+			$routingEnabled = Q_Config::get('Q', 'routes', null) !== null
+				&& class_exists('Q_Uri', true);
+		}
+		if ($routingEnabled) {
+			$uri = Q_Uri::fromPath($path);
+			if ($uri && !empty($uri->module) && !empty($uri->action)) {
+				return self::handleRoute($client, $parsed, $uri);
+			}
+		}
+
+		// 7. Clean URL → route through index.php (if exists)
 		$indexPhp = self::$rootDir . 'index.php';
 		if (is_file($indexPhp)) {
 			return self::handlePhp($client, $parsed, $indexPhp);
 		}
 
-		// 7. Not found
+		// 8. Not found
 		self::sendResponse($client, 404, self::render404($path), 'text/html; charset=utf-8');
+		return false;
+	}
+
+	/**
+	 * Handle a routed request via Q::event() dispatch pipeline.
+	 * Fires the same events as Qbix Platform's Q_Dispatcher:
+	 *   {module}/{action}/validate → validate input
+	 *   {module}/{action}/{method} → handle GET/POST/PUT/DELETE
+	 *   {module}/{action}/response → render response
+	 *
+	 * @method handleRoute
+	 * @static
+	 * @private
+	 * @param {resource} $client
+	 * @param {array} $parsed
+	 * @param {Q_Uri} $uri
+	 * @return {boolean}
+	 */
+	private static function handleRoute($client, $parsed, $uri)
+	{
+		$module = $uri->module;
+		$action = $uri->action;
+		$routed = $uri->toArray();
+		$method = strtolower($parsed['method']); // get, post, put, delete
+
+		// Set up superglobals
+		$parsed['_scriptPath'] = ''; // no script — handler-based
+		$saved = array($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE);		$_SERVER['REQUEST_METHOD'] = $parsed['method'];
+		$_SERVER['REQUEST_URI'] = $parsed['uri'];
+		$_SERVER['QUERY_STRING'] = $parsed['query'];
+		$_SERVER['SERVER_NAME'] = explode(':', $parsed['headers']['host'] ?? 'localhost')[0];
+		$_SERVER['SERVER_PORT'] = self::$port;
+		$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
+		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+		$_SERVER['DOCUMENT_ROOT'] = rtrim(self::$rootDir, DS);
+		$_SERVER['REMOTE_ADDR'] = $parsed['_remoteAddr'] ?? '127.0.0.1';
+		$_SERVER['REQUEST_TIME'] = time();
+		$_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
+		foreach ($parsed['headers'] as $k => $v) {
+			$_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
+		}
+
+		$_GET = $_POST = $_REQUEST = $_FILES = array();
+		if ($parsed['query']) parse_str($parsed['query'], $_GET);
+		$ct = strtolower($parsed['headers']['content-type'] ?? '');
+		$rawBody = $parsed['body'] ?? '';
+		if (strpos($ct, 'application/x-www-form-urlencoded') !== false) {
+			parse_str($rawBody, $_POST);
+		} elseif (strpos($ct, 'application/json') !== false) {
+			$_POST = json_decode($rawBody, true) ?: array();
+		} elseif (strpos($ct, 'multipart/form-data') !== false) {
+			$origCt = $parsed['headers']['content-type'] ?? $_SERVER['CONTENT_TYPE'] ?? '';
+			self::parseMultipart($origCt, $rawBody, $_POST, $_FILES);
+		}
+		$_REQUEST = array_merge($_GET, $_POST);
+
+		// Make raw body available
+		Q_Request::$input = $rawBody;
+
+		// If pcntl available, fork to isolate
+		if (function_exists('pcntl_fork')) {
+			$pid = pcntl_fork();
+			if ($pid === 0) {
+				// ── CHILD: run dispatch pipeline ──
+				while (ob_get_level()) ob_end_clean();
+				ob_start();
+				$status = 200;
+				$headers = array();
+
+				try {
+					// 1. Validate
+					Q::event("$module/$action/validate", $routed, false, true);
+
+					// 2. Method handler (get, post, put, delete)
+					if (Q::canHandle("$module/$action/$method")) {
+						Q::event("$module/$action/$method", $routed);
+					} elseif ($method !== 'get') {
+						$status = 405;
+						echo 'Method Not Allowed';
+					}
+
+					// 3. Response
+					Q::event("$module/$action/response", $routed, false, true);
+
+					foreach (headers_list() as $h) {
+						if (strpos($h, ':') !== false) {
+							list($k, $v) = explode(':', $h, 2);
+							$headers[trim($k)] = trim($v);
+						}
+					}
+					$code = http_response_code();
+					if ($code) $status = $code;
+				} catch (\Throwable $e) {
+					$status = 500;
+					ob_clean();
+					echo json_encode(array('error' => $e->getMessage()));
+					$headers['Content-Type'] = 'application/json';
+				}
+
+				$body = ob_get_clean();
+				$response = compact('status', 'body', 'headers');
+				Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+				@fclose($client);
+				exit(0);
+			} elseif ($pid > 0) {
+				@fclose($client);
+				$key = (int) $client;
+				if (isset(self::$clientWatchers[$key])) {
+					Q_Evented::cancel(self::$clientWatchers[$key]);
+				}
+				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
+				pcntl_waitpid($pid, $st, WNOHANG);
+				self::$lastStatus = 200;
+				list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
+				return false;
+			}
+			// Fork failed — fall through to in-process
+		}
+
+		// In-process fallback
+		while (ob_get_level()) ob_end_clean();
+		header_remove();
+		http_response_code(200);
+		ob_start();
+		$status = 200;
+		$headers = array();
+
+		try {
+			Q::event("$module/$action/validate", $routed, false, true);
+			if (Q::canHandle("$module/$action/$method")) {
+				Q::event("$module/$action/$method", $routed);
+			} elseif ($method !== 'get') {
+				$status = 405;
+				echo 'Method Not Allowed';
+			}
+			Q::event("$module/$action/response", $routed, false, true);
+			foreach (headers_list() as $h) {
+				if (strpos($h, ':') !== false) {
+					list($k, $v) = explode(':', $h, 2);
+					$headers[trim($k)] = trim($v);
+				}
+			}
+			$code = http_response_code();
+			if ($code) $status = $code;
+		} catch (\Throwable $e) {
+			$status = 500;
+			ob_clean();
+			echo json_encode(array('error' => $e->getMessage()));
+			$headers['Content-Type'] = 'application/json';
+		}
+
+		$body = ob_get_clean();
+		header_remove();
+		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
+
+		$response = compact('status', 'body', 'headers');
+		Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+		self::$lastStatus = $status;
+		Q_WebServer_Cache::put($parsed, $response);
 		return false;
 	}
 
@@ -934,19 +1122,42 @@ $_SERVER['REQUEST_URI'] = $req['uri'] ?? '/';
 $_SERVER['QUERY_STRING'] = $req['query'] ?? '';
 $_SERVER['SCRIPT_FILENAME'] = $req['scriptPath'] ?? '';
 $_SERVER['SCRIPT_NAME'] = '/' . basename($req['scriptPath'] ?? 'index.php');
+$_SERVER['PHP_SELF'] = $_SERVER['SCRIPT_NAME'];
+$_SERVER['PATH_TRANSLATED'] = $req['scriptPath'] ?? '';
 $_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
+$_SERVER['DOCUMENT_URI'] = $_SERVER['SCRIPT_NAME'];
 $_SERVER['SERVER_NAME'] = $req['serverName'] ?? 'localhost';
 $_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
+$_SERVER['SERVER_ADDR'] = '127.0.0.1';
+$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
+$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+$_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
+$_SERVER['REDIRECT_STATUS'] = 200;
+$_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
+$_SERVER['REMOTE_PORT'] = $req['remotePort'] ?? 0;
+$_SERVER['REQUEST_TIME'] = time();
+$_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
+$_SERVER['REQUEST_SCHEME'] = ($req['https'] ?? false) ? 'https' : 'http';
+$_SERVER['HTTPS'] = ($req['https'] ?? false) ? 'on' : '';
 foreach ($req['headers'] ?? [] as $k=>$v) $_SERVER['HTTP_'.strtoupper(str_replace('-','_',$k))] = $v;
 if (isset($req['headers']['content-type'])) $_SERVER['CONTENT_TYPE'] = $req['headers']['content-type'];
 if (isset($req['headers']['content-length'])) $_SERVER['CONTENT_LENGTH'] = $req['headers']['content-length'];
-$_GET = $_POST = $_REQUEST = [];
+// Parse cookies
+$_COOKIE = [];
+$ck = $req['headers']['cookie'] ?? '';
+if ($ck) { foreach (explode(';',$ck) as $p) { $p=trim($p); if(!$p)continue; $e=strpos($p,'='); if($e===false)continue; $_COOKIE[urldecode(trim(substr($p,0,$e)))]=urldecode(trim(substr($p,$e+1))); } }
+// Parse Basic auth
+$auth = $req['headers']['authorization'] ?? '';
+if (stripos($auth,'Basic ')===0) { $d=base64_decode(substr($auth,6)); if($d&&strpos($d,':')!==false) { [$u,$pw]=explode(':',$d,2); $_SERVER['PHP_AUTH_USER']=$u; $_SERVER['PHP_AUTH_PW']=$pw; $_SERVER['AUTH_TYPE']='Basic'; } }
+$_GET = $_POST = $_REQUEST = $_FILES = [];
 if (!empty($req['query'])) parse_str($req['query'], $_GET);
 $ct = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
 $raw = $req['body'] ?? '';
 if (strpos($ct,'application/x-www-form-urlencoded') !== false) parse_str($raw, $_POST);
 elseif (strpos($ct,'application/json') !== false) $_POST = json_decode($raw, true) ?: [];
-$_REQUEST = array_merge($_GET, $_POST);
+elseif (strpos($ct,'multipart/form-data') !== false) { $oct=$req['headers']['content-type']??''; Q_WebServer::parseMultipart($oct, $raw, $_POST, $_FILES); }
+$_REQUEST = array_merge($_COOKIE, $_GET, $_POST);
+if (class_exists('Q_Request',false)) Q_Request::$input = $raw;
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
@@ -979,6 +1190,9 @@ WORKER;
 			'documentRoot'=> rtrim(self::$rootDir, DS),
 			'serverName'  => explode(':', $host)[0],
 			'serverPort'  => (string) self::$port,
+			'remoteAddr'  => $parsed['_remoteAddr'] ?? '127.0.0.1',
+			'remotePort'  => $parsed['_remotePort'] ?? 0,
+			'https'       => !empty(self::$tlsSocket),
 			'qFile'       => $qFile,
 			'projectRoot' => dirname(rtrim(self::$rootDir, DS)),
 		), JSON_UNESCAPED_SLASHES);
@@ -1408,33 +1622,106 @@ HTML
 
 	static function dispatchToQ($parsed)
 	{
-		$saved = array($_SERVER, $_GET, $_POST, $_REQUEST);
-		$_SERVER['REQUEST_METHOD'] = $parsed['method'];
-		$_SERVER['REQUEST_URI'] = $parsed['uri'];
-		$_SERVER['QUERY_STRING'] = $parsed['query'];
-		$_SERVER['SCRIPT_NAME'] = '/' . basename($parsed['_scriptPath'] ?? 'index.php');
-		$_SERVER['SCRIPT_FILENAME'] = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
+		$saved = array($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE);
+		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
 		$host = $parsed['headers']['host'] ?? 'localhost';
-		$_SERVER['SERVER_NAME'] = explode(':', $host)[0]; // strip port from Host header
-		$_SERVER['SERVER_PORT'] = self::$port;
-		$_SERVER['DOCUMENT_ROOT'] = rtrim(self::$rootDir, DS);
+		$hostParts = explode(':', $host);
+
+		// ── Standard CGI variables ──────────────────────
+		$_SERVER['REQUEST_METHOD']    = $parsed['method'];
+		$_SERVER['REQUEST_URI']       = $parsed['uri'];
+		$_SERVER['QUERY_STRING']      = $parsed['query'];
+		$_SERVER['SCRIPT_NAME']       = '/' . basename($scriptPath);
+		$_SERVER['SCRIPT_FILENAME']   = $scriptPath;
+		$_SERVER['PHP_SELF']          = $_SERVER['SCRIPT_NAME']; // WordPress uses this
+		$_SERVER['PATH_TRANSLATED']   = $scriptPath;
+		$_SERVER['PATH_INFO']         = '';
+		$_SERVER['DOCUMENT_ROOT']     = rtrim(self::$rootDir, DS);
+		$_SERVER['DOCUMENT_URI']      = $_SERVER['SCRIPT_NAME'];
+		$_SERVER['SERVER_NAME']       = $hostParts[0];
+		$_SERVER['SERVER_PORT']       = isset($hostParts[1]) ? $hostParts[1] : self::$port;
+		$_SERVER['SERVER_ADDR']       = self::$host === '0.0.0.0' ? '127.0.0.1' : self::$host;
+		$_SERVER['SERVER_PROTOCOL']   = 'HTTP/' . ($parsed['httpVersion'] ?? '1.1');
+		$_SERVER['SERVER_SOFTWARE']   = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		$_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
+		$_SERVER['REDIRECT_STATUS']   = 200;
+		$_SERVER['REMOTE_ADDR']       = $parsed['_remoteAddr'] ?? '127.0.0.1';
+		$_SERVER['REMOTE_PORT']       = $parsed['_remotePort'] ?? 0;
+		$_SERVER['REQUEST_TIME']      = time();
+		$_SERVER['REQUEST_TIME_FLOAT']= microtime(true);
+
+		// ── HTTPS detection (direct TLS or proxy header) ──
+		$isHttps = !empty(self::$tlsSocket);
+		$fwdProto = $parsed['headers']['x-forwarded-proto'] ?? '';
+		if (strtolower($fwdProto) === 'https') $isHttps = true;
+		// CloudFront
+		$cfProto = $parsed['headers']['cloudfront-forwarded-proto'] ?? '';
+		if (strtolower($cfProto) === 'https') $isHttps = true;
+		// Cloudflare
+		$cfVisitor = $parsed['headers']['cf-visitor'] ?? '';
+		if (strpos($cfVisitor, '"https"') !== false) $isHttps = true;
+		$_SERVER['REQUEST_SCHEME']    = $isHttps ? 'https' : 'http';
+		$_SERVER['HTTPS']             = $isHttps ? 'on' : '';
+
+		// ── Request headers → HTTP_* ────────────────────
+		// All request headers become HTTP_HEADERNAME (uppercase, hyphens→underscores)
 		foreach ($parsed['headers'] as $k => $v) {
 			$_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
 		}
+		// Content-Type and Content-Length are special (no HTTP_ prefix per CGI spec)
 		if (isset($parsed['headers']['content-type']))
 			$_SERVER['CONTENT_TYPE'] = $parsed['headers']['content-type'];
 		if (isset($parsed['headers']['content-length']))
 			$_SERVER['CONTENT_LENGTH'] = $parsed['headers']['content-length'];
 
-		$_GET = $_POST = $_REQUEST = array();
+		// ── Basic auth parsing ──────────────────────────
+		$auth = $parsed['headers']['authorization'] ?? '';
+		if (stripos($auth, 'Basic ') === 0) {
+			$decoded = base64_decode(substr($auth, 6));
+			if ($decoded && strpos($decoded, ':') !== false) {
+				list($user, $pass) = explode(':', $decoded, 2);
+				$_SERVER['PHP_AUTH_USER'] = $user;
+				$_SERVER['PHP_AUTH_PW'] = $pass;
+				$_SERVER['AUTH_TYPE'] = 'Basic';
+			}
+		} elseif (stripos($auth, 'Bearer ') === 0) {
+			$_SERVER['HTTP_AUTHORIZATION'] = $auth; // already set by loop
+			$_SERVER['AUTH_TYPE'] = 'Bearer';
+		}
+
+		// ── $_COOKIE ────────────────────────────────────
+		$_COOKIE = array();
+		$cookieHeader = $parsed['headers']['cookie'] ?? '';
+		if ($cookieHeader) {
+			$pairs = explode(';', $cookieHeader);
+			foreach ($pairs as $pair) {
+				$pair = trim($pair);
+				if ($pair === '') continue;
+				$eqPos = strpos($pair, '=');
+				if ($eqPos === false) continue;
+				$name = urldecode(trim(substr($pair, 0, $eqPos)));
+				$value = urldecode(trim(substr($pair, $eqPos + 1)));
+				$_COOKIE[$name] = $value;
+			}
+		}
+
+		// ── $_GET, $_POST, $_FILES, $_REQUEST ───────────
+		$_GET = $_POST = $_REQUEST = $_FILES = array();
 		if ($parsed['query']) parse_str($parsed['query'], $_GET);
 		$ct = strtolower($_SERVER['CONTENT_TYPE'] ?? '');
+		$rawBody = $parsed['body'] ?? '';
 		if (strpos($ct, 'application/x-www-form-urlencoded') !== false) {
-			parse_str($parsed['body'], $_POST);
+			parse_str($rawBody, $_POST);
 		} elseif (strpos($ct, 'application/json') !== false) {
-			$_POST = json_decode($parsed['body'], true) ?: array();
+			$_POST = json_decode($rawBody, true) ?: array();
+		} elseif (strpos($ct, 'multipart/form-data') !== false) {
+			$origCt = $parsed['headers']['content-type'] ?? $_SERVER['CONTENT_TYPE'] ?? '';
+			self::parseMultipart($origCt, $rawBody, $_POST, $_FILES);
 		}
-		$_REQUEST = array_merge($_GET, $_POST);
+		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
+
+		// Make raw body available
+		Q_Request::$input = $rawBody;
 
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
@@ -1475,7 +1762,7 @@ HTML
 		}
 		$body = ob_get_clean();
 		header_remove();
-		list($_SERVER, $_GET, $_POST, $_REQUEST) = $saved;
+		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 
 		// Process Merkle cache headers (strips X-Q-Cache-* from response)
 		if (Q_WebServer_Cache_Components::enabled()) {
@@ -1544,6 +1831,114 @@ HTML
 			$headers['connection'] = 'close';
 		}
 		return compact('method', 'uri', 'path', 'query', 'headers', 'body', 'httpVersion');
+	}
+
+	/**
+	 * Parse multipart/form-data body into $_POST and $_FILES arrays.
+	 * Handles file uploads by writing to temp files (same as php-fpm).
+	 * @method parseMultipart
+	 * @static
+	 * @param {string} $contentType Full Content-Type header value
+	 * @param {string} $body Raw request body
+	 * @param {array} &$post Populated with form field values
+	 * @param {array} &$files Populated with file upload entries
+	 */
+	static function parseMultipart($contentType, $body, &$post, &$files)
+	{
+		// Extract boundary from Content-Type
+		if (!preg_match('/boundary=(?:"([^"]+)"|([^\s;]+))/i', $contentType, $bm)) {
+			return;
+		}
+		$boundary = '--' . ($bm[1] ?: $bm[2]);
+		$endBoundary = $boundary . '--';
+
+		$parts = explode($boundary, $body);
+		array_shift($parts); // before first boundary
+
+		foreach ($parts as $part) {
+			$part = ltrim($part, "\r\n");
+			if ($part === '--' || $part === "--\r\n" || $part === '') continue;
+			if (strpos($part, '--') === 0) continue; // end boundary
+
+			// Split headers from body
+			$headerEnd = strpos($part, "\r\n\r\n");
+			if ($headerEnd === false) continue;
+
+			$headerBlock = substr($part, 0, $headerEnd);
+			$partBody = substr($part, $headerEnd + 4);
+			// Remove trailing \r\n
+			if (substr($partBody, -2) === "\r\n") {
+				$partBody = substr($partBody, 0, -2);
+			}
+
+			// Parse part headers
+			$partHeaders = array();
+			foreach (explode("\r\n", $headerBlock) as $line) {
+				$colonPos = strpos($line, ':');
+				if ($colonPos !== false) {
+					$k = strtolower(trim(substr($line, 0, $colonPos)));
+					$v = trim(substr($line, $colonPos + 1));
+					$partHeaders[$k] = $v;
+				}
+			}
+
+			$disp = $partHeaders['content-disposition'] ?? '';
+			if (strpos($disp, 'form-data') === false) continue;
+
+			// Extract name
+			$name = null;
+			if (preg_match('/\bname="([^"]*)"/', $disp, $nm)) {
+				$name = $nm[1];
+			} elseif (preg_match("/\bname='([^']*)'/", $disp, $nm)) {
+				$name = $nm[1];
+			}
+			if ($name === null) continue;
+
+			// Check if it's a file upload
+			$filename = null;
+			if (preg_match('/\bfilename="([^"]*)"/', $disp, $fm)) {
+				$filename = $fm[1];
+			} elseif (preg_match("/\bfilename='([^']*)'/", $disp, $fm)) {
+				$filename = $fm[1];
+			}
+
+			if ($filename !== null) {
+				// File upload — write to temp file
+				$tmpPath = tempnam(sys_get_temp_dir(), 'qbix_upload_');
+				file_put_contents($tmpPath, $partBody);
+
+				$fileEntry = array(
+					'name'     => $filename,
+					'type'     => $partHeaders['content-type'] ?? 'application/octet-stream',
+					'tmp_name' => $tmpPath,
+					'error'    => UPLOAD_ERR_OK,
+					'size'     => strlen($partBody),
+				);
+
+				// Handle array notation: files[0], files[photo], etc.
+				if (preg_match('/^([^\[]+)\[([^\]]*)\]$/', $name, $am)) {
+					$files[$am[1]]['name'][$am[2]] = $fileEntry['name'];
+					$files[$am[1]]['type'][$am[2]] = $fileEntry['type'];
+					$files[$am[1]]['tmp_name'][$am[2]] = $fileEntry['tmp_name'];
+					$files[$am[1]]['error'][$am[2]] = $fileEntry['error'];
+					$files[$am[1]]['size'][$am[2]] = $fileEntry['size'];
+				} else {
+					$files[$name] = $fileEntry;
+				}
+			} else {
+				// Regular form field
+				// Handle array notation: tags[], data[key], etc.
+				if (preg_match('/^([^\[]+)\[([^\]]*)\]$/', $name, $am)) {
+					if ($am[2] === '') {
+						$post[$am[1]][] = $partBody;
+					} else {
+						$post[$am[1]][$am[2]] = $partBody;
+					}
+				} else {
+					$post[$name] = $partBody;
+				}
+			}
+		}
 	}
 
 	// ── Response helpers ─────────────────────────────────

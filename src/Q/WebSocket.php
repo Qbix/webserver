@@ -213,6 +213,8 @@ class Q_WebSocket
 	static function disconnect($sk)
 	{
 		if (!isset(self::$clients[$sk])) return;
+		// Notify worker process if one exists for this socket
+		self::notifyDisconnect($sk);
 		$w = self::$clients[$sk]['watcher'];
 		if ($w) Q_Evented::cancel($w);
 		foreach (self::$clients[$sk]['channels'] as $ch => $_) {
@@ -299,5 +301,254 @@ class Q_WebSocket
 		}
 		$frame .= $payload;
 		@fwrite($socket, $frame);
+	}
+
+	// ── Process-per-socket dispatch ─────────────────────
+
+	/**
+	 * Map of socketKey → ['pid' => int, 'pipe' => resource, 'watcher' => string]
+	 * Each WebSocket connection gets one long-lived PHP child process.
+	 * @property $workers
+	 * @static
+	 */
+	static $workers = array();
+
+	/**
+	 * Called when a WebSocket message arrives. If no child process exists
+	 * for this socket, fork one (process-per-socket). Then forward the
+	 * message to the child via length-prefixed JSON on the IPC pipe.
+	 * @method dispatchEvent
+	 * @static
+	 */
+	static function dispatchEvent($socketKey, $raw, $path = '/')
+	{
+		$msg = json_decode($raw, true);
+		if (!$msg || empty($msg['event'])) return;
+
+		// Ensure a child process exists for this connection
+		if (!isset(self::$workers[$socketKey])) {
+			self::spawnWorker($socketKey, $path);
+		}
+
+		if (!isset(self::$workers[$socketKey])) return; // fork failed
+
+		// Forward message to child via length-prefixed JSON
+		$json = json_encode($msg, JSON_UNESCAPED_SLASHES);
+		$packet = pack('N', strlen($json)) . $json;
+		$written = @fwrite(self::$workers[$socketKey]['pipe'], $packet);
+		if ($written === false || $written === 0) {
+			// Child died — respawn and retry once
+			self::cleanupWorker($socketKey);
+			self::spawnWorker($socketKey, $path);
+			if (isset(self::$workers[$socketKey])) {
+				@fwrite(self::$workers[$socketKey]['pipe'], $packet);
+			}
+		}
+	}
+
+	/**
+	 * Fork a child process for a WebSocket connection.
+	 * The child reads messages from the IPC pipe and dispatches
+	 * each one via Q::event() to the appropriate handler.
+	 * Static variables in handlers persist across messages.
+	 * Process dies on disconnect — all state wiped.
+	 * @method spawnWorker
+	 * @static
+	 */
+	static function spawnWorker($socketKey, $path)
+	{
+		if (!function_exists('pcntl_fork')) {
+			return; // no fork — messages dispatch in-process
+		}
+
+		$pf = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
+		$pair = stream_socket_pair($pf, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+		if (!$pair) return;
+
+		$pid = pcntl_fork();
+		if ($pid === -1) {
+			fclose($pair[0]); fclose($pair[1]);
+			return;
+		}
+
+		if ($pid === 0) {
+			// ── CHILD: message loop ──
+			fclose($pair[0]);
+			$pipe = $pair[1];
+			Q_Socket::$_pipe = $pipe;
+			Q_Socket::$_socketId = $socketKey;
+
+			// Fire _connect event
+			$connectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_connect', null);
+			if ($connectHandler) {
+				Q::event($connectHandler, array(
+					'_socketId' => $socketKey, '_path' => $path,
+					'event' => '_connect', 'data' => array(),
+				));
+				Q_Socket::flush();
+			}
+
+			// Message loop — blocks on pipe reads, dispatches Q::event()
+			while (true) {
+				$header = @fread($pipe, 4);
+				if ($header === false || $header === '' || strlen($header) < 4) break;
+
+				$len = unpack('N', $header)[1];
+				if ($len <= 0 || $len > 10485760) break;
+
+				$json = '';
+				while (strlen($json) < $len) {
+					$chunk = @fread($pipe, $len - strlen($json));
+					if ($chunk === false || $chunk === '') break 2;
+					$json .= $chunk;
+				}
+
+				$msg = json_decode($json, true);
+				if (!$msg) continue;
+
+				$event = $msg['event'] ?? '';
+				if ($event === '_disconnect') break;
+
+				// Resolve handler via config, or use event name directly
+				$mapped = Q_Config::get('Q', 'webserver', 'sockets', 'events', $event, $event);
+
+				Q_Socket::$_ack = isset($msg['ack']) ? $msg['ack'] : null;
+
+				$result = null;
+				$params = array(
+					'_socketId' => $socketKey,
+					'_path'     => $path,
+					'_ack'      => Q_Socket::$_ack,
+					'event'     => $event,
+					'data'      => $msg['data'] ?? array(),
+				);
+
+				Q::event($mapped, $params, false, false, $result);
+
+				// Auto-ack if handler returned a result
+				if (Q_Socket::$_ack !== null && $result !== null) {
+					Q_Socket::reply(array('ack' => Q_Socket::$_ack, 'data' => $result));
+				}
+
+				Q_Socket::flush();
+			}
+
+			// Fire _disconnect event
+			$disconnectHandler = Q_Config::get('Q', 'webserver', 'sockets', 'events', '_disconnect', null);
+			if ($disconnectHandler) {
+				Q::event($disconnectHandler, array(
+					'_socketId' => $socketKey, 'event' => '_disconnect', 'data' => array(),
+				));
+				Q_Socket::flush();
+			}
+
+			fclose($pipe);
+			exit(0);
+		}
+
+		// ── PARENT ──
+		fclose($pair[1]);
+		stream_set_blocking($pair[0], false);
+
+		$ipcWatcher = Q_Evented::onReadable($pair[0], function ($pipe) use ($socketKey) {
+			$data = @fread($pipe, 65536);
+			if ($data === false || $data === '') {
+				Q_WebSocket::cleanupWorker($socketKey);
+				return;
+			}
+			$lines = explode("\n", trim($data));
+			foreach ($lines as $line) {
+				if ($line === '') continue;
+				$cmd = json_decode($line, true);
+				if ($cmd) Q_WebSocket::executeCommand($cmd);
+			}
+		});
+
+		self::$workers[$socketKey] = array(
+			'pid' => $pid,
+			'pipe' => $pair[0],
+			'watcher' => $ipcWatcher,
+		);
+	}
+
+	/**
+	 * Clean up a worker process for a socket.
+	 * @method cleanupWorker
+	 * @static
+	 */
+	static function cleanupWorker($socketKey)
+	{
+		if (!isset(self::$workers[$socketKey])) return;
+		$w = self::$workers[$socketKey];
+		if ($w['watcher']) Q_Evented::cancel($w['watcher']);
+		@fclose($w['pipe']);
+		if ($w['pid'] > 0) {
+			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGTERM);
+			pcntl_waitpid($w['pid'], $st, WNOHANG);
+		}
+		unset(self::$workers[$socketKey]);
+	}
+
+	/**
+	 * Notify a worker that its WebSocket client disconnected.
+	 * Sends a _disconnect event then cleans up.
+	 * @method notifyDisconnect
+	 * @static
+	 */
+	static function notifyDisconnect($socketKey)
+	{
+		if (!isset(self::$workers[$socketKey])) return;
+		// Send disconnect message to child (it will exit its listen loop)
+		$json = json_encode(array('event' => '_disconnect', 'data' => array()));
+		$packet = pack('N', strlen($json)) . $json;
+		@fwrite(self::$workers[$socketKey]['pipe'], $packet);
+		// Give child a moment then cleanup
+		self::cleanupWorker($socketKey);
+	}
+
+	/**
+	 * Run a socket event handler in-process (Windows/no fork fallback).
+	 * @method dispatchEventInProcess
+	 * @static
+	 */
+	static function dispatchEventInProcess($eventName, $params, $socketKey, $ack)
+	{
+		Q_Socket::$_directMode = true;
+		Q_Socket::$_socketId = $socketKey;
+		Q_Socket::$_ack = $ack;
+
+		$result = null;
+		Q::event($eventName, $params, false, false, $result);
+
+		if ($ack !== null && $result !== null) {
+			self::send($socketKey, array('ack' => $ack, 'data' => $result));
+		}
+		Q_Socket::$_directMode = false;
+	}
+
+	/**
+	 * Execute an IPC command from a child process.
+	 * @method executeCommand
+	 * @static
+	 */
+	static function executeCommand($cmd)
+	{
+		switch ($cmd['cmd'] ?? '') {
+			case 'send':
+				self::send($cmd['socketId'], $cmd['data']);
+				break;
+			case 'broadcast':
+				self::broadcastTo($cmd['room'], $cmd['data']);
+				break;
+			case 'broadcastAll':
+				self::broadcast($cmd['data']);
+				break;
+			case 'join':
+				self::subscribe($cmd['socketId'], $cmd['room']);
+				break;
+			case 'leave':
+				self::unsubscribe($cmd['socketId'], $cmd['room']);
+				break;
+		}
 	}
 }

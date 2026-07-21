@@ -398,6 +398,274 @@ class Q
 
 spl_autoload_register(array('Q', 'autoload'));
 
+// ── Q_Socket ────────────────────────────────────────
+
+/**
+ * PHP API for WebSocket handlers — sending messages, managing rooms.
+ *
+ * Each WebSocket connection gets one PHP process. The server dispatches
+ * messages via Q::event() to handlers. Handlers use Q_Socket to send
+ * data back. Static variables in handlers persist across messages
+ * (same process) and are wiped on disconnect (process dies).
+ *
+ * @class Q_Socket
+ */
+class Q_Socket
+{
+	/** @var resource IPC pipe to parent */
+	static $_pipe = null;
+	/** @var integer Current client's socket key */
+	static $_socketId = null;
+	/** @var integer|null Ack ID from current message */
+	static $_ack = null;
+	/** @var boolean True when running in-process (no fork) */
+	static $_directMode = false;
+	/** @var array Buffered outbound commands */
+	static $_buffer = array();
+
+	/**
+	 * Send data to the client that owns this connection.
+	 */
+	static function reply($data)
+	{
+		self::send(self::$_socketId, $data);
+	}
+
+	/**
+	 * Send data to a specific connected client.
+	 */
+	static function send($socketId, $data)
+	{
+		self::_command(array('cmd' => 'send', 'socketId' => $socketId, 'data' => $data));
+	}
+
+	/**
+	 * Broadcast to all clients in a room/channel.
+	 */
+	static function broadcast($room, $data)
+	{
+		self::_command(array('cmd' => 'broadcast', 'room' => $room, 'data' => $data));
+	}
+
+	/**
+	 * Broadcast to ALL connected WebSocket clients.
+	 */
+	static function broadcastAll($data)
+	{
+		self::_command(array('cmd' => 'broadcastAll', 'data' => $data));
+	}
+
+	/**
+	 * Subscribe a client to a room/channel.
+	 */
+	static function join($socketId, $room)
+	{
+		self::_command(array('cmd' => 'join', 'socketId' => $socketId, 'room' => $room));
+	}
+
+	/**
+	 * Unsubscribe a client from a room/channel.
+	 */
+	static function leave($socketId, $room)
+	{
+		self::_command(array('cmd' => 'leave', 'socketId' => $socketId, 'room' => $room));
+	}
+
+	/**
+	 * Buffer a command or execute directly in-process.
+	 */
+	private static function _command($cmd)
+	{
+		if (self::$_directMode) {
+			Q_WebSocket::executeCommand($cmd);
+		} else {
+			self::$_buffer[] = $cmd;
+		}
+	}
+
+	/**
+	 * Flush buffered commands to the IPC pipe.
+	 * Called automatically after each handler invocation.
+	 */
+	static function flush()
+	{
+		if (!self::$_pipe || empty(self::$_buffer)) return;
+		$out = '';
+		foreach (self::$_buffer as $cmd) {
+			$out .= json_encode($cmd, JSON_UNESCAPED_SLASHES) . "\n";
+		}
+		@fwrite(self::$_pipe, $out);
+		self::$_buffer = array();
+	}
+}
+
+// ── Q_Request ───────────────────────────────────────
+
+/**
+ * Minimal Q_Request — compatible subset of the Qbix Platform's Q_Request.
+ * Provides convenient access to request data that the server has already parsed.
+ *
+ * @class Q_Request
+ */
+class Q_Request
+{
+	/**
+	 * Raw request body. Set by the server before your script runs.
+	 * Use this instead of php://input (which doesn't work in our model).
+	 * @property $input
+	 * @type string
+	 * @static
+	 */
+	static $input = '';
+
+	/**
+	 * Get the HTTP method (GET, POST, PUT, DELETE, etc.)
+	 * @method method
+	 * @static
+	 * @return {string}
+	 */
+	static function method()
+	{
+		return $_SERVER['REQUEST_METHOD'] ?? 'GET';
+	}
+
+	/**
+	 * Get the raw request body.
+	 * @method input
+	 * @static
+	 * @return {string}
+	 */
+	static function input()
+	{
+		return self::$input;
+	}
+
+	/**
+	 * Get the request body parsed as JSON.
+	 * @method json
+	 * @static
+	 * @param {boolean} $assoc Return associative array (default true)
+	 * @return {array|object|null}
+	 */
+	static function json($assoc = true)
+	{
+		return json_decode(self::$input, $assoc);
+	}
+
+	/**
+	 * Get the full request URL.
+	 * @method url
+	 * @static
+	 * @param {boolean} $querystring Include query string (default true)
+	 * @return {string}
+	 */
+	static function url($querystring = true)
+	{
+		$scheme = ($_SERVER['REQUEST_SCHEME'] ?? 'http');
+		$host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
+		$uri = $querystring
+			? ($_SERVER['REQUEST_URI'] ?? '/')
+			: ($_SERVER['SCRIPT_NAME'] ?? '/');
+		return $scheme . '://' . $host . $uri;
+	}
+
+	/**
+	 * Get the URL path (without query string).
+	 * @method path
+	 * @static
+	 * @return {string}
+	 */
+	static function path()
+	{
+		$uri = $_SERVER['REQUEST_URI'] ?? '/';
+		$qPos = strpos($uri, '?');
+		return $qPos !== false ? substr($uri, 0, $qPos) : $uri;
+	}
+
+	/**
+	 * Get a request header value.
+	 * @method header
+	 * @static
+	 * @param {string} $name Header name (case-insensitive)
+	 * @return {string|null}
+	 */
+	static function header($name)
+	{
+		$key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+		return $_SERVER[$key] ?? null;
+	}
+
+	/**
+	 * Get the client's IP address (resolved through proxy headers by the server).
+	 * @method ip
+	 * @static
+	 * @return {string}
+	 */
+	static function ip()
+	{
+		return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+	}
+
+	/**
+	 * Check if the request is an AJAX/XHR request.
+	 * @method isAjax
+	 * @static
+	 * @return {boolean}
+	 */
+	static function isAjax()
+	{
+		return strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'xmlhttprequest';
+	}
+
+	/**
+	 * Get uploaded files. Convenience wrapper around $_FILES.
+	 * @method files
+	 * @static
+	 * @param {string|null} $name Specific file input name, or null for all
+	 * @return {array|null}
+	 */
+	static function files($name = null)
+	{
+		if ($name === null) return $_FILES;
+		return $_FILES[$name] ?? null;
+	}
+
+	/**
+	 * Get the Content-Type of the request.
+	 * @method contentType
+	 * @static
+	 * @return {string}
+	 */
+	static function contentType()
+	{
+		return $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
+	}
+
+	/**
+	 * Check if the request body is JSON.
+	 * @method isJson
+	 * @static
+	 * @return {boolean}
+	 */
+	static function isJson()
+	{
+		return strpos(strtolower(self::contentType()), 'application/json') !== false;
+	}
+
+	/**
+	 * Get a value from $_GET, $_POST, or $_REQUEST with a default.
+	 * @method special
+	 * @static
+	 * @param {string} $name
+	 * @param {mixed} $default
+	 * @return {mixed}
+	 */
+	static function special($name, $default = null)
+	{
+		return $_REQUEST[$name] ?? $default;
+	}
+}
+
 // ── Q_Config ────────────────────────────────────────
 
 /**

@@ -361,7 +361,7 @@ class Q_WebServer_Pool
 
 		// Send SIGTERM to all workers
 		foreach ($this->workers as $w) {
-			posix_kill($w['pid'], SIGTERM);
+			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGTERM);
 		}
 
 		// Wait for workers to exit gracefully
@@ -381,7 +381,7 @@ class Q_WebServer_Pool
 
 		// SIGKILL any workers that didn't exit in time
 		foreach ($remaining as $w) {
-			posix_kill($w['pid'], SIGKILL);
+			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGKILL);
 			pcntl_waitpid($w['pid'], $st, 0);
 		}
 
