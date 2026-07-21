@@ -766,6 +766,7 @@ function chat_message(&$params, &$result) {
 | `$socket->broadcastAll($data)` | Send to ALL connected clients |
 | `$socket->join($room, $data)` | Join a room, forwarding `$data` to the room's join handler |
 | `$socket->leave($room, $data)` | Leave a room, forwarding `$data` to the room's leave handler |
+| `$socket->disconnect()` | Close this connection |
 | `$socket->anyMethod($data)` | **RPC** — calls a method on the client, blocks until response (5s timeout) |
 
 **Room handlers** get `$room` — a `Q_Room` instance:
@@ -2170,7 +2171,17 @@ Changes are logged to stderr:
 14:32:09 hot-reload: restarting server...
 ```
 
-Polls every 2 seconds. Use in development, not production.
+Polls every 2 seconds. Recommended for development.
+
+Even without `--hotreload`, handler changes take effect naturally: HTTP
+requests fork fresh and load handlers on demand, so the next request gets the
+new file. WebSocket connections and rooms keep the old code for their lifetime
+— new connections pick up the change. A natural rolling deploy with no
+interruption. The `--hotreload` flag adds automatic restart for class and
+config changes, which are preloaded in the parent process.
+
+If `Q.handlers.preload` is `true` (production mode), handlers are also loaded
+in the parent — use `--reload` to pick up handler changes in that case.
 
 ### Scheduler
 

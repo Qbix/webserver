@@ -595,6 +595,9 @@ class Q_Socket
 	/** Leave a room, optionally forwarding data to the room's leave handler */
 	function leave($room, $data = array()) { self::_cmd(array('cmd' => 'leave', 'socketId' => $this->id, 'room' => $room, 'data' => $data)); }
 
+	/** Disconnect this client */
+	function disconnect() { self::_cmd(array('cmd' => 'disconnect', 'socketId' => $this->id)); }
+
 	/**
 	 * Call a method on the remote client. Blocks until the client responds.
 	 * The client must have registered a handler via qs.handle('methodName', fn).

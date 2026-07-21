@@ -874,6 +874,9 @@ class Q_WebSocket
 			case 'ack':
 				self::sendAck($cmd['socketId'], $cmd['ackId'], $cmd['data']);
 				break;
+			case 'disconnect':
+				self::disconnect($cmd['socketId']);
+				break;
 			case 'rpc':
 				self::handleRpc($cmd);
 				break;
