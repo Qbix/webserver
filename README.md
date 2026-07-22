@@ -991,6 +991,43 @@ class Game { /* ... */ }
 If `Q.app` is not set, functions use no prefix: `game_move`, `chat_message`.
 Small standalone projects don't need it.
 
+### Autoloading
+
+Classes in `classes/` are autoloaded by default — `Chess\Game` or `Chess_Game`
+both resolve to `classes/Chess/Game.php`. No config needed.
+
+For PSR-4 compliant layouts, configure the namespace mapping:
+
+```json
+{
+    "Q": {
+        "autoload": {
+            "psr-4": {
+                "App\\": "src/",
+                "App\\Models\\": "src/Models/"
+            }
+        }
+    }
+}
+```
+
+`App\Http\Controller` → `src/Http/Controller.php`. Underscores are literal
+(PSR-4 compliant). Paths are relative to the project root.
+
+If you use Composer, its autoloader is loaded automatically —
+`vendor/autoload.php` is included at startup if it exists. Composer's own
+PSR-4, classmap, and files entries all work. The `Q.autoload` config and
+Composer coexist: Q's autoloader runs first, Composer catches anything it
+misses.
+
+The resolution order:
+
+1. `Q.autoload.psr-4` — config-driven PSR-4 mappings
+2. `Q.autoload.psr-0` — config-driven PSR-0 mappings (underscores = separators)
+3. Internal Q classes — `src/Q/*.php`
+4. Project `classes/` directory — the Qbix convention (both `\` and `_` as separators)
+5. Composer — `vendor/autoload.php` (if present)
+
 ### When to use per-connection
 
 Use per-connection processes for **user-specific state**: authentication,
@@ -2103,6 +2140,10 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `rateLimit.requests` | 100 | Requests per window |
 | `rateLimit.window` | 60 | Window in seconds |
 | `webserver.requestTimeout` | 30 | Seconds before killing a hung HTTP worker (0 = no limit) |
+| `dashboard` | (enabled) | Set to `false` to disable `/Q/dashboard`, `/Q/health`, and `/Q/ws` entirely |
+| `dashboard.token` | (none) | When set, dashboard requires `?token=VALUE` in the URL |
+| `autoload.psr-4` | `{}` | PSR-4 namespace mappings: `{"App\\": "src/"}` |
+| `autoload.psr-0` | `{}` | PSR-0 prefix mappings: `{"Legacy_": "vendor/"}` |
 | `socket.io` | `"/socket.io"` | Socket.IO endpoint. Protocol detection + client JS at `{path}/socket.io.js`. `false` to disable. |
 | `socket.js` | `"/Q/socket.js"` | Path to serve the minimal bare-WebSocket client (3KB). `false` to disable. |
 | `app` | `""` | App name — prefixes handler function names (e.g. `"Chess"` → `Chess_chat_message()`) |

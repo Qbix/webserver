@@ -445,26 +445,58 @@ class Q
 	 */
 	static function autoload($className)
 	{
-		// Split on both \ and _ to get path parts
+		// 1. PSR-4 from config: Q.autoload.psr-4
+		//    "Chess\\": "src/" → Chess\Board → src/Board.php
+		$psr4 = Q_Config::get('Q', 'autoload', 'psr-4', array());
+		foreach ($psr4 as $prefix => $baseDir) {
+			$prefix = rtrim($prefix, '\\') . '\\';
+			if (strncmp($className, $prefix, strlen($prefix)) !== 0) continue;
+			$relClass = substr($className, strlen($prefix));
+			$relPath = str_replace('\\', DS, $relClass) . '.php';
+			foreach (self::$paths as $base) {
+				$full = $base . DS . rtrim(str_replace('/', DS, $baseDir), DS) . DS . $relPath;
+				if (file_exists($full)) {
+					require_once $full;
+					return;
+				}
+			}
+		}
+
+		// 2. PSR-0 from config: Q.autoload.psr-0
+		//    "Legacy_": "vendor/" → Legacy_Util → vendor/Legacy/Util.php
+		$psr0 = Q_Config::get('Q', 'autoload', 'psr-0', array());
+		foreach ($psr0 as $prefix => $baseDir) {
+			if ($prefix !== '' && strncmp($className, $prefix, strlen($prefix)) !== 0) continue;
+			$relPath = str_replace(array('\\', '_'), DS, $className) . '.php';
+			foreach (self::$paths as $base) {
+				$full = $base . DS . rtrim(str_replace('/', DS, $baseDir), DS) . DS . $relPath;
+				if (file_exists($full)) {
+					require_once $full;
+					return;
+				}
+			}
+		}
+
+		// 3. Internal Q classes (src/ directory, underscore convention)
 		$parts = array();
 		foreach (explode('\\', $className) as $nsPart) {
 			$parts = array_merge($parts, explode('_', $nsPart));
 		}
 		$relPath = implode(DS, $parts) . '.php';
-
-		// 1. Search src/ directory (for Q_* server classes)
 		$srcPath = dirname(__FILE__) . DS . $relPath;
 		if (file_exists($srcPath)) {
 			require_once $srcPath;
 			return;
 		}
 
-		// 2. Search project classes/ directories
+		// 4. Project classes/ directories (default — works without config)
+		//    Supports both PSR-4 style (Chess\Game → classes/Chess/Game.php)
+		//    and Qbix style (Chess_Game → classes/Chess/Game.php)
 		foreach (self::$paths as $base) {
 			$full = $base . DS . 'classes' . DS . $relPath;
 			if (file_exists($full)) {
 				require_once $full;
-				// If loaded via underscore but also accessible via namespace, alias
+				// Cross-alias between underscore and namespace conventions
 				$underscoreName = implode('_', $parts);
 				$namespaceName = implode('\\', $parts);
 				if ($underscoreName !== $namespaceName) {
@@ -485,7 +517,7 @@ class Q
 
 	/**
 	 * Initialize Q paths from the project root directory.
-	 * Called by the server at startup.
+	 * Called by the server at startup. Loads Composer autoloader if present.
 	 * @method init
 	 * @static
 	 * @param {string} $projectRoot The project root (parent of web/)
@@ -495,6 +527,11 @@ class Q
 		$projectRoot = rtrim($projectRoot, DS);
 		if (!in_array($projectRoot, self::$paths)) {
 			self::$paths[] = $projectRoot;
+		}
+		// Composer autoloader — if present, handles its own PSR-4/classmap
+		$composerAutoload = $projectRoot . DS . 'vendor' . DS . 'autoload.php';
+		if (file_exists($composerAutoload)) {
+			require_once $composerAutoload;
 		}
 	}
 

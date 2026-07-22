@@ -667,11 +667,27 @@ class Q_WebServer
 		if ($cached) return $cached;
 
 		if ($path === '/Q/health') {
+			if (Q_Config::get('Q', 'dashboard', null) === false) {
+				return array('status' => 404, 'body' => 'Not found');
+			}
 			$stats = Q_WebServer_Dashboard::getStats();
 			return array('status'=>200, 'body'=>json_encode(array('status'=>'ok')+$stats),
 				'headers'=>array('Content-Type'=>'application/json'));
 		}
 		if ($path === '/Q/dashboard' || $path === '/Q/dashboard/') {
+			if (Q_Config::get('Q', 'dashboard', null) === false) {
+				return array('status' => 404, 'body' => 'Not found');
+			}
+			$token = Q_Config::get('Q', 'dashboard', 'token', null);
+			if ($token !== null) {
+				$qp = array();
+				if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
+				$given = $qp['token'] ?? '';
+				if ($given !== $token) {
+					return array('status' => 403, 'body' => 'Forbidden — token required',
+						'headers' => array('Content-Type' => 'text/plain'));
+				}
+			}
 			return array('status'=>200, 'body'=>Q_WebServer_Dashboard::renderHtml($parsed),
 				'headers'=>array('Content-Type'=>'text/html; charset=utf-8'));
 		}
@@ -836,12 +852,20 @@ class Q_WebServer
 		// 2. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
 			if ($path === '/Q/ws') {
+				if (Q_Config::get('Q', 'dashboard', null) === false) {
+					self::sendResponse($client, 404, 'Not found');
+					return false;
+				}
 				$upgraded = Q_WebSocket::upgrade(
 					$client, $parsed['headers'], null, 'dashboard'
 				);
 				return $upgraded; // true = keep open
 			}
 			if ($path === '/Q/health') {
+				if (Q_Config::get('Q', 'dashboard', null) === false) {
+					self::sendResponse($client, 404, 'Not found');
+					return false;
+				}
 				$stats = Q_WebServer_Dashboard::getStats();
 				self::sendResponse($client, 200,
 					json_encode(array('status' => 'ok') + $stats),
