@@ -109,6 +109,33 @@ php qbixserver.php --root=./web --port=8080
 
 ---
 
+## 🧹 What it replaces
+
+| You used to need | Now |
+|---|---|
+| **nginx** | Built in — static files, keep-alive, ETag, gzip, directory listing |
+| **php-fpm** | Built in — fork-per-request from preloaded parent, zero bootstrap |
+| **Node.js + socket.io** | Built in — Socket.IO v5 wire protocol, per-connection workers |
+| **Redis** (pub/sub, shared state) | Built in — room processes with shared PHP arrays |
+| **certbot + cron** | Built in — ACME auto-renewal, hot-swaps certs, no restart |
+| **Supervisor / systemd** | Built in — graceful shutdown, `--stop`, `--reload`, PID file |
+| **Cron** (scheduled tasks) | Built in — scheduler with `every`, `times`, `weekdays`, `monthdays` |
+| **Separate WebSocket server** | Built in — same handlers, same deploy, same process |
+| **Load balancer config** | Works behind nginx/HAProxy/Cloudflare, or standalone |
+| **Process manager** | Built in — request timeout, worker tracking, crash isolation |
+
+One PHP file. One command. One port.
+
+```bash
+./qbixserver.php --port=443 --root=./web
+```
+
+Static files, PHP execution, WebSocket, rooms, Socket.IO, TLS, auto-renewing
+certs, scheduled tasks, live dashboard, hot reload — all from a single process
+that fits in a 300KB PHAR.
+
+---
+
 ## 🚀 Quick Start
 
 ```bash
