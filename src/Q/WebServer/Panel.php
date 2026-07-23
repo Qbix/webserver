@@ -20,6 +20,8 @@
  */
 class Q_WebServer_Panel
 {
+	/** @internal IP => [timestamps] for brute force protection */
+	static $loginAttempts = array();
 	/**
 	 * Handle panel requests with authentication.
 	 * First visitor sets a password. All subsequent requests require it.
@@ -33,6 +35,21 @@ class Q_WebServer_Panel
 	static function handle($client, $parsed)
 	{
 		$path = $parsed['path'];
+
+		// SECURITY: Panel is restricted to localhost by default.
+		// Set Q.panel.remote = true in config to allow remote access.
+		if (strpos($path, '/Q/panel') === 0 || strpos($path, '/Q/api/') === 0) {
+			$allowRemote = Q_Config::get('Q', 'panel', 'remote', false);
+			if (!$allowRemote) {
+				$ip = $parsed['clientIp'] ?? $parsed['_remoteAddr'] ?? '';
+				if ($ip !== '127.0.0.1' && $ip !== '::1' && $ip !== '') {
+					Q_WebServer::sendResponse($client, 403,
+						'Panel is restricted to localhost. Set Q.panel.remote = true in config to allow remote access.',
+						'text/plain');
+					return true;
+				}
+			}
+		}
 
 		if ($path === '/Q/panel' || $path === '/Q/panel/') {
 			Q_WebServer::sendResponse($client, 200,
@@ -105,7 +122,13 @@ class Q_WebServer_Panel
 			$config['passwordHash'] = password_hash($password, PASSWORD_DEFAULT);
 			$token = bin2hex(random_bytes(32));
 			$config['sessions'][$token] = time() + 86400 * 7; // 7 day expiry
-			file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+			$dir = dirname($configPath);
+			if (!is_dir($dir)) @mkdir($dir, 0700, true);
+			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
+			$written = @file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+			if ($written === false) {
+				return array('error' => 'Failed to write config to ' . $configPath);
+			}
 			@chmod($configPath, 0600);
 			return array('ok' => true, 'token' => $token);
 		}
@@ -114,11 +137,27 @@ class Q_WebServer_Panel
 			if (empty($config['passwordHash'])) {
 				return array('needsSetup' => true);
 			}
+			// SECURITY: brute force protection — block IP after 5 failed attempts
+			$ip = $parsed['clientIp'] ?? $parsed['_remoteAddr'] ?? '0.0.0.0';
+			$now = time();
+			if (!isset(self::$loginAttempts[$ip])) {
+				self::$loginAttempts[$ip] = array();
+			}
+			// Clean old attempts (older than 5 minutes)
+			self::$loginAttempts[$ip] = array_filter(
+				self::$loginAttempts[$ip],
+				function ($t) use ($now) { return $t > $now - 300; }
+			);
+			if (count(self::$loginAttempts[$ip]) >= 5) {
+				return array('error' => 'Too many attempts, try again later', 'status' => 429);
+			}
 			$password = $body['password'] ?? '';
 			if (!password_verify($password, $config['passwordHash'])) {
-				usleep(500000); // 500ms delay to slow brute force
+				self::$loginAttempts[$ip][] = $now;
 				return array('error' => 'Wrong password', 'status' => 401);
 			}
+			// Success — clear attempts
+			unset(self::$loginAttempts[$ip]);
 			// Issue session token
 			$token = bin2hex(random_bytes(32));
 			if (!isset($config['sessions'])) $config['sessions'] = array();
@@ -128,6 +167,7 @@ class Q_WebServer_Panel
 				if ($exp < $now) unset($config['sessions'][$t]);
 			}
 			$config['sessions'][$token] = $now + 86400 * 7;
+			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
 			file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
 			return array('ok' => true, 'token' => $token);
 		}
@@ -236,6 +276,7 @@ class Q_WebServer_Panel
 		if ($currentToken) {
 			$config['sessions'][$currentToken] = time() + 86400 * 7;
 		}
+			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
 		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
 		return array('ok' => true);
 	}
@@ -248,6 +289,7 @@ class Q_WebServer_Panel
 			?? $parsed['cookies']['Q_panel_token'] ?? '';
 		if ($token && isset($config['sessions'][$token])) {
 			unset($config['sessions'][$token]);
+			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
 			file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
 		}
 		return array('ok' => true);
@@ -314,7 +356,7 @@ class Q_WebServer_Panel
 		$candidates = array(
 			$appsDir . DS . $template,
 			dirname($appsDir) . DS . $template,
-			Q_DIR . DS . '..' . DS . $template,
+			defined('Q_DIR') ? Q_DIR . DS . '..' . DS . $template : null,
 		);
 		foreach ($candidates as $c) {
 			if (is_dir($c) && file_exists($c . DS . 'config' . DS . 'app.json')) {
@@ -346,8 +388,8 @@ class Q_WebServer_Panel
 		$scripts = array();
 
 		// Platform scripts
-		$platformScripts = Q_DIR . DS . 'scripts';
-		if (is_dir($platformScripts)) {
+		$platformScripts = defined('Q_DIR') ? Q_DIR . DS . 'scripts' : null;
+		if ($platformScripts && is_dir($platformScripts)) {
 			foreach (glob($platformScripts . DS . '*.php') as $f) {
 				$scripts[] = array(
 					'name' => basename($f, '.php'),
@@ -424,6 +466,7 @@ class Q_WebServer_Panel
 	static function apiListPlugins()
 	{
 		$plugins = array();
+		if (!defined('Q_DIR')) return $plugins;
 		$pluginsDir = Q_DIR . DS . 'plugins';
 		if (!is_dir($pluginsDir)) {
 			$pluginsDir = Q_DIR . DS . '..' . DS . 'plugins';

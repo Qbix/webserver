@@ -75,6 +75,9 @@ class Q_WebSocket
 		return true;
 	}
 
+	const MAX_FRAME_SIZE = 1048576;   // 1MB max per frame
+	const MAX_BUFFER_SIZE = 2097152;  // 2MB max accumulated buffer
+
 	static function onData($sk, $socket)
 	{
 		if (!isset(self::$clients[$sk])) return;
@@ -84,6 +87,13 @@ class Q_WebSocket
 			return;
 		}
 		self::$clients[$sk]['buffer'] .= $data;
+
+		// SECURITY: disconnect if buffer grows beyond limit (DoS protection)
+		if (strlen(self::$clients[$sk]['buffer']) > self::MAX_BUFFER_SIZE) {
+			self::disconnect($sk);
+			return;
+		}
+
 		while (($frame = self::decodeFrame(self::$clients[$sk]['buffer'])) !== null) {
 			switch ($frame['opcode']) {
 				case 0x1: // text
@@ -121,6 +131,11 @@ class Q_WebSocket
 			if ($len < 10) return null;
 			$payloadLen = unpack('J', substr($buffer, 2, 8))[1];
 			$offset = 10;
+		}
+		// SECURITY: reject frames larger than MAX_FRAME_SIZE
+		if ($payloadLen > self::MAX_FRAME_SIZE) {
+			$buffer = '';
+			return array('opcode' => 0x8, 'payload' => 'frame too large');
 		}
 		if ($masked) {
 			if ($len < $offset + 4 + $payloadLen) return null;

@@ -61,6 +61,20 @@ class Q_WebServer
 			self::$allowedExtensions = $ext;
 		}
 
+		// Read PHP ini limits — respect the same limits php-fpm would use
+		self::$maxPostSize = self::parseIniBytes(
+			Q_Config::get('Q', 'webserver', 'postMaxSize', ini_get('post_max_size') ?: '8M')
+		);
+		self::$maxUploadSize = self::parseIniBytes(
+			Q_Config::get('Q', 'webserver', 'uploadMaxFilesize', ini_get('upload_max_filesize') ?: '2M')
+		);
+		self::$maxFileUploads = (int) Q_Config::get(
+			'Q', 'webserver', 'maxFileUploads', ini_get('max_file_uploads') ?: 20
+		);
+		self::$fileUploads = (bool) Q_Config::get(
+			'Q', 'webserver', 'fileUploads', ini_get('file_uploads') !== '0'
+		);
+
 		// File response cache config
 		self::$fileCacheMaxSize = Q_Config::get('Q', 'webserver', 'fileCache', 'maxSize', 67108864);
 		self::$fileCacheMaxFile = Q_Config::get('Q', 'webserver', 'fileCache', 'maxFile', 1048576);
@@ -497,7 +511,8 @@ class Q_WebServer
 			if (preg_match('/content-length:\s*(\d+)/i', $buf, $m)) {
 				$cl = (int) $m[1];
 			}
-			if ($cl > 10485760) {
+			// Respect PHP's post_max_size (default 8M)
+			if ($cl > self::$maxPostSize) {
 				self::sendResponse($client, 413, 'Payload Too Large');
 				self::closeClient($key);
 				return;
@@ -2133,8 +2148,8 @@ HTML
 		// then start fresh output buffering. This prevents "headers already sent"
 		// errors when scripts call header() after prior output leaked through.
 		while (ob_get_level()) ob_end_clean();
-		header_remove();
-		http_response_code(200);
+		@header_remove();
+		@http_response_code(200);
 		Q::clearResponseHeaders();
 		if (class_exists('Q_Response', false)) Q_Response::clear();
 		ob_start();
@@ -2158,6 +2173,11 @@ HTML
 			$code = http_response_code();
 			if ($code && $code !== 200) $status = $code;
 			if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
+
+			// Cookies: Q_Response::setCookie() stores them.
+			// Headers::processResponse() reads them via cookieHeaders()
+			// and emits Set-Cookie headers when assembling the response.
+			// No action needed here.
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
@@ -2165,7 +2185,7 @@ HTML
 			$headers['Content-Type'] = 'application/json';
 		}
 		$body = ob_get_clean();
-		header_remove();
+		@header_remove();
 		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 
 		// Process Merkle cache headers (strips X-Q-Cache-* from response)
@@ -2249,6 +2269,11 @@ HTML
 	 */
 	static function parseMultipart($contentType, $body, &$post, &$files)
 	{
+		// Check if file uploads are enabled
+		if (!self::$fileUploads) {
+			// Parse form fields only, skip files
+		}
+
 		// Extract boundary from Content-Type
 		if (!preg_match('/boundary=(?:"([^"]+)"|([^\s;]+))/i', $contentType, $bm)) {
 			return;
@@ -2258,6 +2283,7 @@ HTML
 
 		$parts = explode($boundary, $body);
 		array_shift($parts); // before first boundary
+		$fileCount = 0;
 
 		foreach ($parts as $part) {
 			$part = ltrim($part, "\r\n");
@@ -2307,15 +2333,28 @@ HTML
 			}
 
 			if ($filename !== null) {
+				// Enforce file upload limits
+				if (!self::$fileUploads) continue; // uploads disabled
+				$fileCount++;
+				if ($fileCount > self::$maxFileUploads) continue; // too many files
+
+				$error = UPLOAD_ERR_OK;
+				if (strlen($partBody) > self::$maxUploadSize) {
+					$error = UPLOAD_ERR_INI_SIZE;
+					$partBody = ''; // don't write oversized file
+				}
+
 				// File upload — write to temp file
 				$tmpPath = tempnam(sys_get_temp_dir(), 'qbix_upload_');
-				file_put_contents($tmpPath, $partBody);
+				if ($error === UPLOAD_ERR_OK) {
+					file_put_contents($tmpPath, $partBody);
+				}
 
 				$fileEntry = array(
 					'name'     => $filename,
 					'type'     => $partHeaders['content-type'] ?? 'application/octet-stream',
 					'tmp_name' => $tmpPath,
-					'error'    => UPLOAD_ERR_OK,
+					'error'    => $error,
 					'size'     => strlen($partBody),
 				);
 
@@ -2555,6 +2594,14 @@ HTML
 	private static $lastBody = '';
 	/** @internal pid => start_time for request timeout enforcement */
 	static $workerPids = array();
+	/** @var integer Max POST body size in bytes (from post_max_size ini) */
+	static $maxPostSize = 8388608; // 8M default
+	/** @var integer Max upload file size in bytes (from upload_max_filesize ini) */
+	static $maxUploadSize = 2097152; // 2M default
+	/** @var integer Max number of files per upload (from max_file_uploads ini) */
+	static $maxFileUploads = 20;
+	/** @var boolean Whether file uploads are enabled (from file_uploads ini) */
+	static $fileUploads = true;
 
 	static $allowedExtensions = array(
 		'html','htm','txt','md','json','xml','yaml','yml','csv','tsv','log',
@@ -2575,4 +2622,25 @@ HTML
 	private static $fileCacheMaxFile = 1048576;  // don't cache files > 1MB
 	private static $fileCacheCheckInterval = 1;  // seconds between mtime checks
 	private static $fileCacheLastCheck = 0;
+
+	/**
+	 * Parse a PHP ini byte value like "8M", "128K", "1G" into bytes.
+	 * @method parseIniBytes
+	 * @static
+	 * @param {string|integer} $value
+	 * @return {integer}
+	 */
+	static function parseIniBytes($value)
+	{
+		if (is_numeric($value)) return (int) $value;
+		$value = trim($value);
+		$num = (int) $value;
+		$suffix = strtoupper(substr($value, -1));
+		switch ($suffix) {
+			case 'G': $num *= 1073741824; break;
+			case 'M': $num *= 1048576; break;
+			case 'K': $num *= 1024; break;
+		}
+		return $num;
+	}
 }

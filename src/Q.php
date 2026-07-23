@@ -333,6 +333,16 @@ class Q
 	{
 		if (!$eventName) return null;
 
+		// SECURITY: reject event names that could cause path traversal or LFI
+		if (strpos($eventName, '..') !== false
+			|| strpos($eventName, "\0") !== false
+			|| $eventName[0] === '/'
+			|| $eventName[0] === '\\'
+			|| preg_match('/[^a-zA-Z0-9_\-\/]/', $eventName)
+		) {
+			return null;
+		}
+
 		// Remote handler — POST params as JSON to URL
 		if (strncmp($eventName, 'http://', 7) === 0
 			|| strncmp($eventName, 'https://', 8) === 0
@@ -987,7 +997,82 @@ class Q_Response
 		self::$cookies = array();
 		self::$cookiesToRemove = array();
 		self::$redirected = null;
+		self::$errors = array();
 	}
+
+	/**
+	 * Add an error to the response. Compatible with Q_Response::addError()
+	 * from the Platform. Q_Dispatcher checks these during validation.
+	 * @method addError
+	 * @static
+	 * @param {Exception|array} $exception Either an Exception or an array of them
+	 */
+	static function addError($exception)
+	{
+		if (is_array($exception)) {
+			self::$errors = array_merge(self::$errors, $exception);
+		} else {
+			self::$errors[] = $exception;
+		}
+	}
+
+	/**
+	 * Returns all the errors added so far to the response.
+	 * @method getErrors
+	 * @static
+	 * @return {array}
+	 */
+	static function getErrors()
+	{
+		return self::$errors;
+	}
+
+	/**
+	 * Gets or sets whether the response is buffered.
+	 * Compatible with Q_Response::isBuffered() from the Platform.
+	 * @method isBuffered
+	 * @static
+	 * @param {boolean} [$new_value=null] If set, changes the buffering mode.
+	 * @return {boolean}
+	 */
+	static function isBuffered($new_value = null)
+	{
+		static $buffered = true;
+		$old = $buffered;
+		if (isset($new_value)) {
+			$buffered = $new_value;
+		}
+		return $old;
+	}
+
+	/**
+	 * Emit Set-Cookie headers from stored cookies.
+	 * Compatible with Q_Response::sendCookieHeaders() from the Platform.
+	 * No artificial timing restriction — cookies can be set at any point
+	 * during request handling. The server assembles them into the response.
+	 * @method sendCookieHeaders
+	 * @static
+	 */
+	static function sendCookieHeaders()
+	{
+		foreach (self::$cookiesToRemove as $name => $args) {
+			$path = $args[0] ?? '/';
+			@setcookie($name, '', 1, $path);
+		}
+		foreach (self::$cookies as $name => $args) {
+			list($value, $expires, $path, $domain, $secure, $httponly, $samesite) = $args;
+			if ($samesite && version_compare(PHP_VERSION, '7.3.0', '>=')) {
+				@setcookie($name, $value, compact('expires', 'path', 'domain', 'secure', 'httponly', 'samesite'));
+			} else {
+				@setcookie($name, $value, $expires, $path ?: '/', $domain ?: '', $secure, $httponly);
+			}
+		}
+		self::$cookies = array();
+		self::$cookiesToRemove = array();
+	}
+
+	/** @var array Accumulated errors */
+	protected static $errors = array();
 }
 
 // ── Q_Request ───────────────────────────────────────

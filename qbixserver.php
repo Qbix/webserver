@@ -96,10 +96,10 @@ if ($opts['app']) {
 		exit(1);
 	}
 
-	// Look for Q.inc.php
+	// Look for Q.inc.php (standard Qbix app bootstrap)
 	$qInc = $appDir . '/scripts/Q.inc.php';
 	if (!file_exists($qInc)) {
-		// Try Platform path
+		// Try Platform path relative to app
 		$qInc = $appDir . '/../Platform/scripts/Q.inc.php';
 	}
 	if (file_exists($qInc)) {
@@ -107,7 +107,23 @@ if ($opts['app']) {
 		require_once $qInc;
 		$qbixMode = true;
 	} else {
-		fwrite(STDERR, "Warning: Q.inc.php not found, running in standalone mode\n");
+		// Try local/paths.json (Qbix convention for Q_DIR)
+		$pathsJson = $appDir . '/local/paths.json';
+		if (file_exists($pathsJson)) {
+			$paths = json_decode(file_get_contents($pathsJson), true);
+			if (!empty($paths['platform'])) {
+				$platformDir = realpath($paths['platform']);
+				if ($platformDir && file_exists($platformDir . '/Q.php')) {
+					define('APP_DIR', $appDir);
+					define('Q_DIR', $platformDir);
+					require_once $platformDir . '/Q.php';
+					$qbixMode = true;
+				}
+			}
+		}
+		if (!$qbixMode) {
+			fwrite(STDERR, "Warning: Q.inc.php not found, running in standalone mode\n");
+		}
 	}
 
 	$webDir = $appDir . '/web';
@@ -282,6 +298,9 @@ if (!empty($opts['test'])) {
 	}
 	$timeout = Q_Config::get('Q', 'webserver', 'requestTimeout', 30);
 	echo "  Timeout:    {$timeout}s\n";
+	echo "  Post max:   " . Q_Config::get('Q', 'webserver', 'postMaxSize', ini_get('post_max_size') ?: '8M') . "\n";
+	echo "  Upload max: " . Q_Config::get('Q', 'webserver', 'uploadMaxFilesize', ini_get('upload_max_filesize') ?: '2M') . "\n";
+	if (defined('Q_DIR')) echo "  Q_DIR:      " . Q_DIR . "\n";
 	$preloaded = Q::$preloadedHandlers;
 	echo "  Classes:    " . count(get_declared_classes()) . " preloaded\n";
 	echo "  Handlers:   " . ($preloaded > 0 ? "$preloaded preloaded" : "lazy") . "\n";
