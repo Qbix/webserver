@@ -1276,6 +1276,110 @@ class Q_Request
 	{
 		return $_REQUEST[$name] ?? $default;
 	}
+
+	/**
+	 * Set the raw request body and make php://input return it.
+	 * Called by Q_WebServer before dispatching each request.
+	 * @method setInput
+	 * @static
+	 * @param {string} $body Raw request body
+	 */
+	static function setInput($body)
+	{
+		self::$input = $body;
+		// Make file_get_contents('php://input') work
+		// by writing the body to a temp php://memory stream
+		// and overriding the input stream
+		if (!self::$_inputRegistered) {
+			@stream_wrapper_unregister('php');
+			stream_wrapper_register('php', 'Q_PhpInputStream');
+			self::$_inputRegistered = true;
+		}
+		Q_PhpInputStream::$data = $body;
+	}
+
+	/**
+	 * Restore the native php:// stream wrapper after request.
+	 * @method restoreInput
+	 * @static
+	 */
+	static function restoreInput()
+	{
+		if (self::$_inputRegistered) {
+			stream_wrapper_unregister('php');
+			stream_wrapper_restore('php');
+			self::$_inputRegistered = false;
+		}
+	}
+
+	/** @internal */
+	static $_inputRegistered = false;
+}
+
+/**
+ * Stream wrapper that makes file_get_contents('php://input') return
+ * the request body in our CLI-SAPI server model.
+ * Also handles php://output, php://memory, php://temp transparently.
+ * @internal
+ */
+class Q_PhpInputStream
+{
+	static $data = '';
+	private $pos = 0;
+	private $path = '';
+	private $memory = '';
+
+	function stream_open($path, $mode, $options, &$openedPath)
+	{
+		$this->path = str_replace('php://', '', $path);
+		$this->pos = 0;
+		$this->memory = '';
+		return true;
+	}
+
+	function stream_read($count)
+	{
+		if ($this->path === 'input') {
+			$chunk = substr(self::$data, $this->pos, $count);
+			$this->pos += strlen($chunk);
+			return $chunk;
+		}
+		if ($this->path === 'memory' || $this->path === 'temp') {
+			$chunk = substr($this->memory, $this->pos, $count);
+			$this->pos += strlen($chunk);
+			return $chunk;
+		}
+		return false;
+	}
+
+	function stream_write($data)
+	{
+		if ($this->path === 'output') {
+			echo $data;
+			return strlen($data);
+		}
+		if ($this->path === 'memory' || $this->path === 'temp') {
+			$this->memory .= $data;
+			$this->pos += strlen($data);
+			return strlen($data);
+		}
+		return 0;
+	}
+
+	function stream_eof()
+	{
+		if ($this->path === 'input') return $this->pos >= strlen(self::$data);
+		if ($this->path === 'memory' || $this->path === 'temp') return $this->pos >= strlen($this->memory);
+		return true;
+	}
+
+	function stream_stat() { return array(); }
+	function stream_tell() { return $this->pos; }
+	function stream_seek($offset, $whence) {
+		if ($whence === SEEK_SET) $this->pos = $offset;
+		elseif ($whence === SEEK_CUR) $this->pos += $offset;
+		return true;
+	}
 }
 
 // ── Q_Config ────────────────────────────────────────

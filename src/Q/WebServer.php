@@ -1094,7 +1094,7 @@ class Q_WebServer
 		$_REQUEST = array_merge($_GET, $_POST);
 
 		// Make raw body available
-		Q_Request::$input = $rawBody;
+		Q_Request::setInput($rawBody);
 
 		// If pcntl available, fork to isolate
 		if (function_exists('pcntl_fork')) {
@@ -1221,7 +1221,7 @@ class Q_WebServer
 		if (!empty($cgiPatterns) && $cgiBinary) {
 			$relPath = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen(self::$rootDir))), '/');
 			foreach ($cgiPatterns as $pattern) {
-				if (@preg_match($pattern, $relPath)) {
+				if (@preg_match(self::ensureRegex($pattern), $relPath)) {
 					return self::handlePhpCgi($client, $parsed, $scriptPath, $cgiBinary);
 				}
 			}
@@ -1342,7 +1342,7 @@ if (strpos($ct,'application/x-www-form-urlencoded') !== false) parse_str($raw, $
 elseif (strpos($ct,'application/json') !== false) $_POST = json_decode($raw, true) ?: [];
 elseif (strpos($ct,'multipart/form-data') !== false) { $oct=$req['headers']['content-type']??''; Q_WebServer::parseMultipart($oct, $raw, $_POST, $_FILES); }
 $_REQUEST = array_merge($_COOKIE, $_GET, $_POST);
-if (class_exists('Q_Request',false)) Q_Request::$input = $raw;
+if (class_exists('Q_Request',false)) Q_Request::setInput($raw);
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
@@ -1888,7 +1888,7 @@ WORKER;
 			'#^/img/#' => true
 		));
 		foreach ($patterns as $regex => $enabled) {
-			if ($enabled && preg_match($regex, $urlPath)) return true;
+			if ($enabled && preg_match(self::ensureRegex($regex), $urlPath)) return true;
 		}
 		return false; // not indexed by default
 	}
@@ -2142,7 +2142,7 @@ HTML
 		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
 
 		// Make raw body available
-		Q_Request::$input = $rawBody;
+		Q_Request::setInput($rawBody);
 
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
@@ -2642,5 +2642,27 @@ HTML
 			case 'K': $num *= 1024; break;
 		}
 		return $num;
+	}
+
+	/**
+	 * Ensure a string is a valid regex. If it already has delimiters
+	 * (starts with # / ~ { or another non-alnum), return as-is.
+	 * Otherwise wrap with #^ ... $# so plain strings like
+	 * "/wp-admin/" work as patterns without manual delimiters.
+	 * @method ensureRegex
+	 * @static
+	 * @param {string} $pattern
+	 * @return {string}
+	 */
+	static function ensureRegex($pattern)
+	{
+		if ($pattern === '') return '#^$#';
+		// Only treat # as a pre-existing delimiter.
+		// Everything else gets wrapped: plain strings like "/wp-admin/"
+		// and bare regex like "\.php$" both work.
+		if ($pattern[0] === '#') {
+			return $pattern;
+		}
+		return '#' . $pattern . '#';
 	}
 }

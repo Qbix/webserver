@@ -2317,9 +2317,9 @@ compatibility with WordPress, Laravel, or any PHP code that calls `header()` dir
         "webserver": {
             "cgi": {
                 "patterns": [
-                    "#^/wp-admin/.*\\.php$#",
-                    "#^/wp-login\\.php$#",
-                    "#^/legacy/.*\\.php$#"
+                    "/wp-admin/.*\\.php$",
+                    "/wp-login\\.php$",
+                    "/legacy/.*\\.php$"
                 ]
             }
         }
@@ -2366,7 +2366,7 @@ wordpress-site/
     "Q": {
         "webserver": {
             "cgi": {
-                "patterns": ["#\\.php$#"]
+                "patterns": ["\.php$"]
             },
             "fallback": "index.php"
         }
@@ -2374,7 +2374,7 @@ wordpress-site/
 }
 ```
 
-The pattern `#\\.php$#` sends all PHP files through `php-cgi`. The fallback
+The pattern `\.php$` sends all PHP files through `php-cgi`. The fallback
 sends unmatched URLs to `index.php` (WordPress permalink routing). Static
 files (images, CSS, JS) are served directly at full speed.
 
@@ -2400,7 +2400,7 @@ laravel-app/
     "Q": {
         "webserver": {
             "cgi": {
-                "patterns": ["#\\.php$#"]
+                "patterns": ["\.php$"]
             },
             "fallback": "index.php"
         }
@@ -2438,7 +2438,7 @@ For code you control, you have three options — from least effort to best perfo
 **Option 1: Full CGI (zero changes, slower)**
 
 ```json
-{ "Q": { "webserver": { "cgi": { "patterns": ["#\\.php$#"] } } } }
+{ "Q": { "webserver": { "cgi": { "patterns": ["\.php$"] } } } }
 ```
 
 Every PHP file runs through `php-cgi`. Native `header()`, `setcookie()`,
@@ -2453,8 +2453,8 @@ to nginx + php-fpm (no preload benefit).
         "webserver": {
             "cgi": {
                 "patterns": [
-                    "#^/admin/.*\\.php$#",
-                    "#^/legacy/.*\\.php$#"
+                    "/admin/.*\.php$",
+                    "/legacy/.*\.php$"
                 ]
             }
         }
