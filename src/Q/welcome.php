@@ -16,7 +16,7 @@ h2{font-size:18px;margin:28px 0 10px;color:#1a1a2e}
 h3{font-size:14px;margin:18px 0 6px;color:#555}
 p,.note{margin:6px 0;font-size:13px;color:#666}
 .note{background:#fff8e1;border-left:3px solid #ffc107;padding:8px 12px;border-radius:0 4px 4px 0;margin:12px 0}
-pre{background:#1a1a2e;color:#a0e8af;padding:14px;border-radius:6px;overflow-x:auto;font-size:12px;line-height:1.5;margin:8px 0;-webkit-overflow-scrolling:touch}
+pre{border-radius:6px;overflow-x:auto;margin:8px 0;-webkit-overflow-scrolling:touch}
 code{font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px}
 p code{background:#eee;padding:1px 5px;border-radius:3px;color:#333}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0}
@@ -37,6 +37,10 @@ p code{background:#eee;padding:1px 5px;border-radius:3px;color:#333}
   pre{font-size:11px;padding:10px}
   .cards{grid-template-columns:1fr}
 }
+<link rel="stylesheet" href="/Q/prism.css">
+<style>
+pre[class*="language-"]{background:#1a1a2e;border-radius:6px;padding:14px;margin:8px 0;font-size:12px}
+code[class*="language-"]{font-size:12px}
 </style>
 </head>
 <body>
@@ -102,7 +106,7 @@ p code{background:#eee;padding:1px 5px;border-radius:3px;color:#333}
 
 <h3>1. HTTP — static files and PHP scripts</h3>
 <p>Any file in <code>web/</code> is served directly. PHP files are executed.</p>
-<pre><code>&lt;?php
+<pre class="language-php"><code class="language-php">&lt;?php
 // web/api/hello.php — visit /api/hello.php?name=Alice
 header('Content-Type: application/json');
 echo json_encode([
@@ -111,7 +115,7 @@ echo json_encode([
 
 <h3>2. WebSocket — per-connection handlers</h3>
 <p>Each connection gets its own process. Configure events in <code>config/server.json</code>:</p>
-<pre><code>{
+<pre class="language-json"><code class="language-json">{
   "Q": {
     "webserver": {
       "sockets": {
@@ -126,7 +130,7 @@ echo json_encode([
     }
   }
 }</code></pre>
-<pre><code>&lt;?php
+<pre class="language-php"><code class="language-php">&lt;?php
 // handlers/chat/join.php — user joins a room
 function chat_join(&amp;$params, &amp;$result) {
     extract($params); // $socket, $event, $data
@@ -138,13 +142,13 @@ function chat_join(&amp;$params, &amp;$result) {
 
 <h3>3. Rooms — shared in-memory state</h3>
 <p>All members share one process. State lives in class statics — COW handles cleanup.</p>
-<pre><code>&lt;?php
+<pre class="language-php"><code class="language-php">&lt;?php
 // classes/ChatRoom.php
 class ChatRoom {
     static $names = [];   // socketId =&gt; name
     static $history = []; // recent messages
 }</code></pre>
-<pre><code>&lt;?php
+<pre class="language-php"><code class="language-php">&lt;?php
 // handlers/chat/room/join.php — member enters room
 function chat_room_join(&amp;$params, &amp;$result) {
     extract($params); // $room, $event, $data
@@ -154,7 +158,7 @@ function chat_room_join(&amp;$params, &amp;$result) {
         'data'  =&gt; ['name' =&gt; $data['name']]
     ]);
 }</code></pre>
-<pre><code>&lt;?php
+<pre class="language-php"><code class="language-php">&lt;?php
 // handlers/chat/room/message.php — member sends message
 function chat_room_message(&amp;$params, &amp;$result) {
     extract($params); // $room, $event, $data
@@ -168,7 +172,7 @@ function chat_room_message(&amp;$params, &amp;$result) {
 }</code></pre>
 
 <h3>4. Client — connect from the browser</h3>
-<pre><code>&lt;script src="/socket.io/socket.io.js"&gt;&lt;/script&gt;
+<pre class="language-html"><code class="language-html">&lt;script src="/socket.io/socket.io.js"&gt;&lt;/script&gt;
 &lt;script&gt;
 const socket = io({transports: ['websocket']});
 socket.emit('chat/join', {room: 'general', name: 'Alice'}, (res) =&gt; {
@@ -182,7 +186,7 @@ socket.emit('chat/message', {text: 'Hello!'});
 
 <h3>5. Custom error pages</h3>
 <p>Drop <code>errors/404.php</code> in your project to override the built-in page:</p>
-<pre><code>&lt;?php // errors/404.php
+<pre class="language-php"><code class="language-php">&lt;?php // errors/404.php
 ?&gt;
 &lt;!DOCTYPE html&gt;
 &lt;html&gt;&lt;body&gt;
@@ -202,22 +206,7 @@ socket.emit('chat/message', {text: 'Hello!'});
   Qbix Server · Create <code>web/index.html</code> or <code>web/index.php</code> to replace this page
 </div>
 
-<script>
-// Tiny PHP syntax highlighter — no dependencies
-document.querySelectorAll('pre code').forEach(function(el){
-  var s = el.innerHTML;
-  // Order matters: comments first, then strings, then the rest
-  s = s.replace(/(\/\/[^\n]*)/g, '<i style="color:#6a737d">$1</i>');
-  s = s.replace(/('(?:[^'\\]|\\.)*')/g, '<b style="color:#98c379">$1</b>');
-  s = s.replace(/("(?:[^"\\]|\\.)*")/g, '<b style="color:#98c379">$1</b>');
-  s = s.replace(/(\$[a-zA-Z_]\w*)/g, '<em style="color:#e5c07b;font-style:normal">$1</em>');
-  s = s.replace(/\b(function|return|class|static|extract|echo|if|else|foreach|as|new|use|var|const|let|null|true|false|array)\b/g, '<b style="color:#c678dd">$1</b>');
-  s = s.replace(/(&lt;\?php)/g, '<b style="color:#c678dd">$1</b>');
-  s = s.replace(/-&gt;(\w+)\(/g, '-&gt;<span style="color:#61afef">$1</span>(');
-  s = s.replace(/\b(\w+)\(/g, '<span style="color:#61afef">$1</span>(');
-  el.innerHTML = s;
-});
-</script>
+<script src="/Q/prism.js"></script>
 
 </body>
 </html>

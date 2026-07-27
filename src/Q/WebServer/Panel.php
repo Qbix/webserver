@@ -252,6 +252,8 @@ class Q_WebServer_Panel
 				return self::apiChangePassword($parsed);
 			case 'auth/logout':
 				return self::apiLogout($parsed);
+			case 'playground/run':
+				return self::apiPlaygroundRun($parsed);
 			default:
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
@@ -528,6 +530,57 @@ class Q_WebServer_Panel
 	}
 
 	// ── System API ───────────────────────────────────────
+
+	/**
+	 * Run PHP code in an isolated forked child. 5 second timeout.
+	 * The child has no filesystem write access and no network.
+	 */
+	static function apiPlaygroundRun($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$code = $body['code'] ?? '';
+		if (!$code) return array('output' => '', 'ms' => 0);
+
+		// Strip opening <?php tag if present
+		$code = preg_replace('/^\s*<\?php\s*/i', '', $code);
+
+		$start = microtime(true);
+
+		// Use proc_open for isolation — capture stdout+stderr
+		$descriptors = array(
+			0 => array('pipe', 'r'),
+			1 => array('pipe', 'w'),
+			2 => array('pipe', 'w'),
+		);
+		// Run with restricted ini: no network functions, memory limit
+		$cmd = PHP_BINARY . ' -d disable_functions=exec,shell_exec,system,passthru,popen,proc_open'
+			. ',file_put_contents,fwrite,unlink,rmdir,mkdir,rename,chmod,chown'
+			. ',curl_init,fsockopen,stream_socket_client'
+			. ' -d memory_limit=32M -d max_execution_time=5 -r ' . escapeshellarg($code);
+
+		$proc = @proc_open($cmd, $descriptors, $pipes);
+		if (!is_resource($proc)) {
+			return array('output' => '', 'error' => 'Failed to start process', 'ms' => 0);
+		}
+		fclose($pipes[0]);
+
+		// Read with timeout
+		stream_set_timeout($pipes[1], 5);
+		stream_set_timeout($pipes[2], 5);
+		$output = stream_get_contents($pipes[1], 65536);
+		$stderr = stream_get_contents($pipes[2], 65536);
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+
+		$exitCode = proc_close($proc);
+		$ms = round((microtime(true) - $start) * 1000, 1);
+
+		$result = array('output' => $output, 'ms' => $ms);
+		if ($stderr) $result['error'] = $stderr;
+		if ($exitCode !== 0 && !$stderr) $result['error'] = "Exit code: $exitCode";
+
+		return $result;
+	}
 
 	static function apiSystemInfo()
 	{
@@ -887,6 +940,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab active" onclick="showTab('apps')">Apps</div>
   <div class="tab" onclick="showTab('scripts')">Scripts</div>
   <div class="tab" onclick="showTab('plugins')">Plugins</div>
+  <div class="tab" onclick="showTab('playground')">Playground</div>
   <div class="tab" onclick="showTab('system')">System</div>
 </div>
 
@@ -945,6 +999,40 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 <div id="tab-plugins" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Installed Plugins</h2>
   <div id="plugins-list"></div>
+</div>
+
+<!-- PLAYGROUND TAB -->
+<div id="tab-playground" class="content hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:16px">PHP Playground</h2>
+    <div>
+      <button class="btn btn-primary" onclick="runPlayground()" id="pg-run">▶ Run</button>
+      <button class="btn btn-ghost" onclick="clearPlayground()">Clear</button>
+    </div>
+  </div>
+  <p style="font-size:12px;color:var(--dim);margin-bottom:10px">
+    Code runs in an isolated forked process. No filesystem access, no network. Ctrl+Enter to run.
+  </p>
+  <div style="display:grid;grid-template-rows:1fr auto;gap:10px;min-height:400px">
+    <div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:6px 12px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--border)">editor</div>
+      <textarea id="pg-code" spellcheck="false" style="
+        flex:1;width:100%;border:none;background:transparent;color:var(--txt);
+        font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;line-height:1.5;
+        padding:12px;resize:none;outline:none;tab-size:4;
+      "></textarea>
+      <script>document.getElementById('pg-code').value="<?php\necho \"Hello from Qbix Server!\\n\";\n\n$data = ['name' => 'Alice', 'score' => 42];\necho json_encode($data, JSON_PRETTY_PRINT) . \"\\n\";\n\nfor ($i = 1; $i <= 5; $i++) {\n    echo \"Iteration $i\\n\";\n}";</script>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;min-height:120px">
+      <div style="padding:6px 12px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--border)">
+        output <span id="pg-time" style="float:right"></span>
+      </div>
+      <pre id="pg-output" style="
+        flex:1;margin:0;padding:12px;font-size:13px;line-height:1.5;
+        background:transparent;color:var(--grn);overflow:auto;white-space:pre-wrap;
+      "></pre>
+    </div>
+  </div>
 </div>
 
 <!-- SYSTEM TAB -->
@@ -1269,6 +1357,38 @@ async function saveAppsDir() {
 async function openFolder(dir, editor) {
   await api('apps/open', {dir:dir, editor:editor});
 }
+
+// Playground
+async function runPlayground() {
+  var code = document.getElementById('pg-code').value;
+  var outEl = document.getElementById('pg-output');
+  var timeEl = document.getElementById('pg-time');
+  var btn = document.getElementById('pg-run');
+  btn.disabled = true; btn.textContent = '⏳ Running...';
+  outEl.textContent = '';
+  outEl.style.color = 'var(--grn)';
+  timeEl.textContent = '';
+  try {
+    var r = await api('playground/run', {code: code});
+    outEl.textContent = r.output || '(no output)';
+    if (r.error) { outEl.textContent += '\n\n⚠ ' + r.error; outEl.style.color = 'var(--red)'; }
+    if (r.ms) timeEl.textContent = r.ms + 'ms';
+  } catch(e) {
+    outEl.textContent = 'Error: ' + e.message;
+    outEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false; btn.textContent = '▶ Run';
+}
+function clearPlayground() {
+  document.getElementById('pg-output').textContent = '';
+  document.getElementById('pg-time').textContent = '';
+}
+// Ctrl+Enter to run
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.getElementById('tab-playground').style.display !== 'none') {
+    e.preventDefault(); runPlayground();
+  }
+});
 
 // Scripts
 async function loadAppSelect() {

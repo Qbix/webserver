@@ -865,6 +865,8 @@ class Q_WebServer
 		if ($ioPath !== false) $assetMap[$ioPath . '/socket.io.js'] = array(__DIR__ . DS . 'socket.io.js', 'application/javascript');
 		$assetMap['/Q/logo.svg'] = array(__DIR__ . DS . 'logo.svg', 'image/svg+xml');
 		$assetMap['/Q/logo.png'] = array(__DIR__ . DS . 'logo.png', 'image/png');
+		$assetMap['/Q/prism.js'] = array(__DIR__ . DS . 'prism.js', 'application/javascript');
+		$assetMap['/Q/prism.css'] = array(__DIR__ . DS . 'prism.css', 'text/css');
 		if (isset($assetMap[$path])) {
 			list($assetFile, $assetType) = $assetMap[$path];
 			if (file_exists($assetFile)) {
