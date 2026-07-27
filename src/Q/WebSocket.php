@@ -213,6 +213,18 @@ class Q_WebSocket
 		unset(self::$clients[$sk]);
 	}
 
+	/**
+	 * Disconnect all WebSocket clients. Called during graceful shutdown.
+	 * @method disconnectAll
+	 * @static
+	 */
+	static function disconnectAll()
+	{
+		foreach (array_keys(self::$clients) as $sk) {
+			self::disconnect($sk);
+		}
+	}
+
 	static function encodeAndSend($socket, $opcode, $payload)
 	{
 		$len = strlen($payload);

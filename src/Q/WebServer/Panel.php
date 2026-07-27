@@ -254,6 +254,8 @@ class Q_WebServer_Panel
 				return self::apiLogout($parsed);
 			case 'playground/run':
 				return self::apiPlaygroundRun($parsed);
+			case 'platform/install':
+				return self::apiInstallPlatform($parsed);
 			default:
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
@@ -502,31 +504,88 @@ class Q_WebServer_Panel
 	static function apiListPlugins()
 	{
 		$plugins = array();
-		if (!defined('Q_DIR')) return $plugins;
-		$pluginsDir = Q_DIR . DS . 'plugins';
-		if (!is_dir($pluginsDir)) {
-			$pluginsDir = Q_DIR . DS . '..' . DS . 'plugins';
+		$platformDir = null;
+		$pluginsDir = null;
+
+		// 1. Find platform via local/paths.json
+		if (defined('APP_DIR')) {
+			$pathsFile = APP_DIR . DS . 'local' . DS . 'paths.json';
+			if (file_exists($pathsFile)) {
+				$paths = json_decode(file_get_contents($pathsFile), true);
+				if (!empty($paths['platform'])) {
+					$platformDir = realpath($paths['platform']);
+				}
+			}
+		}
+		if (!$platformDir && defined('Q_DIR')) {
+			$platformDir = Q_DIR;
 		}
 
-		if (is_dir($pluginsDir)) {
-			foreach (scandir($pluginsDir) as $name) {
-				if ($name[0] === '.') continue;
-				$pDir = $pluginsDir . DS . $name;
-				if (!is_dir($pDir)) continue;
-
-				$configFile = $pDir . DS . 'config' . DS . 'plugin.json';
-				$config = file_exists($configFile)
-					? json_decode(file_get_contents($configFile), true) : array();
-
-				$plugins[] = array(
-					'name' => $name,
-					'dir' => $pDir,
-					'hasConfig' => file_exists($configFile),
-				);
+		// 2. Read app's plugin list from config/app.json
+		$appPlugins = array();
+		if (defined('APP_DIR')) {
+			$appConfig = APP_DIR . DS . 'config' . DS . 'app.json';
+			if (file_exists($appConfig)) {
+				$config = json_decode(file_get_contents($appConfig), true);
+				$appPlugins = $config['Q']['plugins'] ?? array();
 			}
 		}
 
-		return array('plugins' => $plugins, 'pluginsDir' => $pluginsDir);
+		// 3. Read installed versions from local/plugins.json
+		$installedVersions = array();
+		if (defined('APP_DIR')) {
+			$localPlugins = APP_DIR . DS . 'local' . DS . 'plugins.json';
+			if (file_exists($localPlugins)) {
+				$lp = json_decode(file_get_contents($localPlugins), true);
+				$installedVersions = $lp['Q']['pluginLocal'] ?? array();
+			}
+		}
+
+		// 4. Find plugins directory
+		if ($platformDir) {
+			$pluginsDir = $platformDir . DS . 'plugins';
+			if (!is_dir($pluginsDir)) {
+				$pluginsDir = dirname($platformDir) . DS . 'plugins';
+			}
+		}
+
+		// 5. Build plugin list — prefer app's declared plugins, fall back to scanning
+		$pluginNames = !empty($appPlugins) ? $appPlugins : array();
+		if (empty($pluginNames) && $pluginsDir && is_dir($pluginsDir)) {
+			foreach (scandir($pluginsDir) as $name) {
+				if ($name[0] === '.' || !is_dir($pluginsDir . DS . $name)) continue;
+				$pluginNames[] = $name;
+			}
+		}
+
+		foreach ($pluginNames as $name) {
+			$pDir = $pluginsDir ? $pluginsDir . DS . $name : null;
+			$configFile = $pDir ? $pDir . DS . 'config' . DS . 'plugin.json' : null;
+			$pConfig = ($configFile && file_exists($configFile))
+				? json_decode(file_get_contents($configFile), true) : null;
+
+			$info = $installedVersions[$name] ?? array();
+			$pluginInfo = $pConfig['Q']['pluginInfo'][$name] ?? array();
+
+			$plugins[] = array(
+				'name' => $name,
+				'dir' => $pDir,
+				'installed' => isset($info['version']),
+				'version' => $info['version'] ?? $pluginInfo['version'] ?? null,
+				'compatible' => $info['compatible'] ?? $pluginInfo['compatible'] ?? null,
+				'requires' => $pluginInfo['requires'] ?? $info['requires'] ?? array(),
+				'connections' => $pluginInfo['connections'] ?? $info['connections'] ?? array(),
+				'hasConfig' => $configFile && file_exists($configFile),
+				'inApp' => in_array($name, $appPlugins),
+			);
+		}
+
+		return array(
+			'plugins' => $plugins,
+			'pluginsDir' => $pluginsDir,
+			'platformDir' => $platformDir,
+			'appPlugins' => $appPlugins,
+		);
 	}
 
 	// ── System API ───────────────────────────────────────
@@ -584,6 +643,16 @@ class Q_WebServer_Panel
 
 	static function apiSystemInfo()
 	{
+		$platformDir = defined('Q_DIR') ? Q_DIR : null;
+		if (!$platformDir && defined('APP_DIR')) {
+			$pathsFile = APP_DIR . DS . 'local' . DS . 'paths.json';
+			if (file_exists($pathsFile)) {
+				$paths = json_decode(file_get_contents($pathsFile), true);
+				if (!empty($paths['platform'])) {
+					$platformDir = realpath($paths['platform']) ?: $paths['platform'];
+				}
+			}
+		}
 		return array(
 			'php' => PHP_VERSION,
 			'os' => PHP_OS,
@@ -595,7 +664,69 @@ class Q_WebServer_Panel
 			'hasPcntl' => function_exists('pcntl_fork'),
 			'hasApcu' => function_exists('apcu_fetch'),
 			'memoryLimit' => ini_get('memory_limit'),
-			'platform' => defined('Q_DIR') ? Q_DIR : null,
+			'platform' => $platformDir,
+			'appDir' => defined('APP_DIR') ? APP_DIR : null,
+			'hasGit' => self::which('git') !== null,
+		);
+	}
+
+	/**
+	 * Clone Qbix Platform from GitHub and set up local/paths.json
+	 */
+	static function apiInstallPlatform($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$dir = $body['dir'] ?? '';
+		if (!$dir) return array('status' => 400, 'error' => 'Directory required');
+
+		// Safety: don't overwrite existing
+		if (is_dir($dir) && file_exists($dir . DS . 'Q.php')) {
+			return array('error' => 'Platform already exists at ' . $dir);
+		}
+
+		// Check git
+		if (!self::which('git')) {
+			return array('error' => 'git not found. Install git first.');
+		}
+
+		// Clone
+		$parentDir = dirname($dir);
+		if (!is_dir($parentDir)) {
+			@mkdir($parentDir, 0755, true);
+		}
+		$dirName = basename($dir);
+		$cmd = 'cd ' . escapeshellarg($parentDir)
+			. ' && git clone https://github.com/Qbix/Platform.git '
+			. escapeshellarg($dirName) . ' 2>&1'
+			. ' && cd ' . escapeshellarg($dirName)
+			. ' && git submodule init 2>&1'
+			. ' && git submodule update --recursive 2>&1';
+		$output = shell_exec($cmd);
+
+		if (!is_dir($dir)) {
+			return array('error' => 'Clone failed', 'output' => $output);
+		}
+
+		// Set up local/paths.json pointing to the platform
+		if (defined('APP_DIR')) {
+			$localDir = APP_DIR . DS . 'local';
+			if (!is_dir($localDir)) @mkdir($localDir, 0755, true);
+			$pathsFile = $localDir . DS . 'paths.json';
+			$platformPath = realpath($dir) ?: $dir;
+			// Use the platform subdirectory if it exists (Qbix convention)
+			if (is_dir($platformPath . DS . 'platform')) {
+				$platformPath = $platformPath . DS . 'platform';
+			}
+			$paths = file_exists($pathsFile)
+				? json_decode(file_get_contents($pathsFile), true) : array();
+			$paths['platform'] = $platformPath;
+			file_put_contents($pathsFile, json_encode($paths, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		}
+
+		return array(
+			'ok' => true,
+			'dir' => realpath($dir),
+			'output' => $output,
 		);
 	}
 
@@ -997,7 +1128,8 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 
 <!-- PLUGINS TAB -->
 <div id="tab-plugins" class="content hidden">
-  <h2 style="font-size:16px;margin-bottom:16px">Installed Plugins</h2>
+  <h2 style="font-size:16px;margin-bottom:8px">Plugins</h2>
+  <div id="plugins-platform" style="font-size:12px;color:var(--dim);margin-bottom:14px"></div>
   <div id="plugins-list"></div>
 </div>
 
@@ -1039,6 +1171,11 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 <div id="tab-system" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">System Info</h2>
   <div class="grid-2" id="system-info"></div>
+
+  <div id="platform-install" style="margin-top:20px">
+    <h2 style="font-size:16px;margin-bottom:12px">Qbix Platform</h2>
+    <div id="platform-status" class="card"></div>
+  </div>
 </div>
 
 <script>
@@ -1429,14 +1566,36 @@ function quickScript(name, args) {
 // Plugins
 async function loadPlugins() {
   var d = await api('plugins');
+  var pEl = document.getElementById('plugins-platform');
+  pEl.textContent = d.platformDir
+    ? 'Platform: ' + d.platformDir + ' · ' + (d.plugins||[]).length + ' plugins'
+    : 'No Qbix Platform detected. Plugins show when connected to a Platform app.';
   var el = document.getElementById('plugins-list');
-  el.innerHTML = (d.plugins||[]).map(function(p) { return ''
-    + '<div class="app-row">'
-    + '<span class="dot on"></span>'
-    + '<span class="app-name">'+p.name+'</span>'
+  if (!d.plugins || !d.plugins.length) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No plugins found.</p></div>';
+    return;
+  }
+  el.innerHTML = (d.plugins||[]).map(function(p) {
+    var ver = p.version ? ' v' + p.version : '';
+    var compat = p.compatible ? ' (compat: ' + p.compatible + ')' : '';
+    var status = p.installed ? 'installed' : (p.inApp ? 'in config' : 'available');
+    var deps = (p.requires && Object.keys(p.requires).length)
+      ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">requires: ' + Object.keys(p.requires).join(', ') + '</div>'
+      : '';
+    var conns = (p.connections && p.connections.length)
+      ? '<div style="font-size:11px;color:var(--dim)">db: ' + p.connections.join(', ') + '</div>'
+      : '';
+    return ''
+    + '<div class="app-row" style="flex-wrap:wrap">'
+    + '<span class="dot '+(p.installed?'on':(p.inApp?'on':'off'))+'"></span>'
+    + '<span class="app-name">'+p.name+ver+'</span>'
+    + '<span class="app-url">'+status+compat+'</span>'
     + '<div class="btn-row">'
-    + '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+p.dir+'\',\'folder\')">📂</button>'
-    + '</div></div>';
+    + (p.dir ? '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+p.dir+'\',\'folder\')">📂</button>' : '')
+    + (p.dir ? '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+p.dir+'\',\'vscode\')">VS</button>' : '')
+    + '</div>'
+    + deps + conns
+    + '</div>';
   }).join('');
 }
 
@@ -1451,9 +1610,42 @@ async function loadSystem() {
     ['Node.js', d.hasNode?'✅ installed':'<span style="color:var(--red)">❌ not found</span> — <a href="https://nodejs.org/" target="_blank" style="color:var(--ac)">install</a>'],
     ['npm', d.hasNpm?'✅ installed':'❌ requires Node.js'],
   ];
+  if (d.platform) items.push(['Platform', d.platform]);
+  if (d.appDir) items.push(['App Dir', d.appDir]);
   el.innerHTML = items.map(function(i) {
     return '<div class="card"><div class="stat-lbl">'+i[0]+'</div><div class="stat-val" style="font-size:16px">'+i[1]+'</div></div>';
   }).join('');
+
+  // Platform install section
+  var pEl = document.getElementById('platform-status');
+  if (d.platform) {
+    pEl.innerHTML = '<p style="color:var(--grn)">✅ Platform installed at <code style="font-size:12px">'+d.platform+'</code></p>';
+  } else {
+    pEl.innerHTML = ''
+      + '<p style="color:var(--dim);margin-bottom:12px">Qbix Platform adds user accounts, real-time streams, assets, and 20+ plugins to your app.</p>'
+      + '<div class="form-row"><label>Install to</label>'
+      + '<input id="platform-dir" value="'+(d.appDir ? d.appDir.replace(/[/\\][^/\\]*$/,'') : '')+'/platform" '
+      + 'style="font-size:12px" placeholder="/path/to/install/platform"></div>'
+      + '<div class="btn-row">'
+      + '<button class="btn btn-primary" onclick="installPlatform()" id="platform-btn">Clone from GitHub</button>'
+      + '</div>'
+      + '<pre id="platform-log" style="display:none;margin-top:12px;font-size:11px;color:var(--dim);max-height:200px;overflow:auto;background:rgba(0,0,0,.2);padding:8px;border-radius:4px"></pre>';
+  }
+}
+
+async function installPlatform() {
+  var dir = document.getElementById('platform-dir').value.trim();
+  if (!dir) return alert('Enter a directory path');
+  var btn = document.getElementById('platform-btn');
+  var log = document.getElementById('platform-log');
+  btn.disabled = true; btn.textContent = '⏳ Cloning...';
+  log.style.display = 'block'; log.textContent = 'git clone https://github.com/Qbix/Platform.git ' + dir + '\n';
+  try {
+    var r = await api('platform/install', {dir: dir});
+    if (r.error) { log.textContent += '\n⚠ ' + r.error; log.style.color = 'var(--red)'; }
+    else { log.textContent += r.output + '\n✅ Done! Refresh to see plugins.'; log.style.color = 'var(--grn)'; }
+  } catch(e) { log.textContent += '\nError: ' + e.message; log.style.color = 'var(--red)'; }
+  btn.disabled = false; btn.textContent = 'Clone from GitHub';
 }
 
 // Init

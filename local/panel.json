@@ -1,6 +1,7 @@
 {
     "passwordHash": "$2y$12$TX7uYvO.vn2Qc68CGf6AjujLgv3q2Mja4dx\/CArhnL\/95wjy8Levq",
     "sessions": {
-        "fe3e913db208abe9355b7af963cef92843152b7e684c6b56e577302fa254a580": 1785776826
+        "fe3e913db208abe9355b7af963cef92843152b7e684c6b56e577302fa254a580": 1785776826,
+        "7ba8938c8922a9b3192e9f65c820862f4087ce4b915807a0e55889509a4cb0f3": 1785780641
     }
 }
