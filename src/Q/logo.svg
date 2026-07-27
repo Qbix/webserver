@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 260" width="300" height="260">
+  <defs>
+    <!-- Top faces -->
+    <linearGradient id="yt" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD54F"/>
+      <stop offset="100%" stop-color="#FFC107"/>
+    </linearGradient>
+    <linearGradient id="gt" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#66BB6A"/>
+      <stop offset="100%" stop-color="#43A047"/>
+    </linearGradient>
+    <!-- Left faces -->
+    <linearGradient id="rl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EF5350"/>
+      <stop offset="100%" stop-color="#E53935"/>
+    </linearGradient>
+    <linearGradient id="rl2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F44336"/>
+      <stop offset="100%" stop-color="#D32F2F"/>
+    </linearGradient>
+    <!-- Right faces -->
+    <linearGradient id="br" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5C6BC0"/>
+      <stop offset="100%" stop-color="#3F51B5"/>
+    </linearGradient>
+    <linearGradient id="gr" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4CAF50"/>
+      <stop offset="100%" stop-color="#388E3C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Top-center cube -->
+  <!-- Top face (yellow) -->
+  <polygon points="150,20 220,55 150,90 80,55" fill="url(#yt)"/>
+  <!-- Left face (red) -->
+  <polygon points="80,55 150,90 150,160 80,125" fill="url(#rl)"/>
+  <!-- Right face (blue) -->
+  <polygon points="150,90 220,55 220,125 150,160" fill="url(#br)"/>
+
+  <!-- Bottom-left cube -->
+  <!-- Top face (yellow) -->
+  <polygon points="80,125 150,160 80,195 10,160" fill="url(#yt)"/>
+  <!-- Left face (red) -->
+  <polygon points="10,160 80,195 80,260 10,225" fill="url(#rl2)"/>
+  <!-- Right face (green) -->
+  <polygon points="80,195 150,160 150,230 80,260" fill="url(#gr)"/>
+
+  <!-- Bottom-right cube -->
+  <!-- Top face (green) -->
+  <polygon points="150,160 220,125 290,160 220,195" fill="url(#gt)"/>
+  <!-- Left face (red) -->
+  <polygon points="150,160 220,195 220,260 150,230" fill="url(#rl2)"/>
+  <!-- Right face (blue) -->
+  <polygon points="220,195 290,160 290,230 220,260" fill="url(#br)"/>
+</svg>

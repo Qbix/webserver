@@ -213,6 +213,216 @@ run_functional() {
 
     R=$(request "GET" "/Q/dashboard")
     assert_status "Dashboard" "200" "$(status_of "$R")"
+
+    bold "\n  404 handling"
+    R=$(request "GET" "/nonexistent-page.html")
+    assert_status "Missing file returns 404" "404" "$(status_of "$R")"
+
+    R=$(request "GET" "/no-such-dir/file.css")
+    assert_status "Missing nested path 404" "404" "$(status_of "$R")"
+
+    bold "\n  ETag / conditional GET"
+    R=$(request "GET" "/index.html")
+    ETAG=$(echo "$R" | grep -oi 'ETag: [^ ]*' | head -1 | sed 's/ETag: //i' | tr -d '\r')
+    if [ -n "$ETAG" ]; then
+        green "  ✓ ETag header present: $ETAG"
+        PASS=$((PASS+1))
+        R2=$(echo "$ETAG" | timeout 3 php -r '
+        $etag = trim(fgets(STDIN));
+        $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+        if (!$fp) { echo "FAIL"; exit; }
+        fwrite($fp, "GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: $etag\r\nConnection: close\r\n\r\n");
+        stream_set_timeout($fp, 2);
+        $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+        echo substr($r, 9, 3);
+        ' 2>/dev/null)
+        if [ "$R2" = "304" ]; then
+            green "  ✓ Conditional GET returns 304 Not Modified"
+            PASS=$((PASS+1))
+        else
+            red "  ✗ Conditional GET returned $R2, expected 304"
+            FAIL=$((FAIL+1))
+            ERRORS="${ERRORS}\n  ✗ Conditional GET"
+        fi
+    else
+        red "  ✗ No ETag header in response"
+        FAIL=$((FAIL+1))
+        SKIP=$((SKIP+1))
+        ERRORS="${ERRORS}\n  ✗ ETag"
+    fi
+
+    bold "\n  Keep-alive (multiple requests on one connection)"
+    KA_RESULT=$(timeout 5 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    // Send two requests on same connection
+    fwrite($fp, "GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
+    stream_set_timeout($fp, 2);
+    usleep(200000);
+    fwrite($fp, "GET /style.css HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    $count = substr_count($r, "HTTP/1.1 200");
+    echo ($count >= 2) ? "OK" : "FAIL:$count";
+    ' 2>/dev/null)
+    if [ "$KA_RESULT" = "OK" ]; then
+        green "  ✓ Two requests on one keep-alive connection"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Keep-alive failed ($KA_RESULT)"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ Keep-alive"
+    fi
+
+    bold "\n  Compression"
+    R=$(timeout 3 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    fwrite($fp, "GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n");
+    stream_set_timeout($fp, 2);
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    echo $r;
+    ' 2>/dev/null)
+    # Small files may not be compressed, but the header should be handled
+    S=$(status_of "$R")
+    if [ "$S" = "200" ]; then
+        green "  ✓ Accept-Encoding: gzip handled (HTTP $S)"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Gzip request failed (HTTP $S)"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+run_http_advanced() {
+    bold "\n═══ HTTP Advanced Tests ═══"
+
+    bold "\n  POST body size limit"
+    OVERSIZE=$(timeout 5 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    // Claim 100MB content-length
+    fwrite($fp, "POST /hello.php HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 104857600\r\nConnection: close\r\n\r\n");
+    fwrite($fp, "x");
+    stream_set_timeout($fp, 3);
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    $s = substr($r, 9, 3);
+    echo $s;
+    ' 2>/dev/null)
+    if [ "$OVERSIZE" = "413" ]; then
+        green "  ✓ Oversized POST rejected (413 Payload Too Large)"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Oversized POST returned $OVERSIZE, expected 413"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ POST size limit"
+    fi
+
+    bold "\n  File upload (multipart)"
+    UPLOAD=$(timeout 5 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    $boundary = "----QbixTestBoundary";
+    $body  = "--$boundary\r\n";
+    $body .= "Content-Disposition: form-data; name=\"title\"\r\n\r\nMy File\r\n";
+    $body .= "--$boundary\r\n";
+    $body .= "Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n";
+    $body .= "Content-Type: text/plain\r\n\r\nhello world\r\n";
+    $body .= "--$boundary--\r\n";
+    $ct = "multipart/form-data; boundary=$boundary";
+    fwrite($fp, "POST /hello.php HTTP/1.1\r\nHost: localhost\r\nContent-Type: $ct\r\nContent-Length: ".strlen($body)."\r\nConnection: close\r\n\r\n".$body);
+    stream_set_timeout($fp, 3);
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    $p = strpos($r, "\r\n\r\n");
+    $j = json_decode(substr($r, $p+4), true);
+    $hasPost = isset($j["post"]["title"]) && $j["post"]["title"] === "My File";
+    $hasFile = isset($j["files"]["file"]["name"]) && $j["files"]["file"]["name"] === "test.txt";
+    echo ($hasPost && $hasFile) ? "OK" : "FAIL:post=".($hasPost?"y":"n").",file=".($hasFile?"y":"n");
+    ' 2>/dev/null)
+    if [ "$UPLOAD" = "OK" ]; then
+        green "  ✓ Multipart upload (form field + file)"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Multipart upload failed ($UPLOAD)"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ File upload"
+    fi
+
+    bold "\n  Cookie roundtrip"
+    COOKIE=$(timeout 5 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    fwrite($fp, "GET /hello.php HTTP/1.1\r\nHost: localhost\r\nCookie: session=abc123; lang=en\r\nConnection: close\r\n\r\n");
+    stream_set_timeout($fp, 3);
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    $p = strpos($r, "\r\n\r\n");
+    $j = json_decode(substr($r, $p+4), true);
+    echo (isset($j["cookies"]["session"]) && $j["cookies"]["session"] === "abc123") ? "OK" : "FAIL";
+    ' 2>/dev/null)
+    if [ "$COOKIE" = "OK" ]; then
+        green "  ✓ Cookie header parsed into \$_COOKIE"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Cookie roundtrip failed ($COOKIE)"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ Cookie roundtrip"
+    fi
+
+    bold "\n  Redirect response"
+    R=$(request "GET" "/redirect.php")
+    S=$(status_of "$R")
+    if [ "$S" = "302" ] || [ "$S" = "301" ]; then
+        green "  ✓ Redirect (HTTP $S)"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Redirect returned $S"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ Redirect"
+    fi
+
+    bold "\n  Content-Type detection"
+    for pair in "style.css:text/css" "data.json:application/json" "index.html:text/html"; do
+        FILE=$(echo $pair | cut -d: -f1)
+        EXPECT=$(echo $pair | cut -d: -f2)
+        R=$(request "GET" "/$FILE")
+        if echo "$R" | grep -qi "$EXPECT"; then
+            green "  ✓ $FILE → $EXPECT"
+            PASS=$((PASS+1))
+        else
+            red "  ✗ $FILE content-type wrong"
+            FAIL=$((FAIL+1))
+        fi
+    done
+
+    bold "\n  Config test (-t)"
+    T_OUT=$(php "$ROOT_DIR/qbixserver.php" -t --root="$SCRIPT_DIR/web" 2>&1)
+    if echo "$T_OUT" | grep -q "Config: OK"; then
+        green "  ✓ Config test (-t) passes"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ Config test (-t) failed"
+        FAIL=$((FAIL+1))
+    fi
+
+    bold "\n  php://input compatibility"
+    RAW_RESULT=$(timeout 5 php -r '
+    $fp = @fsockopen("'"$HOST"'", '"$PORT"', $e, $es, 2);
+    if (!$fp) { echo "FAIL"; exit; }
+    $body = "hello raw world";
+    fwrite($fp, "POST /raw-input.php HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: " . strlen($body) . "\r\nConnection: close\r\n\r\n" . $body);
+    stream_set_timeout($fp, 3);
+    $r = ""; while (!feof($fp)) { $c = @fread($fp, 65536); if ($c === "" || $c === false) break; $r .= $c; } fclose($fp);
+    $p = strpos($r, "\r\n\r\n");
+    $j = json_decode(substr($r, $p+4), true);
+    echo ($j["raw"] === "hello raw world") ? "OK" : "FAIL";
+    ' 2>/dev/null)
+    if [ "$RAW_RESULT" = "OK" ]; then
+        green "  ✓ file_get_contents('php://input') returns request body"
+        PASS=$((PASS+1))
+    else
+        red "  ✗ php://input failed ($RAW_RESULT)"
+        FAIL=$((FAIL+1))
+        ERRORS="${ERRORS}\n  ✗ php://input"
+    fi
 }
 
 run_security() {
@@ -660,6 +870,7 @@ case "${1:-all}" in
         run_functional
         run_security
         run_php
+        run_http_advanced
         run_websocket
         ;;
     --bench)
@@ -673,6 +884,7 @@ case "${1:-all}" in
         run_functional
         run_security
         run_php
+        run_http_advanced
         run_websocket
         run_bench
         ;;

@@ -1,3 +1,3 @@
 <?php
-header('Location: /index.html');
-http_response_code(302);
+Q::header('Location: /index.html');
+Q::$_responseCode = 302;

@@ -707,7 +707,7 @@ class Q_WebServer
 				'headers'=>array('Content-Type'=>'text/html; charset=utf-8'));
 		}
 		if (self::isBlocked($path)) {
-			return array('status'=>403, 'body'=>'Forbidden',
+			return array('status'=>403, 'body'=>self::renderErrorPage(403, $path),
 				'headers'=>array('Content-Type'=>'text/plain'));
 		}
 
@@ -724,13 +724,24 @@ class Q_WebServer
 				if (is_file($ip)) { $fsPath = $ip; break; }
 			}
 			if (is_dir($fsPath)) {
-				if (self::isIndexed($path)) {
+				// Root path with no index → show welcome page
+				if ($path === '/') {
+					$welcome = __DIR__ . DS . 'welcome.php';
+					if (file_exists($welcome)) {
+						ob_start();
+						include $welcome;
+						return array('status' => 200, 'body' => ob_get_clean(),
+							'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
+					}
+				}
+				// Show directory listing if indexed
+				if (self::isIndexed($path) || $path === '/') {
 					return array('status'=>200,
 						'body'=>self::renderDirectoryListing($fsPath, $path),
 						'headers'=>array('Content-Type'=>'text/html; charset=utf-8',
 							'Cache-Control'=>'no-store'));
 				}
-				return array('status'=>403, 'body'=>'Forbidden',
+				return array('status'=>403, 'body'=>self::renderErrorPage(403, $path),
 					'headers'=>array('Content-Type'=>'text/plain'));
 			}
 		}
@@ -846,18 +857,19 @@ class Q_WebServer
 		}
 
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
-		// 1. Serve client JS files (before /Q/ check — socket.io.js is at /socket.io/)
-		$jsMap = array();
+		// 1. Serve built-in assets (JS clients, logo)
+		$assetMap = array();
 		$jsPath = Q_Config::get('Q', 'socket', 'js', '/Q/socket.js');
-		if ($jsPath !== false) $jsMap[$jsPath] = __DIR__ . DS . 'socket.js';
+		if ($jsPath !== false) $assetMap[$jsPath] = array(__DIR__ . DS . 'socket.js', 'application/javascript');
 		$ioPath = Q_Config::get('Q', 'socket', 'io', '/socket.io');
-		if ($ioPath !== false) $jsMap[$ioPath . '/socket.io.js'] = __DIR__ . DS . 'socket.io.js';
-		if (isset($jsMap[$path])) {
-			$jsFile = $jsMap[$path];
-			if (file_exists($jsFile)) {
-				self::sendResponse($client, 200, file_get_contents($jsFile),
-					'application/javascript',
-					array('Cache-Control' => 'public, max-age=3600'));
+		if ($ioPath !== false) $assetMap[$ioPath . '/socket.io.js'] = array(__DIR__ . DS . 'socket.io.js', 'application/javascript');
+		$assetMap['/Q/logo.svg'] = array(__DIR__ . DS . 'logo.svg', 'image/svg+xml');
+		$assetMap['/Q/logo.png'] = array(__DIR__ . DS . 'logo.png', 'image/png');
+		if (isset($assetMap[$path])) {
+			list($assetFile, $assetType) = $assetMap[$path];
+			if (file_exists($assetFile)) {
+				self::sendResponse($client, 200, file_get_contents($assetFile),
+					$assetType, array('Cache-Control' => 'public, max-age=86400'));
 			} else {
 				self::sendResponse($client, 404, 'Not found');
 			}
@@ -910,7 +922,7 @@ class Q_WebServer
 
 		// 3. Blocked paths
 		if (self::isBlocked($path)) {
-			self::sendResponse($client, 403, 'Forbidden');
+			self::sendResponse($client, 403, self::renderErrorPage(403, $path), 'text/html; charset=utf-8');
 			return false;
 		}
 
@@ -953,13 +965,24 @@ class Q_WebServer
 				}
 			}
 			if (is_dir($fsPath)) {
-				// No index file → check if listings are enabled for this path
-				if (self::isIndexed($path)) {
+				// Root path with no index → show welcome page
+				if ($path === '/') {
+					$welcome = __DIR__ . DS . 'welcome.php';
+					if (file_exists($welcome)) {
+						ob_start();
+						include $welcome;
+						self::sendResponse($client, 200, ob_get_clean(),
+							'text/html; charset=utf-8');
+						return false;
+					}
+				}
+				// Show directory listing if indexed OR if it's the root path
+				if (self::isIndexed($path) || $path === '/') {
 					$html = self::renderDirectoryListing($fsPath, $path);
 					self::sendResponse($client, 200, $html, 'text/html; charset=utf-8',
 						array('Cache-Control' => 'no-store'));
 				} else {
-					self::sendResponse($client, 403, 'Forbidden');
+					self::sendResponse($client, 403, self::renderErrorPage(403, $path), 'text/html; charset=utf-8');
 				}
 				return false;
 			}
@@ -1094,7 +1117,7 @@ class Q_WebServer
 		$_REQUEST = array_merge($_GET, $_POST);
 
 		// Make raw body available
-		Q_Request::$input = $rawBody;
+		Q_Request::setInput($rawBody);
 
 		// If pcntl available, fork to isolate
 		if (function_exists('pcntl_fork')) {
@@ -1221,7 +1244,7 @@ class Q_WebServer
 		if (!empty($cgiPatterns) && $cgiBinary) {
 			$relPath = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen(self::$rootDir))), '/');
 			foreach ($cgiPatterns as $pattern) {
-				if (@preg_match($pattern, $relPath)) {
+				if (@preg_match(self::ensureRegex($pattern), $relPath)) {
 					return self::handlePhpCgi($client, $parsed, $scriptPath, $cgiBinary);
 				}
 			}
@@ -1342,7 +1365,7 @@ if (strpos($ct,'application/x-www-form-urlencoded') !== false) parse_str($raw, $
 elseif (strpos($ct,'application/json') !== false) $_POST = json_decode($raw, true) ?: [];
 elseif (strpos($ct,'multipart/form-data') !== false) { $oct=$req['headers']['content-type']??''; Q_WebServer::parseMultipart($oct, $raw, $_POST, $_FILES); }
 $_REQUEST = array_merge($_COOKIE, $_GET, $_POST);
-if (class_exists('Q_Request',false)) Q_Request::$input = $raw;
+if (class_exists('Q_Request',false)) Q_Request::setInput($raw);
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
@@ -1672,7 +1695,7 @@ WORKER;
 	{
 		$ext = strtolower(pathinfo($fsPath, PATHINFO_EXTENSION));
 		if (!in_array($ext, self::$allowedExtensions)) {
-			self::sendResponse($client, 403, 'Forbidden');
+			self::sendResponse($client, 403, self::renderErrorPage(403, $path), 'text/html; charset=utf-8');
 			return;
 		}
 
@@ -1888,7 +1911,7 @@ WORKER;
 			'#^/img/#' => true
 		));
 		foreach ($patterns as $regex => $enabled) {
-			if ($enabled && preg_match($regex, $urlPath)) return true;
+			if ($enabled && preg_match(self::ensureRegex($regex), $urlPath)) return true;
 		}
 		return false; // not indexed by default
 	}
@@ -1935,7 +1958,7 @@ WORKER;
 			if (!in_array($ext, self::$allowedExtensions)) continue;
 
 			$size = filesize($full);
-			$sizeStr = $size < 1024 ? "${size} B"
+			$sizeStr = $size < 1024 ? "{$size} B"
 				: ($size < 1048576 ? round($size/1024,1).' KB'
 				: round($size/1048576,1).' MB');
 
@@ -2142,7 +2165,7 @@ HTML
 		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
 
 		// Make raw body available
-		Q_Request::$input = $rawBody;
+		Q_Request::setInput($rawBody);
 
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
@@ -2420,13 +2443,89 @@ HTML
 		self::$lastStatus = 304;
 	}
 
-	private static function render404($path)
+	/**
+	 * Render an error page. Checks for user override at errors/$code.php
+	 * (or errors/$code.html), then falls back to built-in styled page.
+	 * @method renderErrorPage
+	 * @static
+	 * @param {integer} $code HTTP status code
+	 * @param {string} $path The requested path (for display)
+	 * @return {string} HTML
+	 */
+	static function renderErrorPage($code, $path = '')
 	{
 		$safe = htmlspecialchars($path, ENT_QUOTES);
-		return "<!DOCTYPE html><html><head><title>404</title>"
-			. "<style>body{font-family:sans-serif;padding:40px;text-align:center;color:#666}"
-			. "h1{font-size:72px;color:#ddd}p{margin-top:12px}</style></head>"
-			. "<body><h1>404</h1><p>{$safe} not found</p></body></html>";
+
+		// Check user overrides: errors/404.php, errors/404.html
+		foreach (Q::$paths as $base) {
+			$phpFile = $base . DS . 'errors' . DS . $code . '.php';
+			if (file_exists($phpFile)) {
+				ob_start();
+				$_code = $code; $_path = $path;
+				include $phpFile;
+				return ob_get_clean();
+			}
+			$htmlFile = $base . DS . 'errors' . DS . $code . '.html';
+			if (file_exists($htmlFile)) {
+				return file_get_contents($htmlFile);
+			}
+		}
+
+		// Built-in error pages
+		$titles = array(
+			403 => 'Forbidden',
+			404 => 'Not Found',
+			413 => 'Payload Too Large',
+			429 => 'Too Many Requests',
+			500 => 'Server Error',
+			502 => 'Bad Gateway',
+			503 => 'Service Unavailable',
+		);
+		$messages = array(
+			403 => 'You don\'t have permission to access this resource.',
+			404 => "The page <code>{$safe}</code> could not be found.",
+			413 => 'The request body exceeds the maximum allowed size.',
+			429 => 'Please slow down and try again later.',
+			500 => 'Something went wrong. The server encountered an internal error.',
+			502 => 'The server received an invalid response from an upstream server.',
+			503 => 'The server is temporarily unavailable. Please try again later.',
+		);
+		$title = $titles[$code] ?? 'Error';
+		$msg = $messages[$code] ?? 'An unexpected error occurred.';
+
+		return '<!DOCTYPE html><html><head><meta charset="utf-8">'
+			. '<meta name="viewport" content="width=device-width,initial-scale=1">'
+			. "<title>{$code} {$title}</title>"
+			. '<style>'
+			. '*{margin:0;padding:0;box-sizing:border-box}'
+			. 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+			. 'min-height:100vh;display:flex;align-items:center;justify-content:center;'
+			. 'background:#f8f9fa;color:#333}'
+			. '.c{text-align:center;padding:40px 20px;max-width:480px}'
+			. '.logo{width:40px;height:auto;margin-bottom:12px;opacity:.35}'
+			. '.n{font-size:100px;font-weight:700;color:#e0e0e0;line-height:1}'
+			. '.t{font-size:18px;margin:12px 0 8px;font-weight:600}'
+			. '.m{color:#888;line-height:1.5;font-size:14px}'
+			. '.m code{background:#eee;padding:2px 6px;border-radius:3px;font-size:13px;word-break:break-all}'
+			. '.b{margin-top:20px}'
+			. '.b a{color:#4a9eff;text-decoration:none;font-size:14px}'
+			. '.b a:hover{text-decoration:underline}'
+			. '.f{margin-top:28px;color:#ccc;font-size:11px}'
+			. '@media(max-width:500px){.n{font-size:72px}.t{font-size:16px}.m{font-size:13px}}'
+			. '</style></head><body>'
+			. '<div class="c">'
+			. '<img class="logo" src="/Q/logo.png" alt="">'
+			. "<div class=\"n\">{$code}</div>"
+			. "<div class=\"t\">{$title}</div>"
+			. "<div class=\"m\">{$msg}</div>"
+			. '<div class="b"><a href="/">← Back to home</a></div>'
+			. '<div class="f">Qbix Server</div>'
+			. '</div></body></html>';
+	}
+
+	private static function render404($path)
+	{
+		return self::renderErrorPage(404, $path);
 	}
 
 	// ── Path resolution ──────────────────────────────────
@@ -2642,5 +2741,27 @@ HTML
 			case 'K': $num *= 1024; break;
 		}
 		return $num;
+	}
+
+	/**
+	 * Ensure a string is a valid regex. If it already has delimiters
+	 * (starts with # / ~ { or another non-alnum), return as-is.
+	 * Otherwise wrap with #^ ... $# so plain strings like
+	 * "/wp-admin/" work as patterns without manual delimiters.
+	 * @method ensureRegex
+	 * @static
+	 * @param {string} $pattern
+	 * @return {string}
+	 */
+	static function ensureRegex($pattern)
+	{
+		if ($pattern === '') return '#^$#';
+		// Only treat # as a pre-existing delimiter.
+		// Everything else gets wrapped: plain strings like "/wp-admin/"
+		// and bare regex like "\.php$" both work.
+		if ($pattern[0] === '#') {
+			return $pattern;
+		}
+		return '#' . $pattern . '#';
 	}
 }
