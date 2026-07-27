@@ -27,9 +27,9 @@ p code{background:#eee;padding:1px 5px;border-radius:3px;color:#333}
 .tree{font-size:12px;line-height:1.7;color:#555;overflow-x:auto}
 .tree b{color:#1a1a2e}
 .cmt{color:#888}
-.links{margin:24px 0;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
-.links a{color:#fff;background:#2a7fff;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:13px;white-space:nowrap}
-.links a:hover{background:#1a6fe8}
+.links{margin:20px 0 0;display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
+.links a{color:#fff;background:rgba(255,255,255,.15);text-decoration:none;padding:6px 14px;border-radius:6px;font-size:13px;white-space:nowrap;backdrop-filter:blur(4px)}
+.links a:hover{background:rgba(255,255,255,.25)}
 .foot{text-align:center;color:#bbb;font-size:11px;padding:24px;border-top:1px solid #eee;margin-top:24px}
 @media(max-width:500px){
   .hero{padding:32px 16px}
@@ -46,6 +46,12 @@ p code{background:#eee;padding:1px 5px;border-radius:3px;color:#333}
   <h1>Qbix Server</h1>
   <p>Your server is running. Now build something.</p>
   <div class="v">PHP <?= PHP_VERSION ?> · PID <?= getmypid() ?></div>
+  <div class="links">
+    <a href="/Q/dashboard">📊 Dashboard</a>
+    <a href="/Q/health">💚 Health</a>
+    <a href="/Q/panel">⚙️ Panel</a>
+    <a href="https://github.com/Qbix/Server">📖 Docs</a>
+  </div>
 </div>
 
 <div class="w">
@@ -190,18 +196,28 @@ socket.emit('chat/message', {text: 'Hello!'});
   All examples above can be copy-pasted into the directories shown.
 </div>
 
-<div class="links">
-  <a href="/Q/dashboard">📊 Dashboard</a>
-  <a href="/Q/health">💚 Health</a>
-  <a href="/Q/panel">⚙️ Panel</a>
-  <a href="https://github.com/Qbix/Server">📖 Docs</a>
-</div>
-
 </div>
 
 <div class="foot">
   Qbix Server · Create <code>web/index.html</code> or <code>web/index.php</code> to replace this page
 </div>
+
+<script>
+// Tiny PHP syntax highlighter — no dependencies
+document.querySelectorAll('pre code').forEach(function(el){
+  var s = el.innerHTML;
+  // Order matters: comments first, then strings, then the rest
+  s = s.replace(/(\/\/[^\n]*)/g, '<i style="color:#6a737d">$1</i>');
+  s = s.replace(/('(?:[^'\\]|\\.)*')/g, '<b style="color:#98c379">$1</b>');
+  s = s.replace(/("(?:[^"\\]|\\.)*")/g, '<b style="color:#98c379">$1</b>');
+  s = s.replace(/(\$[a-zA-Z_]\w*)/g, '<em style="color:#e5c07b;font-style:normal">$1</em>');
+  s = s.replace(/\b(function|return|class|static|extract|echo|if|else|foreach|as|new|use|var|const|let|null|true|false|array)\b/g, '<b style="color:#c678dd">$1</b>');
+  s = s.replace(/(&lt;\?php)/g, '<b style="color:#c678dd">$1</b>');
+  s = s.replace(/-&gt;(\w+)\(/g, '-&gt;<span style="color:#61afef">$1</span>(');
+  s = s.replace(/\b(\w+)\(/g, '<span style="color:#61afef">$1</span>(');
+  el.innerHTML = s;
+});
+</script>
 
 </body>
 </html>

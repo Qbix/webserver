@@ -22,6 +22,8 @@ class Q_WebServer_Panel
 {
 	/** @internal IP => [timestamps] for brute force protection */
 	static $loginAttempts = array();
+	/** @internal Currently served app dirName, or null */
+	static $servingApp = null;
 	/**
 	 * Handle panel requests with authentication.
 	 * First visitor sets a password. All subsequent requests require it.
@@ -234,6 +236,10 @@ class Q_WebServer_Panel
 				return self::apiRunScript($parsed, 'install');
 			case 'apps/open':
 				return self::apiOpenFolder($parsed);
+			case 'apps/serve':
+				return self::apiServeApp($parsed);
+			case 'apps/setdir':
+				return self::apiSetAppsDir($parsed);
 			case 'scripts':
 				return self::apiListScripts($parsed);
 			case 'scripts/run':
@@ -308,10 +314,16 @@ class Q_WebServer_Panel
 		foreach (scandir($appsDir) as $name) {
 			if ($name[0] === '.' || !is_dir($appsDir . DS . $name)) continue;
 			$appDir = $appsDir . DS . $name;
-			$configFile = $appDir . DS . 'config' . DS . 'app.json';
-			if (!file_exists($configFile)) continue;
 
-			$config = json_decode(file_get_contents($configFile), true);
+			// Include any directory that has web/ or config/app.json
+			$hasWeb = is_dir($appDir . DS . 'web');
+			$configFile = $appDir . DS . 'config' . DS . 'app.json';
+			$hasConfig = file_exists($configFile);
+			if (!$hasWeb && !$hasConfig) continue;
+
+			$config = $hasConfig
+				? json_decode(file_get_contents($configFile), true)
+				: array();
 			$localConfig = null;
 			$localFile = $appDir . DS . 'local' . DS . 'app.json';
 			if (file_exists($localFile)) {
@@ -322,6 +334,10 @@ class Q_WebServer_Panel
 			$plugins = $config['Q']['plugins'] ?? array();
 			$configured = is_dir($appDir . DS . 'local');
 			$url = $localConfig['Q']['web']['appRootUrl'] ?? '';
+			$hasHandlers = is_dir($appDir . DS . 'handlers');
+			$hasClasses = is_dir($appDir . DS . 'classes');
+			$hasScripts = is_dir($appDir . DS . 'scripts');
+			$isQbixApp = $hasConfig && isset($config['Q']);
 
 			$apps[] = array(
 				'name' => $appName,
@@ -330,7 +346,12 @@ class Q_WebServer_Panel
 				'plugins' => $plugins,
 				'configured' => $configured,
 				'url' => $url,
-				'hasWeb' => is_dir($appDir . DS . 'web'),
+				'hasWeb' => $hasWeb,
+				'hasHandlers' => $hasHandlers,
+				'hasClasses' => $hasClasses,
+				'hasScripts' => $hasScripts,
+				'isQbixApp' => $isQbixApp,
+				'serving' => (self::$servingApp === $name),
 			);
 		}
 
@@ -365,7 +386,20 @@ class Q_WebServer_Panel
 			}
 		}
 		if (!$templateDir) {
-			return array('status' => 404, 'error' => "Template '$template' not found");
+			// No template found — create a minimal standalone app
+			@mkdir($targetDir . DS . 'web', 0755, true);
+			@mkdir($targetDir . DS . 'handlers', 0755, true);
+			@mkdir($targetDir . DS . 'classes', 0755, true);
+			@mkdir($targetDir . DS . 'config', 0755, true);
+
+			file_put_contents($targetDir . DS . 'config' . DS . 'app.json',
+				json_encode(array('Q' => array('app' => $name)), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+			file_put_contents($targetDir . DS . 'web' . DS . 'index.html',
+				"<!DOCTYPE html>\n<html><head><title>{$name}</title></head>\n"
+				. "<body><h1>{$name}</h1><p>Edit web/index.html to get started.</p></body></html>\n");
+
+			return array('created' => $name, 'dir' => $targetDir);
 		}
 
 		// Copy template
@@ -512,6 +546,61 @@ class Q_WebServer_Panel
 		);
 	}
 
+	static function apiServeApp($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$appName = preg_replace('/[^A-Za-z0-9_]/', '', $body['app'] ?? '');
+		$enable = !empty($body['enable']);
+
+		if (!$appName) return array('status' => 400, 'error' => 'App name required');
+
+		$appsDir = self::appsDir();
+		$appDir = $appsDir . DS . $appName;
+		$webDir = $appDir . DS . 'web';
+
+		if ($enable) {
+			if (!is_dir($webDir)) {
+				return array('status' => 404, 'error' => "No web/ directory in $appName");
+			}
+			$root = realpath($webDir);
+			if (!$root) return array('status' => 500, 'error' => 'Cannot resolve path');
+			Q_WebServer::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $root), DS) . DS;
+			self::$servingApp = $appName;
+			return array('ok' => true, 'serving' => $appName, 'rootDir' => Q_WebServer::$rootDir);
+		} else {
+			if (defined('APP_DIR')) {
+				$orig = APP_DIR . DS . 'web';
+				if (is_dir($orig)) {
+					Q_WebServer::$rootDir = rtrim(str_replace(array('/', '\\'), DS, realpath($orig)), DS) . DS;
+				}
+			}
+			self::$servingApp = null;
+			return array('ok' => true, 'serving' => null, 'rootDir' => Q_WebServer::$rootDir);
+		}
+	}
+
+	/**
+	 * Change the apps directory. Persisted in panel config.
+	 */
+	static function apiSetAppsDir($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$dir = $body['dir'] ?? '';
+		if (!$dir || !is_dir($dir)) {
+			return array('status' => 400, 'error' => 'Directory does not exist: ' . $dir);
+		}
+		// Persist in config
+		Q_Config::set('Q', 'webserver', 'panel', 'appsDir', realpath($dir));
+		// Also save to panel config file
+		$configPath = self::panelConfigPath();
+		$config = file_exists($configPath) ? json_decode(file_get_contents($configPath), true) : array();
+		$config['appsDir'] = realpath($dir);
+		$d = dirname($configPath);
+		if (!is_dir($d)) @mkdir($d, 0700, true);
+		@file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		return array('ok' => true, 'appsDir' => realpath($dir));
+	}
+
 	static function apiOpenFolder($parsed)
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
@@ -548,11 +637,19 @@ class Q_WebServer_Panel
 
 	static function appsDir()
 	{
-		// Apps directory: configurable, defaults to sibling of platform
+		// 1. Explicit Q config
 		$dir = Q_Config::get('Q', 'webserver', 'panel', 'appsDir', null);
-		if ($dir) return $dir;
+		if ($dir && is_dir($dir)) return $dir;
+		// 2. Saved in panel config file
+		$configPath = self::panelConfigPath();
+		if (file_exists($configPath)) {
+			$config = json_decode(file_get_contents($configPath), true);
+			if (!empty($config['appsDir']) && is_dir($config['appsDir'])) {
+				return $config['appsDir'];
+			}
+		}
+		// 3. Platform mode: parent of APP_DIR
 		if (defined('APP_DIR')) return dirname(APP_DIR);
-		if (defined('Q_DIR')) return dirname(Q_DIR);
 		return null;
 	}
 
@@ -692,6 +789,8 @@ body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
 .btn-ghost:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.1)}
 .btn-grn{background:rgba(34,197,94,.12);color:var(--grn);border:1px solid rgba(34,197,94,.15)}
 .btn-grn:hover{background:rgba(34,197,94,.2)}
+.btn-red{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.15)}
+.btn-red:hover{background:rgba(239,68,68,.2)}
 .btn-row{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}
 .btn.disabled{opacity:.3;cursor:not-allowed;pointer-events:none}
 
@@ -795,9 +894,17 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 <div id="tab-apps" class="content">
   <!-- Suggestions -->
   <div id="suggestions" style="margin-bottom:16px"></div>
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <h2 style="font-size:16px">Your Apps</h2>
     <button class="btn btn-primary" onclick="showCreate()">+ New App</button>
+  </div>
+  <div id="apps-dir-row" style="font-size:12px;color:var(--dim);margin-bottom:14px">
+    Scanning: <span id="apps-dir-path" style="cursor:pointer;border-bottom:1px dashed var(--dim)" onclick="editAppsDir()"></span>
+    <span id="apps-dir-edit" class="hidden" style="margin-left:4px">
+      <input id="apps-dir-input" style="font-size:12px;padding:2px 6px;width:260px;background:var(--card);border:1px solid var(--border);color:var(--txt);border-radius:4px">
+      <button class="btn btn-sm btn-primary" onclick="saveAppsDir()" style="font-size:11px;padding:2px 8px">Save</button>
+      <button class="btn btn-sm btn-ghost" onclick="cancelAppsDir()" style="font-size:11px;padding:2px 8px">✕</button>
+    </span>
   </div>
   <div id="create-form" class="card hidden">
     <h3>Create New App</h3>
@@ -1087,17 +1194,31 @@ function showTab(name) {
 async function loadApps() {
   var d = await api('apps');
   var el = document.getElementById('apps-list');
+  // Show appsDir
+  document.getElementById('apps-dir-path').textContent = d.appsDir || '(not set)';
   if (!d.apps || !d.apps.length) {
-    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No apps found. Create one to get started.</p></div>';
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No apps found in this directory. Click + New App to create one.</p></div>';
     return;
   }
-  el.innerHTML = d.apps.map(function(a) { return ''
+  el.innerHTML = d.apps.map(function(a) {
+    var isServing = a.serving;
+    var badges = [];
+    if (a.hasWeb) badges.push('web');
+    if (a.hasHandlers) badges.push('handlers');
+    if (a.hasClasses) badges.push('classes');
+    if (a.isQbixApp) badges.push('qbix');
+    var badgeHtml = badges.map(function(b){return '<span style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;color:var(--dim)">'+b+'</span>'}).join(' ');
+    var statusText = isServing ? '<span style="color:var(--grn)">serving on this port</span>'
+      : (a.url ? a.url : (a.configured ? 'configured' : 'not configured'));
+    return ''
     + '<div class="app-row">'
-    + '<span class="dot '+(a.configured?'on':'off')+'"></span>'
+    + '<span class="dot '+(isServing?'on':(a.configured?'on':'off'))+'"></span>'
     + '<span class="app-name">'+a.name+'</span>'
-    + '<span class="app-url">'+(a.url||'not configured')+'</span>'
+    + '<span class="app-url">'+statusText+' '+badgeHtml+'</span>'
     + '<div class="btn-row">'
-    + (!a.configured ? '<button class="btn btn-sm btn-grn" onclick="configureApp(\''+a.dirName+'\')">Configure</button>' : '')
+    + (a.hasWeb && !isServing ? '<button class="btn btn-sm btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
+    + (isServing ? '<button class="btn btn-sm btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop</button>' : '')
+    + (a.isQbixApp && a.hasScripts && !a.configured ? '<button class="btn btn-sm btn-grn" onclick="configureApp(\''+a.dirName+'\',\''+a.name+'\')">Configure</button>' : '')
     + '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+a.dir+'\',\'folder\')">📂</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+a.dir+'\',\'vscode\')">VS</button>'
     + '</div></div>';
@@ -1115,9 +1236,34 @@ async function createApp() {
   hideCreate();
   loadApps();
 }
-async function configureApp(name) {
-  var r = await api('apps/configure', {app:name});
-  alert(r.output||'Done');
+async function configureApp(dirName, appName) {
+  var name = prompt('App name for configuration:', appName || dirName);
+  if (!name) return;
+  var r = await api('apps/configure', {app: dirName, name: name});
+  if (r.error) alert(r.error);
+  else if (r.output) alert(r.output);
+  loadApps();
+}
+async function serveApp(name, enable) {
+  var r = await api('apps/serve', {app:name, enable:enable});
+  if (r.error) return alert(r.error);
+  loadApps();
+}
+function editAppsDir() {
+  document.getElementById('apps-dir-input').value = document.getElementById('apps-dir-path').textContent;
+  document.getElementById('apps-dir-edit').classList.remove('hidden');
+  document.getElementById('apps-dir-path').style.display = 'none';
+  document.getElementById('apps-dir-input').focus();
+}
+function cancelAppsDir() {
+  document.getElementById('apps-dir-edit').classList.add('hidden');
+  document.getElementById('apps-dir-path').style.display = '';
+}
+async function saveAppsDir() {
+  var dir = document.getElementById('apps-dir-input').value.trim();
+  var r = await api('apps/setdir', {dir: dir});
+  if (r.error) return alert(r.error);
+  cancelAppsDir();
   loadApps();
 }
 async function openFolder(dir, editor) {
