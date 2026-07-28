@@ -1373,7 +1373,18 @@ class Q_PhpInputStream
 		return true;
 	}
 
-	function stream_stat() { return array(); }
+	function stream_stat() {
+		if ($this->path === 'input') {
+			return array('size' => strlen(self::$data));
+		}
+		if ($this->path === 'memory' || $this->path === 'temp') {
+			return array('size' => strlen($this->memory));
+		}
+		return array();
+	}
+	function url_stat($path, $flags) {
+		return array('size' => strlen(self::$data));
+	}
 	function stream_tell() { return $this->pos; }
 	function stream_seek($offset, $whence) {
 		if ($whence === SEEK_SET) $this->pos = $offset;

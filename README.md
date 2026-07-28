@@ -210,15 +210,21 @@ Startup:
   2. Include autoloader
   3. Load ALL framework classes into memory
   4. Parse ALL config files
-  5. Connect to database
-  6. pcntl_fork() → workers inherit everything
+  5. pcntl_fork() → workers inherit everything via COW
                      ↓
 Request:
-  Worker already has classes, config, DB connections.
-  Just run your code. 0ms bootstrap.
+  Worker already has classes, config, routes.
+  Open DB connection, run your code, die. Connection cleaned up by OS.
 ```
 
 The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so forked workers share the parent's memory pages for all those preloaded classes. Each worker starts with ~30MB shared (read-only) and allocates only the per-request data. Compare this to php-fpm where each worker loads everything independently, using 30MB × N workers of duplicated memory.
+
+> **Important:** Database connections must NOT be opened before `fork()`. A TCP
+> connection is a single file descriptor — two processes writing to the same
+> socket would interleave packets and corrupt the protocol. Each forked child
+> opens its own connection. This is the same model as php-fpm (one connection
+> per request) and is what connection poolers like PgBouncer or ProxySQL are
+> designed for.
 
 ### Preloading classes
 
@@ -2651,6 +2657,35 @@ dashboard. Updates live via WebSocket — no polling, no page refreshes.
 The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline`
 (60 data points), `topPaths`, `activeRooms`, `statusCodes` breakdown, and
 `cache` stats. Feed it to Grafana, Datadog, or your own monitoring.
+
+---
+
+## ⚙️ Control Panel
+
+Password-protected admin panel at `/Q/panel`. First visit sets the password.
+
+**Apps tab** — discovers sibling app directories (any folder with `web/` or
+`config/app.json`). Create new apps, serve them (hot-switches the document
+root), open in VS Code, run configure scripts. Editable apps directory path.
+
+**Scripts tab** — list and run PHP scripts from `scripts/Q/` (configure,
+install, translate, etc.)
+
+**Plugins tab** — reads the app's `config/app.json` for declared plugins,
+`local/plugins.json` for installed versions, and scans the Platform's
+`plugins/` directory. Shows version, dependencies, and DB connections for
+each.
+
+**Playground tab** — PHP REPL with all Q classes preloaded. Write code, hit
+Run (or Ctrl+Enter), see output. Sandboxed in a forked process with disabled
+filesystem writes, no network, 32MB memory limit, 5 second timeout.
+
+**System tab** — PHP version, OS, extensions, memory limit. One-click
+Platform install: clones `github.com/Qbix/Platform`, runs
+`git submodule update --recursive`, sets up `local/paths.json`.
+
+The panel is restricted to localhost by default. Set `Q.panel.remote: true`
+in config to allow remote access.
 
 ---
 

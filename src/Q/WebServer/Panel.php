@@ -605,25 +605,39 @@ class Q_WebServer_Panel
 
 		$start = microtime(true);
 
-		// Use proc_open for isolation — capture stdout+stderr
+		// Build a wrapper that loads Q.php for access to Q::, Q_Config, etc.
+		$qPath = dirname(dirname(__DIR__)) . DS . 'Q.php';
+		$bootstrap = "error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED);\n"
+			. "require_once " . var_export($qPath, true) . ";\n";
+		if (defined('APP_DIR')) {
+			$bootstrap .= "Q::init(" . var_export(APP_DIR, true) . ");\n";
+		}
+		$fullCode = "<?php\n" . $bootstrap . $code;
+
+		// Write to temp file (safer than -r for complex code)
+		$tmpFile = tempnam(sys_get_temp_dir(), 'qplay_');
+		file_put_contents($tmpFile, $fullCode);
+
 		$descriptors = array(
 			0 => array('pipe', 'r'),
 			1 => array('pipe', 'w'),
 			2 => array('pipe', 'w'),
 		);
-		// Run with restricted ini: no network functions, memory limit
 		$cmd = PHP_BINARY . ' -d disable_functions=exec,shell_exec,system,passthru,popen,proc_open'
 			. ',file_put_contents,fwrite,unlink,rmdir,mkdir,rename,chmod,chown'
 			. ',curl_init,fsockopen,stream_socket_client'
-			. ' -d memory_limit=32M -d max_execution_time=5 -r ' . escapeshellarg($code);
+			. ' -d disable_classes=SplFileObject'
+			. ' -d open_basedir=' . escapeshellarg(sys_get_temp_dir() . ':' . dirname(dirname(__DIR__)))
+			. ' -d memory_limit=32M -d max_execution_time=5'
+			. ' ' . escapeshellarg($tmpFile);
 
 		$proc = @proc_open($cmd, $descriptors, $pipes);
 		if (!is_resource($proc)) {
+			@unlink($tmpFile);
 			return array('output' => '', 'error' => 'Failed to start process', 'ms' => 0);
 		}
 		fclose($pipes[0]);
 
-		// Read with timeout
 		stream_set_timeout($pipes[1], 5);
 		stream_set_timeout($pipes[2], 5);
 		$output = stream_get_contents($pipes[1], 65536);
@@ -632,7 +646,15 @@ class Q_WebServer_Panel
 		fclose($pipes[2]);
 
 		$exitCode = proc_close($proc);
+		@unlink($tmpFile);
 		$ms = round((microtime(true) - $start) * 1000, 1);
+
+		// Filter out xdebug noise from stderr
+		if ($stderr) {
+			$stderr = preg_replace('/^Xdebug:.*\n?/m', '', $stderr);
+			$stderr = preg_replace('/^Cannot load Xdebug.*\n?/m', '', $stderr);
+			$stderr = trim($stderr);
+		}
 
 		$result = array('output' => $output, 'ms' => $ms);
 		if ($stderr) $result['error'] = $stderr;
@@ -923,7 +945,7 @@ body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
   background:rgba(10,11,20,.8);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:50}
 .top h1{font-size:17px;color:#fff;font-weight:700;letter-spacing:-.3px}
-.top h1 span{color:var(--ac);font-weight:800}
+.top h1 img{vertical-align:middle}
 .status{display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500;
   padding:4px 12px;border-radius:20px;background:rgba(34,197,94,.1);color:var(--grn)}
 .status .pulse{width:6px;height:6px;border-radius:50%;background:var(--grn);
@@ -1064,7 +1086,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 }
 </style></head><body>
 <div class="top">
-  <h1><span>Q</span>bix Server</h1>
+  <h1><img src="/Q/logo.png" alt="" style="width:24px;height:auto;vertical-align:middle;margin-right:6px">Qbix Server</h1>
   <div class="status"><span class="pulse"></span> Running</div>
 </div>
 <div class="tabs">
@@ -1143,7 +1165,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     </div>
   </div>
   <p style="font-size:12px;color:var(--dim);margin-bottom:10px">
-    Code runs in an isolated forked process. No filesystem access, no network. Ctrl+Enter to run.
+    Q classes are preloaded. Try <code style="font-size:11px">Q::app()</code>, <code style="font-size:11px">Q_Config::getAll()</code>, <code style="font-size:11px">Q_Request::url()</code>. Ctrl+Enter to run.
   </p>
   <div style="display:grid;grid-template-rows:1fr auto;gap:10px;min-height:400px">
     <div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column">
@@ -1153,7 +1175,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
         font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;line-height:1.5;
         padding:12px;resize:none;outline:none;tab-size:4;
       "></textarea>
-      <script>document.getElementById('pg-code').value="<?php\necho \"Hello from Qbix Server!\\n\";\n\n$data = ['name' => 'Alice', 'score' => 42];\necho json_encode($data, JSON_PRETTY_PRINT) . \"\\n\";\n\nfor ($i = 1; $i <= 5; $i++) {\n    echo \"Iteration $i\\n\";\n}";</script>
+      <script>document.getElementById('pg-code').value="<?php\necho \"App: \" . Q::app() . \"\\n\";\necho \"Config: \" . json_encode(Q_Config::getAll(), JSON_PRETTY_PRINT) . \"\\n\";\n\n// Available classes:\n// Q, Q_Config, Q_Request, Q_Response, Q_Socket, Q_Room\necho \"\\nLoaded classes:\\n\";\nforeach (get_declared_classes() as $c) {\n    if (strpos($c, 'Q_') === 0) echo \"  $c\\n\";\n}";</script>
     </div>
     <div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;min-height:120px">
       <div style="padding:6px 12px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--border)">

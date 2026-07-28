@@ -508,6 +508,7 @@ class Q_WebServer
 		$firstChar = $buf[0];
 		if ($firstChar === 'P') { // POST, PUT, PATCH all start with P
 			$cl = 0;
+			$isChunked = (bool) preg_match('/transfer-encoding:\s*chunked/i', $buf);
 			if (preg_match('/content-length:\s*(\d+)/i', $buf, $m)) {
 				$cl = (int) $m[1];
 			}
@@ -517,7 +518,13 @@ class Q_WebServer
 				self::closeClient($key);
 				return;
 			}
-			if (strlen($buf) - $headerEnd - 4 < $cl) return;
+			if ($isChunked) {
+				// Chunked: wait for terminating 0\r\n\r\n
+				$bodyPart = substr($buf, $headerEnd + 4);
+				if (strpos($bodyPart, "\r\n0\r\n") === false && strpos($bodyPart, "\n0\n") === false) return;
+			} elseif ($cl > 0) {
+				if (strlen($buf) - $headerEnd - 4 < $cl) return;
+			}
 		}
 
 		// Cancel read timeout (request received)
@@ -1385,6 +1392,7 @@ WORKER;
 			file_put_contents($workerFile, $workerCode);
 			register_shutdown_function(function () use (&$workerFile) {
 				@unlink($workerFile);
+				Q_WebServer::cleanupUploadFiles();
 			});
 		}
 
@@ -2211,6 +2219,15 @@ HTML
 		}
 		$body = ob_get_clean();
 		@header_remove();
+
+		// Fix 1: Clean up upload temp files
+		self::cleanupUploadFiles();
+
+		// Fix 3: Restore native php:// stream wrapper
+		if (class_exists('Q_Request', false)) {
+			Q_Request::restoreInput();
+		}
+
 		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 
 		// Process Merkle cache headers (strips X-Q-Cache-* from response)
@@ -2279,6 +2296,28 @@ HTML
 		if ($httpVersion === '1.0' && !isset($headers['connection'])) {
 			$headers['connection'] = 'close';
 		}
+
+		// Decode chunked transfer-encoding
+		if (isset($headers['transfer-encoding'])
+			&& stripos($headers['transfer-encoding'], 'chunked') !== false
+			&& $body
+		) {
+			$decoded = '';
+			$pos = 0;
+			while ($pos < strlen($body)) {
+				$nlPos = strpos($body, "\r\n", $pos);
+				if ($nlPos === false) break;
+				$chunkSize = hexdec(substr($body, $pos, $nlPos - $pos));
+				if ($chunkSize === 0) break;
+				$pos = $nlPos + 2;
+				$decoded .= substr($body, $pos, $chunkSize);
+				$pos += $chunkSize + 2; // skip chunk data + \r\n
+			}
+			$body = $decoded;
+			unset($headers['transfer-encoding']);
+			$headers['content-length'] = (string) strlen($body);
+		}
+
 		return compact('method', 'uri', 'path', 'query', 'headers', 'body', 'httpVersion');
 	}
 
@@ -2374,6 +2413,7 @@ HTML
 				if ($error === UPLOAD_ERR_OK) {
 					file_put_contents($tmpPath, $partBody);
 				}
+				self::$uploadTempFiles[] = $tmpPath;
 
 				$fileEntry = array(
 					'name'     => $filename,
@@ -2703,6 +2743,8 @@ HTML
 	static $maxFileUploads = 20;
 	/** @var boolean Whether file uploads are enabled (from file_uploads ini) */
 	static $fileUploads = true;
+	/** @var array Temp files created by multipart parsing — cleaned on request end */
+	static $uploadTempFiles = array();
 
 	static $allowedExtensions = array(
 		'html','htm','txt','md','json','xml','yaml','yml','csv','tsv','log',
@@ -2746,6 +2788,20 @@ HTML
 	}
 
 	/**
+	 * Remove temp files created during multipart upload parsing.
+	 * Called after each request in both in-process and fork modes.
+	 * @method cleanupUploadFiles
+	 * @static
+	 */
+	static function cleanupUploadFiles()
+	{
+		foreach (self::$uploadTempFiles as $f) {
+			if ($f && file_exists($f)) @unlink($f);
+		}
+		self::$uploadTempFiles = array();
+	}
+
+	/**
 	 * Ensure a string is a valid regex. If it already has delimiters
 	 * (starts with # / ~ { or another non-alnum), return as-is.
 	 * Otherwise wrap with #^ ... $# so plain strings like
@@ -2757,13 +2813,12 @@ HTML
 	 */
 	static function ensureRegex($pattern)
 	{
-		if ($pattern === '') return '#^$#';
-		// Only treat # as a pre-existing delimiter.
-		// Everything else gets wrapped: plain strings like "/wp-admin/"
-		// and bare regex like "\.php$" both work.
+		if ($pattern === '') return "\x01^\$\x01";
+		// Only treat # as a pre-existing delimiter (our convention).
 		if ($pattern[0] === '#') {
 			return $pattern;
 		}
-		return '#' . $pattern . '#';
+		// Use \x01 as delimiter — won't appear in URL patterns
+		return "\x01" . $pattern . "\x01";
 	}
 }
