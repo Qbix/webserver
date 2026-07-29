@@ -3276,6 +3276,296 @@ HTML;
 	 * Accepts POST with files[] JSON array of image URLs (with ?w= params).
 	 * Generates/caches each image, then streams a ZIP.
 	 */
+	// ── PHPDoc / YUIDoc parsing for API discovery ────────
+
+	/**
+	 * Parse PHPDoc or YUIDoc block from a handler file.
+	 * Supports both styles and degrades gracefully on malformed input.
+	 *
+	 * PHPDoc:  @param string $name Description
+	 * YUIDoc:  @param {String} name Description
+	 * YUIDoc:  @param name {String} Description
+	 * YUIDoc:  @param {Object} [name=default] Description (optional)
+	 *
+	 * @method parseHandlerDoc
+	 * @static
+	 */
+	static function parseHandlerDoc($filePath)
+	{
+		$result = array(
+			'summary' => '',
+			'description' => '',
+			'params' => array(),
+			'return' => '',
+			'method' => '',
+			'deprecated' => false,
+		);
+
+		try {
+			$source = @file_get_contents($filePath, false, null, 0, 16384);
+		} catch (\Exception $e) {
+			return $result;
+		}
+		if (!$source) return $result;
+
+		// Find /** ... */ blocks
+		if (!preg_match_all('/\/\*\*\s*(.*?)\s*\*\//s', $source, $matches)) {
+			return $result;
+		}
+
+		// Pick the docblock closest to (and before) the first function
+		$funcPos = strpos($source, 'function ');
+		$bestBlock = '';
+		if ($funcPos !== false) {
+			$bestDist = PHP_INT_MAX;
+			foreach ($matches[0] as $i => $fullMatch) {
+				$blockPos = strpos($source, $fullMatch);
+				$blockEnd = $blockPos + strlen($fullMatch);
+				$dist = $funcPos - $blockEnd;
+				if ($dist >= 0 && $dist < $bestDist) {
+					$bestDist = $dist;
+					$bestBlock = $matches[1][$i];
+				}
+			}
+		}
+		if (!$bestBlock) $bestBlock = $matches[1][0] ?? '';
+		if (!$bestBlock) return $result;
+
+		// Clean: strip leading * from each line
+		$lines = preg_split('/\r?\n/', $bestBlock);
+		$cleaned = array();
+		foreach ($lines as $line) {
+			$cleaned[] = preg_replace('/^\s*\*\s?/', '', $line);
+		}
+
+		// Split into prose (summary + description) and tags
+		$proseLines = array();
+		$tagLines = array();
+		$inTags = false;
+		foreach ($cleaned as $line) {
+			$trimmed = trim($line);
+			if ($trimmed !== '' && $trimmed[0] === '@') {
+				$inTags = true;
+				$tagLines[] = $trimmed;
+			} elseif ($inTags && $trimmed !== '') {
+				// Continuation line for the previous tag
+				if ($tagLines) {
+					$tagLines[count($tagLines) - 1] .= ' ' . $trimmed;
+				}
+			} else {
+				if (!$inTags) $proseLines[] = $trimmed;
+			}
+		}
+
+		// Summary = first non-empty line(s) up to first blank line
+		// Description = everything after the first blank line
+		$summary = array();
+		$desc = array();
+		$pastBlank = false;
+		foreach ($proseLines as $line) {
+			if (!$pastBlank && $line === '' && $summary) {
+				$pastBlank = true;
+				continue;
+			}
+			if ($pastBlank) {
+				$desc[] = $line;
+			} else if ($line !== '') {
+				$summary[] = $line;
+			}
+		}
+		$result['summary'] = trim(implode(' ', $summary));
+		$result['description'] = trim(implode(' ', $desc));
+
+		// Parse tags — each pattern wrapped in try/catch for graceful degradation
+		foreach ($tagLines as $tag) {
+			try {
+				$parsed = self::parseDocTag($tag);
+				if (!$parsed) continue;
+
+				switch ($parsed['tag']) {
+					case 'param':
+						// Skip the handler signature params ($params, $result)
+						if (in_array($parsed['name'], array('params', 'result', ''))) continue 2;
+						$result['params'][] = $parsed;
+						break;
+					case 'return':
+					case 'returns':
+						$result['return'] = $parsed['description']
+							? ($parsed['type'] ? '{' . $parsed['type'] . '} ' : '') . $parsed['description']
+							: ($parsed['type'] ?: '');
+						break;
+					case 'method':
+						$result['method'] = $parsed['value'] ?? '';
+						break;
+					case 'deprecated':
+						$result['deprecated'] = true;
+						break;
+					case 'private':
+					case 'internal':
+						$result['private'] = true;
+						break;
+				}
+			} catch (\Exception $e) {
+				// Malformed tag — skip it silently
+				continue;
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Parse a single @tag line. Handles PHPDoc and YUIDoc variants.
+	 * Returns null for unrecognized tags.
+	 * @method parseDocTag
+	 * @static
+	 */
+	static function parseDocTag($tag)
+	{
+		if (!$tag || $tag[0] !== '@') return null;
+
+		// Extract tag name
+		if (!preg_match('/^@(\w+)\s*(.*)/s', $tag, $base)) return null;
+		$tagName = strtolower($base[1]);
+		$rest = trim($base[2]);
+
+		// --- @param variants ---
+		if ($tagName === 'param') {
+			$name = ''; $type = ''; $desc = ''; $optional = false; $default = null;
+
+			// PHPDoc: @param string $name Description
+			if (preg_match('/^(\S+)\s+\$(\w+)\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $name = $m[2]; $desc = trim($m[3]);
+			}
+			// YUIDoc: @param {Type} name Description
+			// YUIDoc: @param {Type} [name] Description (optional)
+			// YUIDoc: @param {Type} [name=default] Description
+			elseif (preg_match('/^\{([^}]*)\}\s+(\[?)(\$?\w[\w.]*)\]?(?:\s*=\s*(\S+))?\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $optional = ($m[2] === '['); $name = ltrim($m[3], '$'); $default = $m[4] ?? null; $desc = trim($m[5]);
+			}
+			// YUIDoc alternate: @param name {Type} Description
+			elseif (preg_match('/^(\[?)(\$?\w[\w.]*)\]?(?:\s*=\s*\S+)?\s+\{([^}]*)\}\s*(.*)/s', $rest, $m)) {
+				$optional = ($m[1] === '['); $name = ltrim($m[2], '$'); $type = $m[3]; $desc = trim($m[4]);
+			}
+			// Bare: @param $name Description (no type)
+			elseif (preg_match('/^\$(\w+)\s*(.*)/s', $rest, $m)) {
+				$name = $m[1]; $desc = trim($m[2]);
+			}
+			// Bare YUIDoc: @param name Description (no type)
+			elseif (preg_match('/^(\w+)\s+(.*)/s', $rest, $m)) {
+				$name = $m[1]; $desc = trim($m[2]);
+			}
+			else {
+				return null; // Unparseable — skip gracefully
+			}
+
+			// Detect optional from type or description
+			if (strpos($type, '?') === 0 || preg_match('/\bnull\b/i', $type)) {
+				$optional = true;
+				$type = preg_replace('/^\?|(\|null|null\|)/i', '', $type);
+			}
+			if ($default !== null) $optional = true;
+
+			// Strip nested param prefix (config.name → name) for dotted YUIDoc params
+			// but keep the full name for context
+			$type = trim($type);
+
+			return array('tag' => 'param', 'name' => $name, 'type' => $type,
+				'description' => $desc, 'optional' => $optional, 'default' => $default);
+		}
+
+		// --- @return / @returns ---
+		if ($tagName === 'return' || $tagName === 'returns') {
+			$type = ''; $desc = '';
+			// {Type} Description
+			if (preg_match('/^\{([^}]*)\}\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $desc = trim($m[2]);
+			}
+			// Type Description (PHPDoc)
+			elseif (preg_match('/^(\S+)\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $desc = trim($m[2]);
+			}
+			return array('tag' => 'return', 'type' => $type, 'description' => $desc);
+		}
+
+		// --- @method ---
+		if ($tagName === 'method') {
+			return array('tag' => 'method', 'value' => $rest);
+		}
+
+		// --- @deprecated ---
+		if ($tagName === 'deprecated') {
+			return array('tag' => 'deprecated', 'value' => $rest);
+		}
+
+		// --- @private / @internal / @access private ---
+		if ($tagName === 'private' || $tagName === 'internal') {
+			return array('tag' => 'private', 'value' => $rest);
+		}
+		if ($tagName === 'access' && strtolower(trim($rest)) === 'private') {
+			return array('tag' => 'private', 'value' => '');
+		}
+
+		// --- @throws / @throw ---
+		if ($tagName === 'throws' || $tagName === 'throw') {
+			$type = ''; $desc = '';
+			if (preg_match('/^\{([^}]*)\}\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $desc = trim($m[2]);
+			} elseif (preg_match('/^(\S+)\s*(.*)/s', $rest, $m)) {
+				$type = $m[1]; $desc = trim($m[2]);
+			}
+			return array('tag' => 'throws', 'type' => $type, 'description' => $desc);
+		}
+
+		// Unknown tag — skip
+		return null;
+	}
+
+	/**
+	 * Map PHP type annotations to JSON Schema types.
+	 * @method phpTypeToJsonSchema
+	 * @static
+	 */
+	static function phpTypeToJsonSchema($phpType)
+	{
+		$phpType = strtolower(trim($phpType));
+		// Strip nullable prefix
+		$phpType = ltrim($phpType, '?');
+
+		$map = array(
+			'string' => 'string',
+			'int' => 'integer', 'integer' => 'integer',
+			'float' => 'number', 'double' => 'number', 'number' => 'number',
+			'bool' => 'boolean', 'boolean' => 'boolean',
+			'array' => 'object',
+			'object' => 'object',
+			'mixed' => 'string',
+		);
+
+		// Handle array<type> or type[]
+		if (preg_match('/^array\s*<\s*(.+)\s*>$/i', $phpType, $m) || preg_match('/^(\w+)\[\]$/', $phpType, $m)) {
+			return 'array';
+		}
+
+		return $map[$phpType] ?? 'string';
+	}
+
+	/**
+	 * Check if a handler should be hidden from API discovery.
+	 * @method isHandlerHidden
+	 * @static
+	 * @param {string} $eventName e.g. "admin/cleanup"
+	 * @param {array} $patterns Patterns from Q.api.discover.hidden config
+	 * @return {boolean}
+	 */
+	static function isHandlerHidden($eventName, $patterns)
+	{
+		foreach ($patterns as $pattern => $hidden) {
+			if ($hidden && @preg_match(self::ensureRegex($pattern), $eventName)) return true;
+		}
+		return false;
+	}
+
 	// ── .well-known endpoints ────────────────────────────
 
 	/**
@@ -3404,9 +3694,10 @@ HTML;
 			),
 		);
 
-		// Add app-defined routes from handlers/ directory
+		// Add app-defined routes from handlers/ directory, parsed from PHPDoc
 		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
 		if (is_dir($handlersDir)) {
+			$hiddenPatterns = Q_Config::get('Q', 'api', 'discover', 'hidden', array());
 			$it = new RecursiveIteratorIterator(
 				new RecursiveDirectoryIterator($handlersDir, RecursiveDirectoryIterator::SKIP_DOTS)
 			);
@@ -3414,18 +3705,46 @@ HTML;
 				if ($file->getExtension() !== 'php') continue;
 				$rel = str_replace(DS, '/', substr($file->getPathname(), strlen($handlersDir) + 1));
 				$eventName = str_replace('.php', '', $rel);
-				$path = '/Q/event'; // events are all dispatched through /Q/event
-				if (!isset($spec['paths']['/handler/' . $eventName])) {
-					$spec['paths']['/handler/' . $eventName] = array(
-						'post' => array(
-							'summary' => "Handler: $eventName",
-							'operationId' => str_replace('/', '_', $eventName),
-							'tags' => array('Handlers'),
-							'description' => "Forward via POST /Q/event with {\"event\": \"$eventName\", \"params\": {...}}",
-							'responses' => array('200' => array('description' => 'Handler result')),
-						),
-					);
+				$doc = self::parseHandlerDoc($file->getPathname());
+
+				// Skip private/internal handlers
+				if (!empty($doc['private'])) continue;
+				// Skip config-hidden paths
+				if (self::isHandlerHidden($eventName, $hiddenPatterns)) continue;
+
+				$properties = array();
+				$required = array();
+				foreach ($doc['params'] as $p) {
+					$prop = array('description' => $p['description']);
+					if ($p['type']) $prop['type'] = self::phpTypeToJsonSchema($p['type']);
+					$properties[$p['name']] = $prop;
+					if (!$p['optional']) $required[] = $p['name'];
 				}
+
+				$schema = array('type' => 'object');
+				if ($properties) $schema['properties'] = $properties;
+				if ($required) $schema['required'] = $required;
+
+				$operation = array(
+					'summary' => $doc['summary'] ?: "Handler: $eventName",
+					'operationId' => str_replace('/', '_', $eventName),
+					'tags' => array('Handlers'),
+					'description' => ($doc['description'] ? $doc['description'] . "\n\n" : '')
+						. "Dispatch via POST /Q/event with {\"event\": \"$eventName\", \"params\": {...}}",
+					'requestBody' => array(
+						'content' => array('application/json' => array(
+							'schema' => array('type' => 'object', 'properties' => array(
+								'event' => array('type' => 'string', 'example' => $eventName),
+								'params' => $schema,
+							)),
+						)),
+					),
+					'responses' => array('200' => array(
+						'description' => $doc['return'] ?: 'Handler result',
+					)),
+				);
+
+				$spec['paths']['/handler/' . $eventName] = array('post' => $operation);
 			}
 			if (count($spec['paths']) > 3) {
 				$spec['tags'][] = array('name' => 'Handlers', 'description' => 'App event handlers');
@@ -3468,9 +3787,10 @@ HTML;
 			),
 		);
 
-		// Add handler-based tools
+		// Add handler-based tools with PHPDoc metadata
 		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
 		if (is_dir($handlersDir)) {
+			$hiddenPatterns = Q_Config::get('Q', 'api', 'discover', 'hidden', array());
 			$it = new RecursiveIteratorIterator(
 				new RecursiveDirectoryIterator($handlersDir, RecursiveDirectoryIterator::SKIP_DOTS)
 			);
@@ -3478,15 +3798,34 @@ HTML;
 				if ($file->getExtension() !== 'php') continue;
 				$rel = str_replace(DS, '/', substr($file->getPathname(), strlen($handlersDir) + 1));
 				$eventName = str_replace('.php', '', $rel);
+				$doc = self::parseHandlerDoc($file->getPathname());
+
+				// Skip private/internal handlers
+				if (!empty($doc['private'])) continue;
+				if (self::isHandlerHidden($eventName, $hiddenPatterns)) continue;
+
+				$properties = array();
+				$required = array();
+				foreach ($doc['params'] as $p) {
+					$prop = array('description' => $p['description']);
+					if ($p['type']) $prop['type'] = self::phpTypeToJsonSchema($p['type']);
+					$properties[$p['name']] = $prop;
+					if (!$p['optional']) $required[] = $p['name'];
+				}
+
+				$schema = array('type' => 'object');
+				if ($properties) $schema['properties'] = $properties;
+				if ($required) $schema['required'] = $required;
+
+				$description = $doc['summary'] ?: "Dispatch event: $eventName";
+				if ($doc['description']) {
+					$description .= ' — ' . $doc['description'];
+				}
+
 				$tools[] = array(
 					'name' => str_replace('/', '_', $eventName),
-					'description' => "Dispatch event: $eventName",
-					'inputSchema' => array(
-						'type' => 'object',
-						'properties' => array(
-							'params' => array('type' => 'object', 'description' => 'Event parameters'),
-						),
-					),
+					'description' => $description,
+					'inputSchema' => $schema,
 				);
 			}
 		}
