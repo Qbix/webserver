@@ -81,7 +81,7 @@ describe('Q.js Browser Loading', () => {
   });
 });
 
-describe('Q $ shim (handlebars.minimal.min.js)', () => {
+describe('Q $ shim (Q.$.min.js)', () => {
   let dom, window;
 
   before(() => {
@@ -91,7 +91,7 @@ describe('Q $ shim (handlebars.minimal.min.js)', () => {
     });
     window = dom.window;
     // Load the $ shim
-    const code = readFileSync('src/Q/plugins/Q/js/handlebars.minimal.min.js', 'utf-8');
+    const code = readFileSync('src/Q/plugins/Q/js/Q.$.min.js', 'utf-8');
     window.eval(code);
   });
 
@@ -172,7 +172,7 @@ describe('Q.min.js + $ shim + Handlebars integration', () => {
       runScripts: 'dangerously',
     });
     window = dom.window;
-    window.eval(readFileSync('src/Q/plugins/Q/js/handlebars.minimal.min.js', 'utf-8'));
+    window.eval(readFileSync('src/Q/plugins/Q/js/Q.$.min.js', 'utf-8'));
     window.eval(readFileSync('src/Q/plugins/Q/js/handlebars-v4.0.10.min.js', 'utf-8'));
     let qCode = readFileSync('src/Q/plugins/Q/js/Q.min.js', 'utf-8');
     qCode = qCode.replace(/;\s*export\s+default\s+[^;]+;?\s*$/, ';');
@@ -195,5 +195,52 @@ describe('Q.min.js + $ shim + Handlebars integration', () => {
     container.innerHTML = html;
     window.document.body.appendChild(container);
     assert.strictEqual(window.$('.card').text(), 'Test');
+  });
+});
+
+describe('Minimal Handlebars (handlebars.minimal.min.js)', () => {
+  let Handlebars;
+
+  before(async () => {
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    Handlebars = require('../src/Q/plugins/Q/js/handlebars.minimal.js');
+  });
+
+  test('compile and render', () => {
+    assert.strictEqual(Handlebars.compile('Hello {{name}}!')({name: 'World'}), 'Hello World!');
+  });
+
+  test('HTML escaping', () => {
+    const r = Handlebars.compile('{{v}}')({v: '<b>x</b>'});
+    assert.ok(r.includes('&lt;'), 'should escape HTML');
+  });
+
+  test('{{#if}} / {{else}}', () => {
+    const tpl = Handlebars.compile('{{#if s}}y{{else}}n{{/if}}');
+    assert.strictEqual(tpl({s: true}), 'y');
+    assert.strictEqual(tpl({s: false}), 'n');
+  });
+
+  test('{{#each}}', () => {
+    assert.strictEqual(Handlebars.compile('{{#each i}}[{{this}}]{{/each}}')({i: [1,2]}), '[1][2]');
+  });
+
+  test('{{#with}}', () => {
+    assert.strictEqual(Handlebars.compile('{{#with p}}{{n}}{{/with}}')({p:{n:'ok'}}), 'ok');
+  });
+
+  test('nested paths', () => {
+    assert.strictEqual(Handlebars.compile('{{a.b}}')({a:{b:'deep'}}), 'deep');
+  });
+
+  test('registerHelper', () => {
+    Handlebars.registerHelper('shout', s => s.toUpperCase());
+    assert.strictEqual(Handlebars.compile('{{shout w}}')({w:'hi'}), 'HI');
+  });
+
+  test('registerPartial', () => {
+    Handlebars.registerPartial('greet', 'Hi {{n}}');
+    assert.strictEqual(Handlebars.compile('{{> greet}}')({n:'Q'}), 'Hi Q');
   });
 });
