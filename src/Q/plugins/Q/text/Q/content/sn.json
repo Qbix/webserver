@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Kukanganisa {{status}} panguva yekukumbira",
+        "canceled": "Chikumbiro chakanzurwa",
+        "500": "Internal server error",
+        "404": "Haina kuwanikwa: {{url}}",
+        "501": "Chikumbiro chavhiringwa",
+        "401": "Zvisina mvumo",
+        "403": "Kurambidzwa"
+    },
+    "nonce": {
+        "sameDomain": "Session yapera. Gadzirisa peji uye edza zvakare.",
+        "otherDomain": "Chikumbiro chakavharwa kune imwe nyika pa{{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "tinya",
+        "yes": "Ehe",
+        "no": "Aihwa",
+        "Tap": "Tap",
+        "Click": "Dzvanya",
+        "Yes": "Ehe",
+        "No": "Aihwa",
+        "OK": "OK",
+        "Alert": "Alert",
+        "Confirm": "Confirm",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Ndira",
+        "2": "Kukadzi",
+        "3": "Kurume",
+        "4": "Kubvumbi",
+        "5": "Chivabvu",
+        "6": "Chikumi",
+        "7": "Chikunguru",
+        "8": "Nyamavhuvhu",
+        "9": "Gunyana",
+        "10": "Gumiguru",
+        "11": "Mbudzi",
+        "12": "Zvita"
+    },
+    "durations": {
+        "second": "Chepiri",
+        "seconds": "seconds",
+        "minute": "Mineti",
+        "minutes": "maminitsi",
+        "hour": "maawa",
+        "day": "zuva",
+        "days": "mazuva",
+        "week": "vhiki",
+        "weeks": "mavhiki",
+        "month": "mwedzi",
+        "months": "mwedzi",
+        "year": "gore",
+        "years": "makore",
+        "decade": "makore gumi",
+        "decades": "makumi emakore",
+        "century": "zana remakore",
+        "centuries": "mazana emakore"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Ndapota bvumidza kupinda maikorofoni yako",
+        "record": "Record",
+        "recording": "Kurekodha",
+        "remains": "zvinosara",
+        "maximum": "maximum",
+        "playing": "Kutamba",
+        "recorded": "Recorded",
+        "clip": "clip",
+        "discard": "Rasa",
+        "encoding": "Encoding"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Hapana vhidhiyo source",
+        "SkipAfter": "Skip mushure",
+        "Skip": "Skip"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Hapana pdf source"
+    },
+    "clip": {
+        "SetClipStart": "Seta Clip Kutanga",
+        "ClipStart": "Clip Kutanga",
+        "SetClipEnd": "Seta Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Nzvimbo yekutanga haigone kudarika nzvimbo yekupedzisira",
+        "EndLessStart": "Nzvimbo yekugumira haigone kuva shoma pane yekutanga nzvimbo",
+        "WhichInvalid": "Nharo &#39;iyo&#39; haina basa"
+    },
+    "alert": {
+        "title": "Alert"
+    },
+    "confirm": {
+        "title": "Confirm",
+        "ok": "Ehe",
+        "cancel": "Aihwa"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Enda"
+    },
+    "tabs": {
+        "more": "zvimwe",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "faira ratadza kuverenga",
+        "errorType": "Tine urombo, asi rudzi rwefaira urwu haruna kutsigirwa",
+        "cameraCommands": {
+            "prompt": "Chii chaungada kuita?",
+            "photo": "Tora mufananidzo mutsva",
+            "library": "Sarudza kubva muraibhurari"
+        },
+        "tooSmall": "Ndapota sarudza mufananidzo mukuru.",
+        "cropping": {
+            "title": "Rongedza saizi nenzvimbo",
+            "touchscreen": "Shandisa zvigunwe zvako kuswededza uye kudhonza",
+            "notTouchscreen": "Shandisa mbeva yako &amp; vhiri kuswededza uye kudhonza"
+        }
+    },
+    "timestamp": {
+        "lastNight": "manheru apfuura",
+        "lastEvening": "manheru ekupedzisira",
+        "yesterday": "nezuro",
+        "thisMorning": "mangwanani ano",
+        "today": "nhasi",
+        "tonight": "manheru ano",
+        "tomorrowMorning": "tom morning",
+        "tomorrow": "mangwana",
+        "hoursAgo": "{{h}} maawa apfuura",
+        "hourAgo": "{{h}} awa rapfuura",
+        "minuteAgo": "{{m}} miniti yadarika",
+        "minutesAgo": "{{m}} maminetsi apfuura",
+        "secondAgo": "{{s}} sekondi yadarika",
+        "secondsAgo": "{{s}} masekondi apfuura",
+        "fewSecondsAgo": "masekonzi apfuura",
+        "rightNow": "izvozvi",
+        "inSecond": "mu {{s}} sekondi",
+        "inSeconds": "mumasekonzi {{s}}",
+        "inMinute": "mu {{m}} miniti",
+        "inMinutes": "mu {{m}} maminetsi",
+        "inHour": "mu {{h}} awa",
+        "inHours": "mu {{h}} maawa",
+        "inUnderMinute": "mukati meminiti 1"
+    },
+    "browser": {
+        "insecureContext": "Iwe unofanirwa kutarisa mune yakachengeteka mamiriro kuti izvi zvishande"
+    },
+    "scan": {
+        "QR": "Scan QR macode"
+    },
+    "input": {
+        "Placeholder": "Tanga kutaipa..."
+    }
+}

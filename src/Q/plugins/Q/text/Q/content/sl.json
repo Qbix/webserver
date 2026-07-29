@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Napaka {{status}} med zahtevo",
+		"canceled": "Zahteva preklicana",
+		"500": "Napaka notranjega stre\u017enika",
+		"404": "Ni bilo mogo\u010de najti: {{url}}",
+		"501": "Zahteva je prekinjena",
+		"401": "Nepoobla\u0161\u010deno",
+		"403": "Prepovedano"
+	},
+	"nonce": {
+		"sameDomain": "Seja je potekla. Osve\u017eite stran in poskusite znova.",
+		"otherDomain": "Blokirana meddomenska zahteva {{method}} iz tuje domene ob {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tapnite",
+		"click": "kliknite",
+		"yes": "da",
+		"no": "\u0161t",
+		"Tap": "Dotik",
+		"Click": "Kliknite",
+		"Yes": "da",
+		"No": "\u0161t",
+		"OK": "v redu",
+		"Alert": "Opozorilo",
+		"Confirm": "Potrditev",
+		"Prompt": "Vnesite besedilo"
+	},
+	"months": {
+		"1": "januarja",
+		"2": "februarja",
+		"3": "marca",
+		"4": "aprila",
+		"5": "maja",
+		"6": "junija",
+		"7": "julija",
+		"8": "avgusta",
+		"9": "septembra",
+		"10": "oktober",
+		"11": "novembra",
+		"12": "december"
+	},
+	"durations": {
+		"second": "drugi\u010d",
+		"seconds": "sekundah",
+		"minute": "minuta",
+		"minutes": "minut",
+		"hour": "ure",
+		"day": "dan",
+		"days": "dnevi",
+		"week": "teden",
+		"weeks": "tednov",
+		"month": "mesec",
+		"months": "mesecev",
+		"year": "leto",
+		"years": "let",
+		"decade": "desetletje",
+		"decades": "desetletja",
+		"century": "stoletja",
+		"centuries": "stoletja"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Dovolite dostop do mikrofona",
+		"record": "Zapis",
+		"recording": "Snemanje",
+		"remains": "ostanki",
+		"maximum": "najve\u010d",
+		"playing": "Igranje",
+		"recorded": "Posneto",
+		"clip": "posnetek",
+		"discard": "Zavrzi",
+		"encoding": "Kodiranje"
+	},
+	"video": {
+		"clip": "posnetek",
+		"errorNoSource": "Ni video vira",
+		"SkipAfter": "Presko\u010di po",
+		"Skip": "Presko\u010di"
+	},
+	"pdf": {
+		"clip": "posnetek",
+		"errorNoSource": "Brez vira pdf"
+	},
+	"clip": {
+		"SetClipStart": "Nastavite za\u010detek posnetka",
+		"ClipStart": "Za\u010detek posnetka",
+		"SetClipEnd": "Nastavite konec posnetka",
+		"ClipEnd": "Konec posnetka",
+		"StartMoreEnd": "Za\u010detni polo\u017eaj ne sme biti ve\u010d kot kon\u010dni polo\u017eaj",
+		"EndLessStart": "Kon\u010dni polo\u017eaj ne sme biti manj\u0161i od za\u010detnega polo\u017eaja",
+		"WhichInvalid": "Argument &#39;kateri&#39; je neveljaven"
+	},
+	"alert": {
+		"title": "Opaziti"
+	},
+	"confirm": {
+		"title": "Potrdi",
+		"ok": "da",
+		"cancel": "\u0161t"
+	},
+	"prompt": {
+		"title": "Vnesite besedilo",
+		"ok": "v redu"
+	},
+	"tabs": {
+		"more": "ve\u010d",
+		"Menu": "meni"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Napaka pri branju datoteke",
+		"errorType": "Oprostite, vendar ta vrsta datoteke ni podprta",
+		"cameraCommands": {
+			"prompt": "Kaj bi rad po\u010del?",
+			"photo": "Posnemite novo fotografijo",
+			"library": "Izberite iz knji\u017enice"
+		},
+		"tooSmall": "Prosimo, izberite ve\u010djo sliko.",
+		"cropping": {
+			"title": "Prilagodite velikost in polo\u017eaj",
+			"touchscreen": "S prsti pove\u010dajte in povlecite",
+			"notTouchscreen": "Uporabite mi\u0161ko in kolesce za pove\u010davo in vle\u010denje"
+		}
+	},
+	"timestamp": {
+		"lastNight": "prej\u0161njo no\u010d",
+		"lastEvening": "zadnji ve\u010der",
+		"yesterday": "v\u010deraj",
+		"thisMorning": "danes zjutraj",
+		"today": "danes",
+		"tonight": "nocoj",
+		"tomorrowMorning": "tom jutro",
+		"tomorrow": "jutri",
+		"hoursAgo": "Pred {{h}} urami",
+		"hourAgo": "pred {{h}} uro",
+		"minuteAgo": "Pred {{m}} minuto",
+		"minutesAgo": "Pred {{m}} minutami",
+		"secondAgo": "{{s}} sekundo nazaj",
+		"secondsAgo": "Pred {{s}} sekundami",
+		"fewSecondsAgo": "pred sekundami",
+		"rightNow": "takoj zdaj",
+		"inSecond": "\u010dez {{s}} sekundo",
+		"inSeconds": "v {{s}} sekundah",
+		"inMinute": "v {{m}} minuti",
+		"inMinutes": "\u010dez {{m}} minut",
+		"inHour": "\u010dez {{h}} uro",
+		"inHours": "\u010dez {{h}} ur",
+		"inUnderMinute": "v manj kot 1 minuti"
+	},
+	"browser": {
+		"insecureContext": "Da bo to delovalo, morate brskati v varnem kontekstu"
+	},
+	"scan": {
+		"QR": "Skenirajte kode QR"
+	},
+	"input": {
+		"Placeholder": "Za\u010dni tipkati ..."
+	}
+}

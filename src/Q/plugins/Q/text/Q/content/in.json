@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Kesalahan {{status}} saat permintaan",
+		"canceled": "Permintaan dibatalkan",
+		"500": "Kesalahan server dari dalam",
+		"404": "Tidak ditemukan: {{url}}",
+		"501": "Permintaan terputus",
+		"401": "Tidak sah",
+		"403": "Terlarang"
+	},
+	"nonce": {
+		"sameDomain": "Sesi berakhir. Refresh halaman dan coba lagi.",
+		"otherDomain": "Memblokir permintaan lintas domain {{method}} dari domain asing di {{baseUrl}}"
+	},
+	"words": {
+		"tap": "mengetuk",
+		"click": "klik",
+		"yes": "iya nih",
+		"no": "tidak",
+		"Tap": "Menyentuh",
+		"Click": "Klik",
+		"Yes": "iya nih",
+		"No": "Tidak",
+		"OK": "OKE",
+		"Alert": "Peringatan",
+		"Confirm": "Konfirmasi",
+		"Prompt": "Masukkan teks"
+	},
+	"months": {
+		"1": "Januari",
+		"2": "Februari",
+		"3": "Maret",
+		"4": "April",
+		"5": "Mungkin",
+		"6": "Juni",
+		"7": "Juli",
+		"8": "Agustus",
+		"9": "September",
+		"10": "Oktober",
+		"11": "November",
+		"12": "Desember"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Tolong izinkan akses ke mikrofon Anda",
+		"record": "Merekam",
+		"recording": "Rekaman",
+		"remains": "sisa",
+		"maximum": "maksimum",
+		"playing": "Bermain",
+		"recorded": "Tercatat",
+		"clip": "klip",
+		"orupload": "Atau Unggah",
+		"usethis": "Gunakan ini",
+		"discard": "Membuang",
+		"encoding": "Pengkodean"
+	},
+	"alert": {
+		"title": "Melihat"
+	},
+	"confirm": {
+		"title": "Memastikan",
+		"ok": "iya nih",
+		"cancel": "Tidak"
+	},
+	"prompt": {
+		"title": "Masukkan teks",
+		"ok": "OKE"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Kesalahan membaca file",
+		"cameraCommands": {
+			"prompt": "Apa yang ingin kamu lakukan?",
+			"photo": "Ambil foto baru",
+			"library": "Pilih dari perpustakaan"
+		},
+		"tooSmall": "Silakan pilih gambar yang lebih besar.",
+		"cropping": {
+			"title": "Sesuaikan ukuran dan posisi",
+			"touchscreen": "Gunakan jari Anda untuk memperbesar dan menarik",
+			"notTouchscreen": "Gunakan mouse &amp; roda Anda untuk memperbesar dan menarik"
+		},
+		"errorType": "Maaf, tetapi jenis file ini tidak didukung"
+	},
+	"timestamp": {
+		"lastNight": "Tadi malam",
+		"lastEvening": "malam terakhir",
+		"yesterday": "kemarin",
+		"thisMorning": "pagi ini",
+		"today": "hari ini",
+		"tonight": "malam ini",
+		"tomorrowMorning": "tom pagi",
+		"tomorrow": "besok",
+		"hoursAgo": "{{h}} jam yang lalu",
+		"hourAgo": "{{h}} jam yang lalu",
+		"minuteAgo": "{{m}} menit yang lalu",
+		"minutesAgo": "{{m}} menit yang lalu",
+		"secondAgo": "{{s}} detik yang lalu",
+		"secondsAgo": "{{s}} detik yang lalu",
+		"fewSecondsAgo": "beberapa detik lalu",
+		"rightNow": "sekarang juga",
+		"inSecond": "dalam {{s}} detik",
+		"inSeconds": "dalam {{s}} detik",
+		"inMinute": "dalam {{m}} menit",
+		"inMinutes": "dalam {{m}} menit",
+		"inHour": "dalam {{h}} jam",
+		"inHours": "dalam {{h}} jam",
+		"inUnderMinute": "kurang dari 1 menit"
+	},
+	"tabs": {
+		"more": "lebih",
+		"Menu": "Tidak bisa"
+	},
+	"video": {
+		"clip": "klip",
+		"errorNoSource": "Tidak ada sumber video",
+		"SkipAfter": "Lewati setelah",
+		"Skip": "Melewatkan"
+	},
+	"pdf": {
+		"clip": "klip",
+		"errorNoSource": "Tidak ada sumber pdf"
+	},
+	"clip": {
+		"SetClipStart": "Setel Mulai Klip",
+		"ClipStart": "Klip Mulai",
+		"SetClipEnd": "Setel Akhir Klip",
+		"ClipEnd": "Klip Akhir",
+		"StartMoreEnd": "Posisi awal tidak boleh lebih dari posisi akhir",
+		"EndLessStart": "Posisi akhir tidak boleh kurang dari posisi awal",
+		"WhichInvalid": "Argumen &#39;yang&#39; tidak valid"
+	},
+	"durations": {
+		"second": "kedua",
+		"seconds": "detik",
+		"minute": "menit",
+		"minutes": "menit",
+		"hour": "jam",
+		"day": "hari",
+		"days": "hari",
+		"week": "pekan",
+		"weeks": "minggu",
+		"month": "bulan",
+		"months": "bulan",
+		"year": "tahun",
+		"years": "bertahun-tahun",
+		"decade": "dasawarsa",
+		"decades": "dekade",
+		"century": "abad",
+		"centuries": "abad"
+	},
+	"browser": {
+		"insecureContext": "Anda perlu menjelajah dalam konteks yang aman agar ini berfungsi"
+	},
+	"scan": {
+		"QR": "Pindai kode QR"
+	},
+	"input": {
+		"Placeholder": "Mulai mengetik..."
+	}
+}

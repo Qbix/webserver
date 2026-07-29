@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Erè {{status}} pandan demann lan",
+        "canceled": "Demann anile",
+        "500": "Erè sèvè entèn",
+        "404": "Pa jwenn: {{url}}",
+        "501": "Demann entèwonp",
+        "401": "San otorizasyon",
+        "403": "Entèdi"
+    },
+    "nonce": {
+        "sameDomain": "Sesyon ekspire. Rafrechi paj la epi eseye ankò.",
+        "otherDomain": "Bloke demann kwa-domèn nan domèn etranje nan {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tiyo",
+        "click": "klike sou",
+        "yes": "wi",
+        "no": "non",
+        "Tap": "Tape",
+        "Click": "Klike sou",
+        "Yes": "Wi",
+        "No": "Non",
+        "OK": "OK",
+        "Alert": "Alèt",
+        "Confirm": "Konfime",
+        "Prompt": "Èd memwa"
+    },
+    "months": {
+        "1": "Janvye",
+        "2": "fevriye",
+        "3": "Mas",
+        "4": "Avril",
+        "5": "Me",
+        "6": "jen",
+        "7": "Jiyè",
+        "8": "Out",
+        "9": "Septanm",
+        "10": "Oktòb",
+        "11": "Novanm",
+        "12": "Desanm"
+    },
+    "durations": {
+        "second": "dezyèm",
+        "seconds": "segonn",
+        "minute": "minit",
+        "minutes": "minit",
+        "hour": "èdtan",
+        "day": "jou",
+        "days": "jou",
+        "week": "semèn",
+        "weeks": "semèn",
+        "month": "mwa",
+        "months": "mwa",
+        "year": "ane",
+        "years": "ane",
+        "decade": "deseni",
+        "decades": "deseni",
+        "century": "syèk",
+        "centuries": "syèk"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Tanpri pèmèt aksè nan mikwofòn ou",
+        "record": "Dosye",
+        "recording": "Anrejistreman",
+        "remains": "rete",
+        "maximum": "maksimòm",
+        "playing": "ap jwe",
+        "recorded": "Anrejistre",
+        "clip": "clip",
+        "discard": "Jete",
+        "encoding": "Kodaj"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Pa gen sous videyo",
+        "SkipAfter": "Sote apre",
+        "Skip": "Sote"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Pa gen sous pdf"
+    },
+    "clip": {
+        "SetClipStart": "Mete Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Mete fen Clip",
+        "ClipEnd": "Clip Fen",
+        "StartMoreEnd": "Pozisyon kòmanse pa ka pi plis pase pozisyon fen",
+        "EndLessStart": "Pozisyon fen pa ka mwens pase pozisyon kòmanse",
+        "WhichInvalid": "Agiman &#39;ki&#39; valab"
+    },
+    "alert": {
+        "title": "Alèt"
+    },
+    "confirm": {
+        "title": "Konfime",
+        "ok": "Wi",
+        "cancel": "Non"
+    },
+    "prompt": {
+        "title": "Èd memwa",
+        "ok": "Ale"
+    },
+    "tabs": {
+        "more": "plis",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Erè nan lekti fichye a",
+        "errorType": "Padon, men kalite fichye sa a pa sipòte",
+        "cameraCommands": {
+            "prompt": "Kisa ou ta renmen fè?",
+            "photo": "Pran nouvo foto",
+            "library": "Chwazi nan bibliyotèk"
+        },
+        "tooSmall": "Tanpri chwazi yon imaj ki pi gwo.",
+        "cropping": {
+            "title": "Ajiste gwosè ak pozisyon",
+            "touchscreen": "Sèvi ak dwèt ou pou rale ak trennen",
+            "notTouchscreen": "Sèvi ak sourit ou ak wou pou rale ak trennen"
+        }
+    },
+    "timestamp": {
+        "lastNight": "yeswa",
+        "lastEvening": "dènye lavèy",
+        "yesterday": "yè",
+        "thisMorning": "maten an",
+        "today": "jodi a",
+        "tonight": "aswè a",
+        "tomorrowMorning": "demen maten",
+        "tomorrow": "demen",
+        "hoursAgo": "{{h}} èdtan de sa",
+        "hourAgo": "{{h}} èdtan de sa",
+        "minuteAgo": "{{m}} minit de sa",
+        "minutesAgo": "{{m}} minit de sa",
+        "secondAgo": "{{s}} dezyèm de sa",
+        "secondsAgo": "{{s}} segonn de sa",
+        "fewSecondsAgo": "segonn de sa",
+        "rightNow": "kounye a",
+        "inSecond": "nan {{s}} segonn",
+        "inSeconds": "nan {{s}} segonn",
+        "inMinute": "nan {{m}} minit",
+        "inMinutes": "nan {{m}} minit",
+        "inHour": "nan {{h}} èdtan",
+        "inHours": "nan {{h}} èdtan",
+        "inUnderMinute": "nan mwens pase 1 minit"
+    },
+    "browser": {
+        "insecureContext": "Ou bezwen browse nan yon kontèks an sekirite pou sa a travay"
+    },
+    "scan": {
+        "QR": "Eskane kòd QR"
+    },
+    "input": {
+        "Placeholder": "Kòmanse tape..."
+    }
+}

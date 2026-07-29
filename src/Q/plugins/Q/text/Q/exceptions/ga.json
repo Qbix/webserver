@@ -1,0 +1,5 @@
+{
+	"MissingFile": "comhad {{filename}} in easnamh",
+	"InvalidLanguage": "teanga neamhbhail\u00ed {{language}}",
+	"RequiredField": "{{field}} ag teast\u00e1il"
+}

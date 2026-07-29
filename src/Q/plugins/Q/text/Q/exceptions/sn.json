@@ -1,0 +1,5 @@
+{
+    "MissingFile": "faira rakashaikwa {{filename}}",
+    "InvalidLanguage": "mutauro usiriwo {{language}}",
+    "RequiredField": "{{field}} inodiwa"
+}

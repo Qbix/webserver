@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Gwall {{status}} yn ystod y cais",
+		"canceled": "Cais wedi&#39;i ganslo",
+		"500": "Gwall gweinydd mewnol",
+		"404": "Heb ei ganfod: {{url}}",
+		"501": "Torrwyd ar draws y cais",
+		"401": "Anawdurdodedig",
+		"403": "Gwaherddir"
+	},
+	"nonce": {
+		"sameDomain": "Sesiwn wedi dod i ben. Adnewyddwch y dudalen a cheisiwch eto.",
+		"otherDomain": "Cais traws-barthau {{method}} wedi&#39;i rwystro o barth tramor am {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tap",
+		"click": "cliciwch",
+		"yes": "oes",
+		"no": "nac oes",
+		"Tap": "Cyffwrdd",
+		"Click": "Cliciwch",
+		"Yes": "Oes",
+		"No": "Nac ydw",
+		"OK": "iawn",
+		"Alert": "Rhybudd",
+		"Confirm": "Cadarnhad",
+		"Prompt": "Rhowch Testun"
+	},
+	"months": {
+		"1": "Ionawr",
+		"2": "Chwefror",
+		"3": "Mawrth",
+		"4": "Ebrill",
+		"5": "Mai",
+		"6": "Mehefin",
+		"7": "Gorffennaf",
+		"8": "Awst",
+		"9": "Medi",
+		"10": "Hydref",
+		"11": "Tachwedd",
+		"12": "Rhagfyr"
+	},
+	"durations": {
+		"second": "ail",
+		"seconds": "eiliadau",
+		"minute": "munud",
+		"minutes": "munudau",
+		"hour": "oriau",
+		"day": "Dydd",
+		"days": "dyddiau",
+		"week": "wythnos",
+		"weeks": "wythnosau",
+		"month": "mis",
+		"months": "misoedd",
+		"year": "blwyddyn",
+		"years": "mlynedd",
+		"decade": "degawd",
+		"decades": "degawdau",
+		"century": "canrif",
+		"centuries": "canrifoedd"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Caniatewch fynediad i&#39;ch meicroffon",
+		"record": "Cofnod",
+		"recording": "Recordio",
+		"remains": "olion",
+		"maximum": "uchafswm",
+		"playing": "Chwarae",
+		"recorded": "Wedi&#39;i recordio",
+		"clip": "clip",
+		"discard": "Taflwch",
+		"encoding": "Amgodio"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "Dim ffynhonnell fideo",
+		"SkipAfter": "Hepiwch ar \u00f4l",
+		"Skip": "Sgipio"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "Dim ffynhonnell pdf"
+	},
+	"clip": {
+		"SetClipStart": "Gosod Clip Cychwyn",
+		"ClipStart": "Dechrau Clip",
+		"SetClipEnd": "Gosod Diwedd Clip",
+		"ClipEnd": "Diwedd Clip",
+		"StartMoreEnd": "Ni all safle cychwyn fod yn fwy na safle terfynol",
+		"EndLessStart": "Ni all safle terfynol fod yn llai na safle cychwyn",
+		"WhichInvalid": "Dadl &#39;sy&#39; yn annilys"
+	},
+	"alert": {
+		"title": "Hysbysiad"
+	},
+	"confirm": {
+		"title": "Cadarnhau",
+		"ok": "Oes",
+		"cancel": "Nac ydw"
+	},
+	"prompt": {
+		"title": "Rhowch Testun",
+		"ok": "iawn"
+	},
+	"tabs": {
+		"more": "mwy",
+		"Menu": "Bwydlen"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Gwall wrth ddarllen y ffeil",
+		"errorType": "Mae&#39;n ddrwg gennym, ond ni chefnogir y math hwn o ffeil",
+		"cameraCommands": {
+			"prompt": "Beth hoffech chi ei wneud?",
+			"photo": "Tynnwch lun newydd",
+			"library": "Dewiswch o&#39;r llyfrgell"
+		},
+		"tooSmall": "Dewiswch ddelwedd fwy.",
+		"cropping": {
+			"title": "Addasu maint a lleoliad",
+			"touchscreen": "Defnyddiwch eich bysedd i chwyddo a llusgo",
+			"notTouchscreen": "Defnyddiwch eich llygoden a&#39;ch olwyn i chwyddo a llusgo"
+		}
+	},
+	"timestamp": {
+		"lastNight": "neithiwr",
+		"lastEvening": "noswyl diweddaf",
+		"yesterday": "ddoe",
+		"thisMorning": "y bore yma",
+		"today": "heddiw",
+		"tonight": "heno",
+		"tomorrowMorning": "tom bore",
+		"tomorrow": "yfory",
+		"hoursAgo": "{{h}} awr yn \u00f4l",
+		"hourAgo": "{{h}} awr yn \u00f4l",
+		"minuteAgo": "{{m}} munud yn \u00f4l",
+		"minutesAgo": "{{m}} munudau yn \u00f4l",
+		"secondAgo": "{{s}} eiliad yn \u00f4l",
+		"secondsAgo": "{{s}} eiliad yn \u00f4l",
+		"fewSecondsAgo": "eiliadau yn \u00f4l",
+		"rightNow": "ar hyn o bryd",
+		"inSecond": "mewn {{s}} eiliad",
+		"inSeconds": "mewn {{s}} eiliad",
+		"inMinute": "mewn {{m}} munud",
+		"inMinutes": "mewn {{m}} munud",
+		"inHour": "mewn {{h}} awr",
+		"inHours": "mewn {{h}} awr",
+		"inUnderMinute": "mewn llai na 1 munud"
+	},
+	"browser": {
+		"insecureContext": "Mae angen i chi bori mewn cyd-destun diogel er mwyn i hyn weithio"
+	},
+	"scan": {
+		"QR": "Sganiwch godau QR"
+	},
+	"input": {
+		"Placeholder": "Dechreuwch deipio..."
+	}
+}

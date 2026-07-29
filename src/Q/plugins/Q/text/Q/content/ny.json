@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Vuto {{status}} pakupempha",
+        "canceled": "Pempho lathetsedwa",
+        "500": "Cholakwika Cham&#39;kati Chaseva",
+        "404": "Sanapezeke: {{url}}",
+        "501": "Pempho lasokonezedwa",
+        "401": "Zosaloledwa",
+        "403": "Zoletsedwa"
+    },
+    "nonce": {
+        "sameDomain": "Gawo latha. Tsitsaninso tsambali ndikuyesanso.",
+        "otherDomain": "Pempho laletsedwa kumadera ena akunja pa {{baseUrl}}"
+    },
+    "words": {
+        "tap": "papa",
+        "click": "dinani",
+        "yes": "inde",
+        "no": "ayi",
+        "Tap": "Dinani",
+        "Click": "Dinani",
+        "Yes": "Inde",
+        "No": "Ayi",
+        "OK": "Chabwino",
+        "Alert": "Chenjezo",
+        "Confirm": "Tsimikizani",
+        "Prompt": "Mwachangu"
+    },
+    "months": {
+        "1": "Januwale",
+        "2": "February",
+        "3": "March",
+        "4": "Epulo",
+        "5": "Mayi",
+        "6": "June",
+        "7": "July",
+        "8": "Ogasiti",
+        "9": "September",
+        "10": "October",
+        "11": "Novembala",
+        "12": "December"
+    },
+    "durations": {
+        "second": "chachiwiri",
+        "seconds": "masekondi",
+        "minute": "miniti",
+        "minutes": "mphindi",
+        "hour": "maola",
+        "day": "tsiku",
+        "days": "masiku",
+        "week": "sabata",
+        "weeks": "masabata",
+        "month": "mwezi",
+        "months": "miyezi",
+        "year": "Chaka",
+        "years": "zaka",
+        "decade": "khumi",
+        "decades": "zaka makumi",
+        "century": "zaka zana",
+        "centuries": "zaka mazana ambiri"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Chonde lolani mwayi wofikira cholankhulira chanu",
+        "record": "Record",
+        "recording": "Kujambula",
+        "remains": "zotsalira",
+        "maximum": "pazipita",
+        "playing": "Kusewera",
+        "recorded": "Zojambulidwa",
+        "clip": "kopanira",
+        "discard": "Taya",
+        "encoding": "Kusindikiza"
+    },
+    "video": {
+        "clip": "kopanira",
+        "errorNoSource": "Palibe gwero lamavidiyo",
+        "SkipAfter": "Dumphani pambuyo",
+        "Skip": "Dumphani"
+    },
+    "pdf": {
+        "clip": "kopanira",
+        "errorNoSource": "Palibe gwero la pdf"
+    },
+    "clip": {
+        "SetClipStart": "Khazikitsani Clip Start",
+        "ClipStart": "Clip Yambani",
+        "SetClipEnd": "Khazikitsani Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Malo oyambira sangakhale ochulukirapo kuposa malo omaliza",
+        "EndLessStart": "Malo omaliza sangakhale ochepa kuposa malo oyambira",
+        "WhichInvalid": "Kutsutsana &#39;komwe&#39; kuli kosavomerezeka"
+    },
+    "alert": {
+        "title": "Chenjezo"
+    },
+    "confirm": {
+        "title": "Tsimikizani",
+        "ok": "Inde",
+        "cancel": "Ayi"
+    },
+    "prompt": {
+        "title": "Mwachangu",
+        "ok": "Pitani"
+    },
+    "tabs": {
+        "more": "Zambiri",
+        "Menu": "Menyu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Fayilo yolakwika pakuwerenga",
+        "errorType": "Pepani, koma mtundu wa fayilowu sunagwiritsidwe ntchito",
+        "cameraCommands": {
+            "prompt": "Kodi mungakonde kuchita chiyani?",
+            "photo": "Tengani chithunzi chatsopano",
+            "library": "Sankhani kuchokera laibulale"
+        },
+        "tooSmall": "Chonde sankhani chithunzi chokulirapo.",
+        "cropping": {
+            "title": "Sinthani kukula ndi malo",
+            "touchscreen": "Gwiritsani ntchito zala zanu kukulitsa ndi kukoka",
+            "notTouchscreen": "Gwiritsani ntchito mbewa ndi gudumu lanu kuti mukweze ndikukoka"
+        }
+    },
+    "timestamp": {
+        "lastNight": "usiku wapita",
+        "lastEvening": "usiku watha",
+        "yesterday": "dzulo",
+        "thisMorning": "m&#39;mawa uno",
+        "today": "lero",
+        "tonight": "usikuuno",
+        "tomorrowMorning": "m&#39;mawa",
+        "tomorrow": "mawa",
+        "hoursAgo": "{{h}} maola apitawo",
+        "hourAgo": "{{h}} ola lapitalo",
+        "minuteAgo": "Mphindi {{m}} yapitayo",
+        "minutesAgo": "{{m}} mphindi zapitazo",
+        "secondAgo": "{{s}} mphindikati zapitazo",
+        "secondsAgo": "{{s}} mphindikati zapitazo",
+        "fewSecondsAgo": "masekondi apitawo",
+        "rightNow": "pompano",
+        "inSecond": "mu {{s}} sekondi",
+        "inSeconds": "mu {{s}} masekondi",
+        "inMinute": "mu {{m}} miniti",
+        "inMinutes": "mu {{m}} mphindi",
+        "inHour": "mu {{h}} ola",
+        "inHours": "mu {{h}} maola",
+        "inUnderMinute": "mkati mwa miniti imodzi"
+    },
+    "browser": {
+        "insecureContext": "Muyenera kusakatula m&#39;malo otetezeka kuti izi zitheke"
+    },
+    "scan": {
+        "QR": "Jambulani manambala a QR"
+    },
+    "input": {
+        "Placeholder": "Yambani kulemba..."
+    }
+}

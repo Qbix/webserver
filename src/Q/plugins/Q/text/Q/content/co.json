@@ -1,0 +1,160 @@
+{
+    "request": {
+        "error": "Errore {{status}} durante a dumanda",
+        "canceled": "A dumanda annullata",
+        "500": "Errore di u servitore internu",
+        "404": "Ùn trovu: {{url}}",
+        "501": "A dumanda hè interrotta",
+        "401": "Senza autorizazione",
+        "403": "Pruibitu"
+    },
+    "nonce": {
+        "sameDomain": "A sessione hè scaduta. Refresh a pagina è pruvate di novu.",
+        "otherDomain": "A dumanda interdominiu bluccata à un duminiu straneru à {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tocca",
+        "click": "cliccate",
+        "yes": "Iè",
+        "no": "Innò",
+        "Tap": "Tap",
+        "Click": "Cliccate",
+        "Yes": "Iè",
+        "No": "Innò",
+        "OK": "OK",
+        "Alert": "Alerta",
+        "Confirm": "Cunfirmà",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Ghjinnaghju",
+        "2": "Febbraiu",
+        "3": "Marzu",
+        "4": "Aprile",
+        "5": "Maghju",
+        "6": "Ghjugnu",
+        "7": "Lugliu",
+        "8": "Aostu",
+        "9": "Sittembre",
+        "10": "Ottobre",
+        "11": "Nuvembre",
+        "12": "Dicembre"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Per piacè permette l&#39;accessu à u vostru microfonu",
+        "record": "Record",
+        "recording": "Arregistramentu",
+        "remains": "resta",
+        "maximum": "massimu",
+        "playing": "Ghjucà",
+        "recorded": "Arregistratu",
+        "clip": "clip",
+        "orupload": "O Carica",
+        "usethis": "Usate stu",
+        "discard": "Scartà",
+        "encoding": "Encoding"
+    },
+    "alert": {
+        "title": "Alerta"
+    },
+    "confirm": {
+        "title": "Cunfirmà",
+        "ok": "Iè",
+        "cancel": "Innò"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Vai"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Errore di lettura di u schedariu",
+        "cameraCommands": {
+            "prompt": "Chì vulete fà ?",
+            "photo": "Pigliate una nova foto",
+            "library": "Sceglite da a biblioteca"
+        },
+        "tooSmall": "Per piacè sceglite una maghjina più grande.",
+        "cropping": {
+            "title": "Aghjustate a dimensione è a pusizione",
+            "touchscreen": "Aduprate i vostri ditte per zoom è trascinate",
+            "notTouchscreen": "Aduprate u vostru mouse è a rota per ingrandà è trascinate"
+        },
+        "errorType": "Scusate, ma stu tipu di schedariu ùn hè micca supportatu"
+    },
+    "timestamp": {
+        "lastNight": "a notte passata",
+        "lastEvening": "l&#39;ultima vigilia",
+        "yesterday": "eri",
+        "thisMorning": "sta mane",
+        "today": "oghje",
+        "tonight": "sta sera",
+        "tomorrowMorning": "dumane",
+        "tomorrow": "dumane",
+        "hoursAgo": "{{h}} ore fà",
+        "hourAgo": "{{h}} ora fà",
+        "minuteAgo": "{{m}} minutu fà",
+        "minutesAgo": "{{m}} minuti fà",
+        "secondAgo": "{{s}} secondu fà",
+        "secondsAgo": "{{s}} seconde fà",
+        "fewSecondsAgo": "seconde fà",
+        "rightNow": "avale avà",
+        "inSecond": "in {{s}} secondu",
+        "inSeconds": "in {{s}} seconde",
+        "inMinute": "in {{m}} minutu",
+        "inMinutes": "in {{m}} minuti",
+        "inHour": "in {{h}} ora",
+        "inHours": "in {{h}} ore",
+        "inUnderMinute": "in menu di 1 minutu"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Nisuna fonte video",
+        "SkipAfter": "Saltà dopu",
+        "Skip": "Saltà"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Nisuna fonte pdf"
+    },
+    "clip": {
+        "SetClipStart": "Set Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Set Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "A pusizione iniziale ùn pò esse più di a pusizione finale",
+        "EndLessStart": "A pusizione finale ùn pò esse menu di a pusizione iniziale",
+        "WhichInvalid": "Argumentu &quot;chì&quot; invalidu"
+    },
+    "tabs": {
+        "more": "più",
+        "Menu": "Menu"
+    },
+    "durations": {
+        "second": "sicondu",
+        "seconds": "seconde",
+        "minute": "minutu",
+        "minutes": "minuti",
+        "hour": "ore",
+        "day": "ghjornu",
+        "days": "ghjorni",
+        "week": "settimana",
+        "weeks": "settimane",
+        "month": "mese",
+        "months": "mesi",
+        "year": "annu",
+        "years": "anni",
+        "decade": "decenniu",
+        "decades": "decennii",
+        "century": "seculu",
+        "centuries": "seculi"
+    },
+    "browser": {
+        "insecureContext": "Avete bisognu di navigà in un cuntestu sicuru per questu per travaglià"
+    },
+    "scan": {
+        "QR": "Scansà i codici QR"
+    },
+    "input": {
+        "Placeholder": "Cumincià à scrive..."
+    }
+}

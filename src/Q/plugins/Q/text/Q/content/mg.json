@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Hadisoana {{status}} nandritra ny fangatahana",
+        "canceled": "Nofoanana ny fangatahana",
+        "500": "Olana amin&#39;ny servera anatiny",
+        "404": "Tsy hita: {{url}}",
+        "501": "Tapaka ny fangatahana",
+        "401": "tsy nahazoan-dalana",
+        "403": "Voarara"
+    },
+    "nonce": {
+        "sameDomain": "Tapitra ny fotoam-pivoriana. Havaozy ny pejy ary andramo indray.",
+        "otherDomain": "Fangatahana cross-domain voasakana amin&#39;ny sehatra vahiny amin&#39;ny {{baseUrl}}"
+    },
+    "words": {
+        "tap": "paompy",
+        "click": "tsindrio",
+        "yes": "ENY",
+        "no": "tsy misy",
+        "Tap": "paompy",
+        "Click": "tsindrio",
+        "Yes": "ENY",
+        "No": "tsy misy",
+        "OK": "OK",
+        "Alert": "Fanairana",
+        "Confirm": "Manamarina",
+        "Prompt": "avy hatrany"
+    },
+    "months": {
+        "1": "Janoary",
+        "2": "février",
+        "3": "ny diabe",
+        "4": "Aprily",
+        "5": "MEY",
+        "6": "Jona",
+        "7": "Jolay",
+        "8": "Aogositra",
+        "9": "septembre",
+        "10": "Oktobra",
+        "11": "Novambra",
+        "12": "Desambra"
+    },
+    "durations": {
+        "second": "FAHAROA",
+        "seconds": "segondra",
+        "minute": "minitra",
+        "minutes": "minitra",
+        "hour": "ORA",
+        "day": "andro",
+        "days": "andro",
+        "week": "herinandro",
+        "weeks": "HERINANDRON&#39;NY",
+        "month": "VOLANA",
+        "months": "VOLANA",
+        "year": "TAOM-",
+        "years": "taona",
+        "decade": "folo taona",
+        "decades": "am-polo taona",
+        "century": "taonjato",
+        "centuries": "taonjato maro"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Omeo alalana hidirana amin&#39;ny mikrofoninao azafady",
+        "record": "Record",
+        "recording": "peo",
+        "remains": "sisa tavela",
+        "maximum": "faratampony",
+        "playing": "mitendry",
+        "recorded": "BOKY maro",
+        "clip": "clip",
+        "discard": "hanary",
+        "encoding": "Encoding"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Tsy misy loharanon-tsary",
+        "SkipAfter": "Mandalo aorian&#39;izay",
+        "Skip": "Mifohaza"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Tsy misy loharano pdf"
+    },
+    "clip": {
+        "SetClipStart": "Mametraha Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Mametraha Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Ny toerana fanombohana dia tsy mety mihoatra ny toerana fiafarana",
+        "EndLessStart": "Ny toeran&#39;ny farany dia tsy tokony ho latsaky ny toerana fanombohana",
+        "WhichInvalid": "Tsy mety ny tohan-kevitra &#39;izay&#39;"
+    },
+    "alert": {
+        "title": "Fanairana"
+    },
+    "confirm": {
+        "title": "Manamarina",
+        "ok": "ENY",
+        "cancel": "tsy misy"
+    },
+    "prompt": {
+        "title": "avy hatrany",
+        "ok": "Mandehana"
+    },
+    "tabs": {
+        "more": "Bebe kokoa",
+        "Menu": "sakafo"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Hadisoana mamaky rakitra",
+        "errorType": "Miala tsiny, fa ity karazana rakitra ity dia tsy tohana",
+        "cameraCommands": {
+            "prompt": "Inona no tianao atao?",
+            "photo": "Makà sary vaovao",
+            "library": "Misafidiana avy amin&#39;ny tranomboky"
+        },
+        "tooSmall": "Misafidiana sary lehibe kokoa azafady.",
+        "cropping": {
+            "title": "Ahitsio ny habeny sy ny toerana misy azy",
+            "touchscreen": "Ampiasao ny rantsan-tànanao hanamarihana sy hisintona",
+            "notTouchscreen": "Ampiasao ny totozy sy ny kodiaranao hanamarihana sy hisintona"
+        }
+    },
+    "timestamp": {
+        "lastNight": "omaly alina",
+        "lastEvening": "alina farany",
+        "yesterday": "omaly",
+        "thisMorning": "ity maraina ity",
+        "today": "amin&#39;izao fotoana izao",
+        "tonight": "anio alina",
+        "tomorrowMorning": "maraina maraina",
+        "tomorrow": "rahampitso",
+        "hoursAgo": "{{h}} ora lasa izay",
+        "hourAgo": "{{h}} ora lasa izay",
+        "minuteAgo": "{{m}} minitra lasa izay",
+        "minutesAgo": "{{m}} minitra lasa izay",
+        "secondAgo": "{{s}} segondra lasa izay",
+        "secondsAgo": "{{s}} segondra lasa izay",
+        "fewSecondsAgo": "segondra lasa izay",
+        "rightNow": "izao dia izao",
+        "inSecond": "tao anatin&#39;ny {{s}} segondra",
+        "inSeconds": "ao anatin&#39;ny {{s}} segondra",
+        "inMinute": "ao anatin&#39;ny {{m}} minitra",
+        "inMinutes": "ao anatin&#39;ny {{m}} minitra",
+        "inHour": "ao anatin&#39;ny {{h}} ora",
+        "inHours": "ao anatin&#39;ny {{h}} ora",
+        "inUnderMinute": "ao anatin&#39;ny 1 minitra"
+    },
+    "browser": {
+        "insecureContext": "Mila mikaroka ao anatin&#39;ny contexte azo antoka ianao vao miasa"
+    },
+    "scan": {
+        "QR": "Scan QR codes"
+    },
+    "input": {
+        "Placeholder": "Manomboka manoratra..."
+    }
+}

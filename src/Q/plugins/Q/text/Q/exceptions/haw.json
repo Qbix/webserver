@@ -1,0 +1,5 @@
+{
+    "MissingFile": "nalo ka waihona {{filename}}",
+    "InvalidLanguage": "ʻōlelo kūpono ʻole {{language}}",
+    "RequiredField": "{{field}} pono"
+}

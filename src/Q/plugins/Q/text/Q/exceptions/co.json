@@ -1,0 +1,5 @@
+{
+    "MissingFile": "u schedariu mancante {{filename}}",
+    "InvalidLanguage": "lingua invalida {{language}}",
+    "RequiredField": "{{field}} hè necessariu"
+}

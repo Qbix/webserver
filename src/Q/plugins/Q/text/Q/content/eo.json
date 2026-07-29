@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Eraro {{status}} dum peto",
+        "canceled": "Peto nuligita",
+        "500": "Interna servila eraro",
+        "404": "Ne trovita: {{url}}",
+        "501": "Peto interrompita",
+        "401": "Neaŭtorizita",
+        "403": "Malpermesite"
+    },
+    "nonce": {
+        "sameDomain": "Sesio eksvalidiĝis. Refreŝigu la paĝon kaj provu denove.",
+        "otherDomain": "Blokis transdomajna peto al fremda domajno ĉe {{baseUrl}}"
+    },
+    "words": {
+        "tap": "frapeti",
+        "click": "klaku",
+        "yes": "jes",
+        "no": "ne",
+        "Tap": "Frapu",
+        "Click": "Klaku",
+        "Yes": "Jes",
+        "No": "Ne",
+        "OK": "Bone",
+        "Alert": "Atentigo",
+        "Confirm": "Konfirmu",
+        "Prompt": "Prompto"
+    },
+    "months": {
+        "1": "januaro",
+        "2": "februaro",
+        "3": "Marto",
+        "4": "Aprilo",
+        "5": "majo",
+        "6": "junio",
+        "7": "julio",
+        "8": "Aŭgusto",
+        "9": "septembro",
+        "10": "oktobro",
+        "11": "novembro",
+        "12": "decembro"
+    },
+    "durations": {
+        "second": "dua",
+        "seconds": "sekundoj",
+        "minute": "minuto",
+        "minutes": "minutoj",
+        "hour": "horoj",
+        "day": "tago",
+        "days": "tagoj",
+        "week": "semajno",
+        "weeks": "semajnoj",
+        "month": "monato",
+        "months": "monatoj",
+        "year": "jaro",
+        "years": "jaroj",
+        "decade": "jardeko",
+        "decades": "jardekojn",
+        "century": "jarcento",
+        "centuries": "jarcentojn"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Bonvolu permesi aliron al via mikrofono",
+        "record": "Rekordo",
+        "recording": "Registrado",
+        "remains": "restas",
+        "maximum": "maksimume",
+        "playing": "Ludante",
+        "recorded": "Registrita",
+        "clip": "klipo",
+        "discard": "Forĵeti",
+        "encoding": "Kodigado"
+    },
+    "video": {
+        "clip": "klipo",
+        "errorNoSource": "Neniu videofonto",
+        "SkipAfter": "Saltu poste",
+        "Skip": "Saltu"
+    },
+    "pdf": {
+        "clip": "klipo",
+        "errorNoSource": "Neniu pdf-fonto"
+    },
+    "clip": {
+        "SetClipStart": "Agordi Clip Komencon",
+        "ClipStart": "Clip Komenco",
+        "SetClipEnd": "Agordu Clip Finon",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Komenca pozicio ne povas esti pli ol fina pozicio",
+        "EndLessStart": "Fina pozicio ne povas esti malpli ol komenca pozicio",
+        "WhichInvalid": "Argumento &#39;kiu&#39; nevalida"
+    },
+    "alert": {
+        "title": "Atentigo"
+    },
+    "confirm": {
+        "title": "Konfirmu",
+        "ok": "Jes",
+        "cancel": "Ne"
+    },
+    "prompt": {
+        "title": "Prompto",
+        "ok": "Iru"
+    },
+    "tabs": {
+        "more": "pli",
+        "Menu": "Menuo"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Eraro legante dosieron",
+        "errorType": "Pardonu, sed ĉi tiu dosiertipo ne estas subtenata",
+        "cameraCommands": {
+            "prompt": "Kion vi volus fari?",
+            "photo": "Prenu novan foton",
+            "library": "Elektu el biblioteko"
+        },
+        "tooSmall": "Bonvolu elekti pli grandan bildon.",
+        "cropping": {
+            "title": "Alĝustigu grandecon kaj pozicion",
+            "touchscreen": "Uzu viajn fingrojn por zomi kaj treni",
+            "notTouchscreen": "Uzu vian muson kaj radon por zomi kaj treni"
+        }
+    },
+    "timestamp": {
+        "lastNight": "hieraŭ nokte",
+        "lastEvening": "lasta vespero",
+        "yesterday": "hieraŭ",
+        "thisMorning": "ĉi-matene",
+        "today": "hodiaŭ",
+        "tonight": "ĉi-vespere",
+        "tomorrowMorning": "morgaŭ matene",
+        "tomorrow": "morgaŭ",
+        "hoursAgo": "antaŭ {{h}} horoj",
+        "hourAgo": "antaŭ {{h}} horo",
+        "minuteAgo": "antaŭ {{m}} minuto",
+        "minutesAgo": "antaŭ {{m}} minutoj",
+        "secondAgo": "{{s}} antaŭ sekundo",
+        "secondsAgo": "antaŭ {{s}} sekundoj",
+        "fewSecondsAgo": "antaŭ sekundoj",
+        "rightNow": "ĝuste nun",
+        "inSecond": "en {{s}} sekundo",
+        "inSeconds": "en {{s}} sekundoj",
+        "inMinute": "en {{m}} minuto",
+        "inMinutes": "en {{m}} minutoj",
+        "inHour": "en {{h}} horo",
+        "inHours": "en {{h}} horoj",
+        "inUnderMinute": "en malpli ol 1 minuto"
+    },
+    "browser": {
+        "insecureContext": "Por ke tio funkciu, vi devas foliumi en sekura kunteksto"
+    },
+    "scan": {
+        "QR": "Skanu QR-kodojn"
+    },
+    "input": {
+        "Placeholder": "Komencu tajpi..."
+    }
+}

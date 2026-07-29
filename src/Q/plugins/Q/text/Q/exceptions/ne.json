@@ -1,0 +1,5 @@
+{
+    "MissingFile": "{{filename}} फाइल छुटेको छ",
+    "InvalidLanguage": "अमान्य भाषा {{language}}",
+    "RequiredField": "{{field}} आवश्यक छ"
+}

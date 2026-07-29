@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Mearachd {{status}} ri linn an iarrtais",
+        "canceled": "Iarrtas air a chur dheth",
+        "500": "Mearachd an fhrithealaiche a-staigh",
+        "404": "Cha deach a lorg: {{url}}",
+        "501": "Iarrtas air a bhriseadh",
+        "401": "Gun chead",
+        "403": "Toirmisgte"
+    },
+    "nonce": {
+        "sameDomain": "Thàinig an seisean gu crìch. Ùraich an duilleag is feuch ris a-rithist.",
+        "otherDomain": "Iarrtas tar-àrainn air a bhacadh gu àrainn chèin aig {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tapadh",
+        "click": "cliog",
+        "yes": "tha",
+        "no": "Chan eil",
+        "Tap": "Tap",
+        "Click": "Cliog",
+        "Yes": "tha",
+        "No": "Chan eil",
+        "OK": "ceart gu leòr",
+        "Alert": "Rabhadh",
+        "Confirm": "Dearbhaich",
+        "Prompt": "Brosnaich"
+    },
+    "months": {
+        "1": "Am Faoilleach",
+        "2": "An Gearran",
+        "3": "Am Màrt",
+        "4": "A &#39;Ghiblean",
+        "5": "A &#39;Chèitean",
+        "6": "An t-Ògmhios",
+        "7": "An t-Iuchar",
+        "8": "An Lùnastal",
+        "9": "An t-Sultain",
+        "10": "An Dàmhair",
+        "11": "An t-Samhain",
+        "12": "An Dùbhlachd"
+    },
+    "durations": {
+        "second": "an dàrna",
+        "seconds": "diogan",
+        "minute": "mionaid",
+        "minutes": "mionaidean",
+        "hour": "uairean",
+        "day": "latha",
+        "days": "làithean",
+        "week": "seachdain",
+        "weeks": "seachdainean",
+        "month": "mìos",
+        "months": "mìosan",
+        "year": "bliadhna",
+        "years": "bliadhnaichean",
+        "decade": "deichead",
+        "decades": "deicheadan",
+        "century": "linn",
+        "centuries": "linntean"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Feuch an leig thu leis a’ mhicreofon agad faighinn a-steach",
+        "record": "Clàr",
+        "recording": "Clàradh",
+        "remains": "fuigheall",
+        "maximum": "as àirde",
+        "playing": "A&#39; cluich",
+        "recorded": "Air a chlàradh",
+        "clip": "criomag",
+        "discard": "Cuir air chùl",
+        "encoding": "Còdachadh"
+    },
+    "video": {
+        "clip": "criomag",
+        "errorNoSource": "Gun stòr bhidio",
+        "SkipAfter": "Leum às deidh",
+        "Skip": "Leum"
+    },
+    "pdf": {
+        "clip": "criomag",
+        "errorNoSource": "Chan eil tùs pdf"
+    },
+    "clip": {
+        "SetClipStart": "Suidhich Clip Start",
+        "ClipStart": "Tòisich clip",
+        "SetClipEnd": "Suidhich Clip End",
+        "ClipEnd": "Deireadh Clip",
+        "StartMoreEnd": "Chan urrainn don t-suidheachadh tòiseachaidh a bhith nas fhaide na an suidheachadh deireannach",
+        "EndLessStart": "Chan urrainn don t-suidheachadh crìochnachaidh a bhith nas lugha na an suidheachadh tòiseachaidh",
+        "WhichInvalid": "Argument ‘which’ neo-dhligheach"
+    },
+    "alert": {
+        "title": "Rabhadh"
+    },
+    "confirm": {
+        "title": "Dearbhaich",
+        "ok": "tha",
+        "cancel": "Chan eil"
+    },
+    "prompt": {
+        "title": "Brosnaich",
+        "ok": "Rachaibh"
+    },
+    "tabs": {
+        "more": "tuilleadh",
+        "Menu": "Clàr-taice"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Thachair mearachd le leughadh an fhaidhle",
+        "errorType": "Duilich, ach chan eil taic ris an t-seòrsa faidhle seo",
+        "cameraCommands": {
+            "prompt": "Dè bu toil leat a dhèanamh?",
+            "photo": "Gabh dealbh ùr",
+            "library": "Tagh bhon leabharlann"
+        },
+        "tooSmall": "Feuch an tagh thu dealbh nas motha.",
+        "cropping": {
+            "title": "Atharraich meud agus suidheachadh",
+            "touchscreen": "Cleachd do chorragan airson gluasad agus slaodadh",
+            "notTouchscreen": "Cleachd do luchag &amp; cuibhle gus gluasad agus slaod"
+        }
+    },
+    "timestamp": {
+        "lastNight": "a-raoir",
+        "lastEvening": "oidhche mu dheireadh",
+        "yesterday": "an dè",
+        "thisMorning": "madainn an-diugh",
+        "today": "an diugh",
+        "tonight": "nochd",
+        "tomorrowMorning": "tom madainn",
+        "tomorrow": "a-màireach",
+        "hoursAgo": "{{h}} uairean air ais",
+        "hourAgo": "{{h}} uair air ais",
+        "minuteAgo": "{{m}} mionaid air ais",
+        "minutesAgo": "{{m}} mionaidean air ais",
+        "secondAgo": "{{s}} diog air ais",
+        "secondsAgo": "{{s}} diogan air ais",
+        "fewSecondsAgo": "diogan air ais",
+        "rightNow": "An-dràsta fhèin",
+        "inSecond": "ann an {{s}} diog",
+        "inSeconds": "ann an {{s}} diogan",
+        "inMinute": "ann am {{m}} mhionaid",
+        "inMinutes": "ann an {{m}} mionaidean",
+        "inHour": "ann an {{h}} uair",
+        "inHours": "ann an {{h}} uairean",
+        "inUnderMinute": "ann an nas lugha na 1 mhionaid"
+    },
+    "browser": {
+        "insecureContext": "Feumaidh tu brobhsadh ann an co-theacs tèarainte gus an obraich seo"
+    },
+    "scan": {
+        "QR": "Sgan còdan QR"
+    },
+    "input": {
+        "Placeholder": "Tòisich a’ sgrìobhadh..."
+    }
+}

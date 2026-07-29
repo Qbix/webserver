@@ -1,0 +1,5 @@
+{
+    "MissingFile": "tsy misy rakitra {{filename}}",
+    "InvalidLanguage": "fiteny tsy mety {{language}}",
+    "RequiredField": "{{field}} no ilaina"
+}

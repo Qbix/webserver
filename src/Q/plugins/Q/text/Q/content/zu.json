@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Iphutha {{status}} phakathi nesicelo",
+        "canceled": "Isicelo sikhanseliwe",
+        "500": "Iphutha Leseva Engaphakathi",
+        "404": "Ayitholakali: {{url}}",
+        "501": "Isicelo siphazamisekile",
+        "401": "Okungagunyaziwe",
+        "403": "Kwenqatshelwe"
+    },
+    "nonce": {
+        "sameDomain": "Iseshini iphelelwe yisikhathi. Vuselela ikhasi bese uzama futhi.",
+        "otherDomain": "Isicelo esivinjiwe sesizinda esihlukene sesizinda sangaphandle kokuthi {{baseUrl}}"
+    },
+    "words": {
+        "tap": "kampompi",
+        "click": "chofoza",
+        "yes": "yebo",
+        "no": "cha",
+        "Tap": "Thepha",
+        "Click": "Chofoza",
+        "Yes": "Yebo",
+        "No": "Cha",
+        "OK": "KULUNGILE",
+        "Alert": "Isexwayiso",
+        "Confirm": "Qinisekisa",
+        "Prompt": "Ngokushesha"
+    },
+    "months": {
+        "1": "January",
+        "2": "February",
+        "3": "Mashi",
+        "4": "April",
+        "5": "Meyi",
+        "6": "Juni",
+        "7": "July",
+        "8": "Agasti",
+        "9": "September",
+        "10": "Okthoba",
+        "11": "Novemba",
+        "12": "Disemba"
+    },
+    "durations": {
+        "second": "okwesibili",
+        "seconds": "imizuzwana",
+        "minute": "umzuzu",
+        "minutes": "imizuzu",
+        "hour": "amahora",
+        "day": "usuku",
+        "days": "izinsuku",
+        "week": "isonto",
+        "weeks": "amasonto",
+        "month": "inyanga",
+        "months": "izinyanga",
+        "year": "unyaka",
+        "years": "iminyaka",
+        "decade": "ishumi leminyaka",
+        "decades": "amashumi eminyaka",
+        "century": "ikhulu leminyaka",
+        "centuries": "amakhulu eminyaka"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Sicela uvumele ukufinyelela kumakrofoni yakho",
+        "record": "Qopha",
+        "recording": "Iyaqopha",
+        "remains": "izinsalela",
+        "maximum": "esiphezulu",
+        "playing": "Iyadlala",
+        "recorded": "Irekhodiwe",
+        "clip": "isiqeshana",
+        "discard": "Lahla",
+        "encoding": "Ukufaka ikhodi"
+    },
+    "video": {
+        "clip": "isiqeshana",
+        "errorNoSource": "Awukho umthombo wevidiyo",
+        "SkipAfter": "Yeqa ngemva",
+        "Skip": "Yeqa"
+    },
+    "pdf": {
+        "clip": "isiqeshana",
+        "errorNoSource": "Awukho umthombo we-pdf"
+    },
+    "clip": {
+        "SetClipStart": "Setha Ukuqala Kwesiqeshana",
+        "ClipStart": "Isiqeshana Qala",
+        "SetClipEnd": "Setha Ukuphela Kwesiqeshana",
+        "ClipEnd": "Isiqeshana Ukuphela",
+        "StartMoreEnd": "Indawo yokuqala ayikwazi ukuba ngaphezu kwendawo yokugcina",
+        "EndLessStart": "Indawo yokugcina ayikwazi ukuba ngaphansi kwendawo yokuqala",
+        "WhichInvalid": "Ukungqubuzana &#39;okuyinto&#39; engavumelekile"
+    },
+    "alert": {
+        "title": "Isexwayiso"
+    },
+    "confirm": {
+        "title": "Qinisekisa",
+        "ok": "Yebo",
+        "cancel": "Cha"
+    },
+    "prompt": {
+        "title": "Shesha",
+        "ok": "Hamba"
+    },
+    "tabs": {
+        "more": "Okuningi",
+        "Menu": "Imenyu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Iphutha lokufunda ifayela",
+        "errorType": "Uxolo, kodwa lolu hlobo lwefayela alusekelwe",
+        "cameraCommands": {
+            "prompt": "Ungathanda ukwenzani?",
+            "photo": "Thatha isithombe esisha",
+            "library": "Khetha kulabhulali"
+        },
+        "tooSmall": "Sicela ukhethe isithombe esikhudlwana.",
+        "cropping": {
+            "title": "Lungisa usayizi nendawo",
+            "touchscreen": "Sebenzisa iminwe yakho ukusondeza nokuhudula",
+            "notTouchscreen": "Sebenzisa igundane lakho nesondo ukuze usondeze futhi uhudule"
+        }
+    },
+    "timestamp": {
+        "lastNight": "izolo ebusuku",
+        "lastEvening": "ngobusuku bokugcina",
+        "yesterday": "izolo",
+        "thisMorning": "namhlanje ekuseni",
+        "today": "namuhla",
+        "tonight": "namuhla ebusuku",
+        "tomorrowMorning": "ekuseni",
+        "tomorrow": "kusasa",
+        "hoursAgo": "{{h}} amahora adlule",
+        "hourAgo": "{{h}} ihora eledlule",
+        "minuteAgo": "{{m}} iminithi eledlule",
+        "minutesAgo": "{{m}} amaminithi adlule",
+        "secondAgo": "{{s}} isekhondi eledlule",
+        "secondsAgo": "{{s}} imizuzwana edlule",
+        "fewSecondsAgo": "imizuzwana edlule",
+        "rightNow": "khona manje",
+        "inSecond": "kusekhondi {{s}}",
+        "inSeconds": "kumasekhondi angu-{{s}}",
+        "inMinute": "emizuzwini engu-{{m}}",
+        "inMinutes": "emaminithini angu-{{m}}",
+        "inHour": "ehoreni elingu-{{h}}",
+        "inHours": "emahoreni angu-{{h}}",
+        "inUnderMinute": "ngaphansi kweminithi elingu-1"
+    },
+    "browser": {
+        "insecureContext": "Udinga ukuphequlula umongo ovikelekile ukuze lokhu kusebenze"
+    },
+    "scan": {
+        "QR": "Skena amakhodi e-QR"
+    },
+    "input": {
+        "Placeholder": "Qala ukuthayipha..."
+    }
+}

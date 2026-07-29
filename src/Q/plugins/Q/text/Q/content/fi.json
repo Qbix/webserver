@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Virhe {{status}} pyynn\u00f6n aikana",
+		"canceled": "Pyynt\u00f6 peruttu",
+		"500": "Sis\u00e4inen palvelinvirhe",
+		"404": "Ei l\u00f6ydy: {{url}}",
+		"501": "Pyynt\u00f6 keskeytetty",
+		"401": "Luvaton",
+		"403": "Kielletty"
+	},
+	"nonce": {
+		"sameDomain": "Istunto p\u00e4\u00e4ttyi. P\u00e4ivit\u00e4 sivu ja yrit\u00e4 uudelleen.",
+		"otherDomain": "Estetty verkkotunnusten v\u00e4linen {{method}} pyynt\u00f6 ulkomaiselta verkkotunnukselta {{baseUrl}} ssa"
+	},
+	"words": {
+		"tap": "napauta",
+		"click": "klikkaus",
+		"yes": "Joo",
+		"no": "ei",
+		"Tap": "Kosketus",
+		"Click": "Klikkaus",
+		"Yes": "Joo",
+		"No": "Ei",
+		"OK": "OK",
+		"Alert": "Varoitus",
+		"Confirm": "Vahvistus",
+		"Prompt": "Kirjoita teksti"
+	},
+	"months": {
+		"1": "tammikuu",
+		"2": "helmikuu",
+		"3": "maaliskuuta",
+		"4": "huhtikuu",
+		"5": "saattaa",
+		"6": "kes\u00e4kuuta",
+		"7": "hein\u00e4kuu",
+		"8": "elokuu",
+		"9": "syyskuu",
+		"10": "lokakuu",
+		"11": "marraskuu",
+		"12": "joulukuu"
+	},
+	"durations": {
+		"second": "toinen",
+		"seconds": "sekuntia",
+		"minute": "minuutti",
+		"minutes": "p\u00f6yt\u00e4kirja",
+		"hour": "tuntia",
+		"day": "p\u00e4iv\u00e4",
+		"days": "p\u00e4iv\u00e4\u00e4",
+		"week": "viikko",
+		"weeks": "viikkoa",
+		"month": "kuukausi",
+		"months": "kuukaudet",
+		"year": "vuosi",
+		"years": "vuotta",
+		"decade": "vuosikymmen",
+		"decades": "vuosikymmeni\u00e4",
+		"century": "vuosisadalla",
+		"centuries": "vuosisadat"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Salli mikrofonisi k\u00e4ytt\u00f6",
+		"record": "Enn\u00e4tys",
+		"recording": "\u00c4\u00e4nite",
+		"remains": "j\u00e4\u00e4nn\u00f6kset",
+		"maximum": "enimm\u00e4ism\u00e4\u00e4r\u00e4",
+		"playing": "Pelaaminen",
+		"recorded": "\u00c4\u00e4nitetty",
+		"clip": "leike",
+		"discard": "H\u00e4vit\u00e4",
+		"encoding": "Koodaus"
+	},
+	"video": {
+		"clip": "leike",
+		"errorNoSource": "Ei videol\u00e4hdett\u00e4",
+		"SkipAfter": "Ohita j\u00e4lkeen",
+		"Skip": "Ohita"
+	},
+	"pdf": {
+		"clip": "leike",
+		"errorNoSource": "Ei pdf-l\u00e4hdett\u00e4"
+	},
+	"clip": {
+		"SetClipStart": "Aseta leikkeen aloitus",
+		"ClipStart": "Leikkeen aloitus",
+		"SetClipEnd": "Aseta leikkeen loppu",
+		"ClipEnd": "Leikkeen loppu",
+		"StartMoreEnd": "Aloitusasento ei voi olla enemp\u00e4\u00e4 kuin loppuasento",
+		"EndLessStart": "Loppuasento ei voi olla pienempi kuin aloitusasento",
+		"WhichInvalid": "Argumentti &quot;mik\u00e4&quot; on virheellinen"
+	},
+	"alert": {
+		"title": "Ilmoitus"
+	},
+	"confirm": {
+		"title": "Vahvistaa",
+		"ok": "Joo",
+		"cancel": "Ei"
+	},
+	"prompt": {
+		"title": "Kirjoita teksti",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "lis\u00e4\u00e4",
+		"Menu": "Valikko"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Virhe tiedoston lukemisessa",
+		"errorType": "Valitettavasti t\u00e4t\u00e4 tiedostotyyppi\u00e4 ei tueta",
+		"cameraCommands": {
+			"prompt": "Mit\u00e4 haluaisit tehd\u00e4?",
+			"photo": "Ota uusi kuva",
+			"library": "Valitse kirjastosta"
+		},
+		"tooSmall": "Valitse suurempi kuva.",
+		"cropping": {
+			"title": "S\u00e4\u00e4d\u00e4 kokoa ja sijaintia",
+			"touchscreen": "Zoomaa ja ved\u00e4 sormillasi",
+			"notTouchscreen": "Zoomaa ja ved\u00e4 hiirell\u00e4 ja rullalla"
+		}
+	},
+	"timestamp": {
+		"lastNight": "viime y\u00f6",
+		"lastEvening": "viime aattona",
+		"yesterday": "eilen",
+		"thisMorning": "t\u00e4n\u00e4 aamuna",
+		"today": "t\u00e4n\u00e4\u00e4n",
+		"tonight": "t\u00e4n\u00e4 y\u00f6n\u00e4",
+		"tomorrowMorning": "huomenta",
+		"tomorrow": "huomenna",
+		"hoursAgo": "{{h}} tuntia sitten",
+		"hourAgo": "{{h}} tunti sitten",
+		"minuteAgo": "{{m}} minuutti sitten",
+		"minutesAgo": "{{m}} minuuttia sitten",
+		"secondAgo": "{{s}} sekunti sitten",
+		"secondsAgo": "{{s}} sekuntia sitten",
+		"fewSecondsAgo": "sekuntia sitten",
+		"rightNow": "juuri nyt",
+		"inSecond": "{{s}} sekunnissa",
+		"inSeconds": "{{s}} sekunnissa",
+		"inMinute": "{{m}} minuutissa",
+		"inMinutes": "{{m}} minuutissa",
+		"inHour": "{{h}} tunnin kuluttua",
+		"inHours": "{{h}} tunnissa",
+		"inUnderMinute": "alle 1 minuutissa"
+	},
+	"browser": {
+		"insecureContext": "Sinun on selattava suojatussa kontekstissa, jotta t\u00e4m\u00e4 toimii"
+	},
+	"scan": {
+		"QR": "Skannaa QR-koodit"
+	},
+	"input": {
+		"Placeholder": "Aloita kirjoittaminen..."
+	}
+}

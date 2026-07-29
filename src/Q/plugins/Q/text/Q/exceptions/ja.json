@@ -1,0 +1,5 @@
+{
+	"MissingFile": "\u30d5\u30a1\u30a4\u30eb{{filename}}\u304c\u3042\u308a\u307e\u305b\u3093",
+	"InvalidLanguage": "\u7121\u52b9\u306a\u8a00\u8a9e{{language}}",
+	"RequiredField": "{{field}}\u306f\u5fc5\u9808\u3067\u3059"
+}

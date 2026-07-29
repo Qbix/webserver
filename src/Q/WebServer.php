@@ -754,8 +754,8 @@ class Q_WebServer
 		}
 
 		// File
+		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
-			$ext = strtolower(pathinfo($fsPath, PATHINFO_EXTENSION));
 
 			if ($ext === 'php') {
 				// PHP dispatch (in-process — amphp uses fibers for concurrency)
@@ -768,8 +768,22 @@ class Q_WebServer
 			if (in_array($ext, self::$allowedExtensions)
 				&& ($method === 'GET' || $method === 'HEAD')
 			) {
+				// Image resize/convert: ?w=300 or ?w=300&h=200
+				if (in_array($ext, array('png','jpg','jpeg','gif','webp','bmp','avif'))
+					&& !empty($parsed['query'])
+				) {
+					$imgResponse = Q_WebServer_Image::handle($fsPath, $path, $parsed);
+					if ($imgResponse) return $imgResponse;
+				}
 				return self::buildFileResponse($fsPath, $ext, $method, $parsed['headers']);
 			}
+		}
+
+		// Image format conversion: /photo.webp when only /photo.png exists
+		$imgExts = array('webp', 'avif', 'jpg', 'jpeg', 'png', 'gif');
+		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')) {
+			$imgResponse = Q_WebServer_Image::handle(null, $path, $parsed);
+			if ($imgResponse) return $imgResponse;
 		}
 
 		// Clean URL → index.php
@@ -864,7 +878,7 @@ class Q_WebServer
 		}
 
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
-		// 1. Serve built-in assets (JS clients, logo)
+		// 1. Serve built-in assets (JS clients, logo, bundled frontend)
 		$assetMap = array();
 		$jsPath = Q_Config::get('Q', 'socket', 'js', '/Q/socket.js');
 		if ($jsPath !== false) $assetMap[$jsPath] = array(__DIR__ . DS . 'socket.js', 'application/javascript');
@@ -883,6 +897,25 @@ class Q_WebServer
 				self::sendResponse($client, 404, 'Not found');
 			}
 			return false;
+		}
+
+		// Serve bundled Qbix frontend: /Q/plugins/Q/js/*, /Q/plugins/Q/text/*
+		if (strpos($path, '/Q/plugins/') === 0) {
+			$relPath = substr($path, 11); // strip /Q/plugins/
+			$bundledFile = __DIR__ . DS . 'plugins' . DS . str_replace('/', DS, $relPath);
+			if (file_exists($bundledFile) && is_file($bundledFile)) {
+				$ext = strtolower(pathinfo($bundledFile, PATHINFO_EXTENSION));
+				$mimeMap = array(
+					'js' => 'application/javascript', 'json' => 'application/json',
+					'css' => 'text/css', 'html' => 'text/html',
+					'png' => 'image/png', 'jpg' => 'image/jpeg',
+					'svg' => 'image/svg+xml', 'woff2' => 'font/woff2',
+				);
+				$mime = $mimeMap[$ext] ?? 'application/octet-stream';
+				self::sendResponse($client, 200, file_get_contents($bundledFile),
+					$mime, array('Cache-Control' => 'public, max-age=86400'));
+				return false;
+			}
 		}
 
 		// 2. Dashboard + Panel + WebSocket + Health (/Q/*)
@@ -998,8 +1031,8 @@ class Q_WebServer
 		}
 
 		// 5. File handling
+		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
-			$ext = strtolower(pathinfo($fsPath, PATHINFO_EXTENSION));
 
 			// PHP scripts → worker pool or in-process
 			if ($ext === 'php') {
@@ -1008,7 +1041,27 @@ class Q_WebServer
 
 			// Static file
 			if ($method === 'GET' || $method === 'HEAD') {
+				// Image resize/convert: ?w=300 or ?w=300&h=200
+				if (in_array($ext, array('png','jpg','jpeg','gif','webp','bmp','avif'))
+					&& !empty($parsed['query'])
+				) {
+					$imgResponse = Q_WebServer_Image::handle($fsPath, $path, $parsed);
+					if ($imgResponse) {
+						Q_WebServer_Headers::processResponse($client, $imgResponse, $parsed['headers']);
+						return false;
+					}
+				}
 				self::serveStaticFile($client, $fsPath, $method, $parsed['headers'], !empty($parsed['_keepAlive']));
+				return false;
+			}
+		}
+
+		// Image format conversion: /photo.webp when only /photo.png exists
+		$imgExts = array('webp', 'avif', 'jpg', 'jpeg', 'png', 'gif');
+		if (in_array($ext, $imgExts) && ($method === 'GET' || $method === 'HEAD')) {
+			$imgResponse = Q_WebServer_Image::handle(null, $path, $parsed);
+			if ($imgResponse) {
+				Q_WebServer_Headers::processResponse($client, $imgResponse, $parsed['headers']);
 				return false;
 			}
 		}

@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Njehie {999}} n&#39;oge a na-arịọ arịrịọ",
+        "canceled": "Akagbuola arịrịọ",
+        "500": "Mperi Sava Ime",
+        "404": "Achọtaghị: {{url}}",
+        "501": "Akwụsịla arịrịọ",
+        "401": "Enweghị ikike",
+        "403": "Amachibidoro"
+    },
+    "nonce": {
+        "sameDomain": "Oge agwụla. Megharịa ibe ahụ wee nwaa ọzọ.",
+        "otherDomain": "Arịrịọ obe-ngalaba akpọchiri maka ngalaba mba ofesi na {{baseUrl}}"
+    },
+    "words": {
+        "tap": "kpatụ",
+        "click": "pịa",
+        "yes": "ee",
+        "no": "mba",
+        "Tap": "Kpatụ",
+        "Click": "Pịa",
+        "Yes": "Ee",
+        "No": "Mba",
+        "OK": "Ọ DỊ MMA",
+        "Alert": "Njikere",
+        "Confirm": "Kwenye",
+        "Prompt": "Ngwa ngwa"
+    },
+    "months": {
+        "1": "Jenụwarị",
+        "2": "Febụwarị",
+        "3": "Maachị",
+        "4": "Eprel",
+        "5": "Mee",
+        "6": "June",
+        "7": "Julaị",
+        "8": "Ọgọst",
+        "9": "Septemba",
+        "10": "October",
+        "11": "Nọvemba",
+        "12": "Disemba"
+    },
+    "durations": {
+        "second": "nke abụọ",
+        "seconds": "sekọnd",
+        "minute": "nkeji",
+        "minutes": "nkeji",
+        "hour": "awa",
+        "day": "ụbọchị",
+        "days": "ụbọchị",
+        "week": "izu",
+        "weeks": "izu",
+        "month": "onwa",
+        "months": "ọnwa",
+        "year": "afọ",
+        "years": "afọ",
+        "decade": "afọ iri",
+        "decades": "ọtụtụ iri afọ",
+        "century": "narị afọ",
+        "centuries": "ọtụtụ narị afọ"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Biko hapụ ohere ịnweta igwe okwu gị",
+        "record": "Dekọọ",
+        "recording": "Edekọ",
+        "remains": "foduru",
+        "maximum": "kacha",
+        "playing": "Na-egwu egwu",
+        "recorded": "Edekọrọ",
+        "clip": "clip",
+        "discard": "Tufuo",
+        "encoding": "Ntinye koodu"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Enweghị isi iyi vidiyo",
+        "SkipAfter": "Gachaa",
+        "Skip": "Mafee"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Enweghị isi iyi pdf"
+    },
+    "clip": {
+        "SetClipStart": "Tọọ mmalite clip",
+        "ClipStart": "Clip Malite",
+        "SetClipEnd": "Tọọ ngwụcha clip",
+        "ClipEnd": "Ọgwụgwụ clip",
+        "StartMoreEnd": "Ọnọdụ mmalite enweghị ike ịbụ karịa ọnọdụ njedebe",
+        "EndLessStart": "Ọkwa ngwụcha enweghị ike ịbụ ihe na-erughị ọnọdụ mmalite",
+        "WhichInvalid": "Arụmụka &#39;nke&#39; adịghị mma"
+    },
+    "alert": {
+        "title": "Njikere"
+    },
+    "confirm": {
+        "title": "Kwenye",
+        "ok": "Ee",
+        "cancel": "Mba"
+    },
+    "prompt": {
+        "title": "Ngwa ngwa",
+        "ok": "Gaa"
+    },
+    "tabs": {
+        "more": "Ọzọ",
+        "Menu": "NchNhr"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Enwere mperi ịgụ faịlụ",
+        "errorType": "Ndo, mana akwadoghị ụdị faịlụ a",
+        "cameraCommands": {
+            "prompt": "Kedu ihe ga-amasị gị ime?",
+            "photo": "Seta foto ọhụrụ",
+            "library": "Họrọ n&#39;ọbá akwụkwọ"
+        },
+        "tooSmall": "Biko họrọ onyonyo ka ukwuu.",
+        "cropping": {
+            "title": "Gbanwee nha na ọnọdụ",
+            "touchscreen": "Jiri mkpịsị aka gị bugharịa na dọrọ",
+            "notTouchscreen": "Jiri òké &amp; wheel gị bugharịa na dọrọ"
+        }
+    },
+    "timestamp": {
+        "lastNight": "abalị ụnyahụ",
+        "lastEvening": "abalị ikpeazụ",
+        "yesterday": "ụnyahụ",
+        "thisMorning": "ututu a",
+        "today": "taa",
+        "tonight": "abalị a",
+        "tomorrowMorning": "ututu",
+        "tomorrow": "echi",
+        "hoursAgo": "{{h}} elekere gara aga",
+        "hourAgo": "{{h}} elekere gara aga",
+        "minuteAgo": "{{m}} nkeji gara aga",
+        "minutesAgo": "{{m}} nkeji gara aga",
+        "secondAgo": "{{s}} nke abụọ gara aga",
+        "secondsAgo": "{{s}} sekọnd gara aga",
+        "fewSecondsAgo": "sekọnd gara aga",
+        "rightNow": "ugbu a",
+        "inSecond": "na {{s}} nke abụọ",
+        "inSeconds": "na {{s}} sekọnd",
+        "inMinute": "na nkeji {{m}}",
+        "inMinutes": "na nkeji {{m}}",
+        "inHour": "n&#39;awa {{h}}",
+        "inHours": "n&#39;awa {{h}}",
+        "inUnderMinute": "n&#39;okpuru 1 nkeji"
+    },
+    "browser": {
+        "insecureContext": "Ịkwesịrị ịchọgharị na ọnọdụ echekwara ka nke a rụọ ọrụ"
+    },
+    "scan": {
+        "QR": "Nyochaa koodu QR"
+    },
+    "input": {
+        "Placeholder": "Malite pịnye..."
+    }
+}

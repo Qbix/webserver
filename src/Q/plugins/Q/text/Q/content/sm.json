@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Sese {{status}} a&#39;o talosaga",
+        "canceled": "Talosaga ua faaleaogaina",
+        "500": "Sese server i totonu",
+        "404": "Le maua: {{url}}",
+        "501": "Talosaga ua motusia",
+        "401": "Le fa&#39;atagaina",
+        "403": "Fa&#39;asa"
+    },
+    "nonce": {
+        "sameDomain": "Ua uma le sauniga. Toe faafou le itulau ma toe taumafai.",
+        "otherDomain": "Talosaga fa&#39;asaga i le itu i fafo ile {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "kiliki",
+        "yes": "ioe",
+        "no": "leai",
+        "Tap": "Tap",
+        "Click": "Kiliki",
+        "Yes": "ioe",
+        "No": "leai",
+        "OK": "Ua lelei",
+        "Alert": "Lapata&#39;i",
+        "Confirm": "Faamaonia",
+        "Prompt": "Fa&#39;anatinati"
+    },
+    "months": {
+        "1": "Ianuari",
+        "2": "Fepuari",
+        "3": "Mati",
+        "4": "Apelila",
+        "5": "Mae",
+        "6": "Iuni",
+        "7": "Iuli",
+        "8": "Aukuso",
+        "9": "Setema",
+        "10": "Okitopa",
+        "11": "Novema",
+        "12": "Tesema"
+    },
+    "durations": {
+        "second": "tulaga lua",
+        "seconds": "sekone",
+        "minute": "minute",
+        "minutes": "minute",
+        "hour": "itula",
+        "day": "aso",
+        "days": "aso",
+        "week": "vaiaso",
+        "weeks": "vaiaso",
+        "month": "masina",
+        "months": "masina",
+        "year": "tausaga",
+        "years": "tausaga",
+        "decade": "sefulu tausaga",
+        "decades": "sefulu tausaga",
+        "century": "seneturi",
+        "centuries": "seneturi"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Fa&#39;amolemole fa&#39;ataga le avanoa i lau masini faaleotele leo",
+        "record": "Faamaumauga",
+        "recording": "Faamaumauga",
+        "remains": "tumau",
+        "maximum": "maualuga",
+        "playing": "Ta&#39;alo",
+        "recorded": "Faamauina",
+        "clip": "kilipa",
+        "discard": "lafoai",
+        "encoding": "Fa&#39;ailoga"
+    },
+    "video": {
+        "clip": "kilipa",
+        "errorNoSource": "Leai se puna vitio",
+        "SkipAfter": "Fa&#39;ase&#39;e pe a uma",
+        "Skip": "Fa&#39;ase&#39;e"
+    },
+    "pdf": {
+        "clip": "kilipa",
+        "errorNoSource": "Leai se puna pdf"
+    },
+    "clip": {
+        "SetClipStart": "Seti le Clip Amata",
+        "ClipStart": "Clip Amata",
+        "SetClipEnd": "Seti le Fa&#39;ai&#39;uga",
+        "ClipEnd": "Kilipi Fa&#39;ai&#39;uga",
+        "StartMoreEnd": "Tulaga amata e le mafai ona sili atu nai lo le tulaga fa&#39;ai&#39;u",
+        "EndLessStart": "Ole tulaga fa&#39;ai&#39;u e le mafai ona la&#39;ititi nai lo le tulaga amata",
+        "WhichInvalid": "Fa&#39;amatalaga &#39;lea&#39; le aoga"
+    },
+    "alert": {
+        "title": "Lapata&#39;i"
+    },
+    "confirm": {
+        "title": "Faamaonia",
+        "ok": "ioe",
+        "cancel": "leai"
+    },
+    "prompt": {
+        "title": "Fa&#39;anatinati",
+        "ok": "Alu"
+    },
+    "tabs": {
+        "more": "sili atu",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Sese faitau faila",
+        "errorType": "Fa&#39;amalie atu, ae le&#39;o lagolagoina lenei ituaiga faila",
+        "cameraCommands": {
+            "prompt": "O le a le mea e te mana&#39;o e fai?",
+            "photo": "Pu&#39;e ata fou",
+            "library": "Filifili mai le faletusi"
+        },
+        "tooSmall": "Fa&#39;amolemole filifili se ata tele.",
+        "cropping": {
+            "title": "Fetuunai le tele ma le tulaga",
+            "touchscreen": "Fa&#39;aoga ou tamatamailima e fa&#39;aloma ma toso",
+            "notTouchscreen": "Fa&#39;aoga lau isumu ma le uili e fa&#39;aoso ma toso"
+        }
+    },
+    "timestamp": {
+        "lastNight": "anapo",
+        "lastEvening": "po mulimuli",
+        "yesterday": "ananafi",
+        "thisMorning": "i lenei taeao",
+        "today": "aso nei",
+        "tonight": "i le po nei",
+        "tomorrowMorning": "taeao taeao",
+        "tomorrow": "taeao",
+        "hoursAgo": "{{h}} itula talu ai",
+        "hourAgo": "{{h}} itula talu ai",
+        "minuteAgo": "{{m}} minute talu ai",
+        "minutesAgo": "{{m}} minute ua mavae",
+        "secondAgo": "{{s}} lona lua talu ai",
+        "secondsAgo": "{{s}} sekone talu ai",
+        "fewSecondsAgo": "sekone ua mavae",
+        "rightNow": "taimi nei",
+        "inSecond": "i {{s}} lona lua",
+        "inSeconds": "i {{s}} sekone",
+        "inMinute": "i {{m}} minute",
+        "inMinutes": "i {{m}} minute",
+        "inHour": "i {{h}} itula",
+        "inHours": "i {{h}} itula",
+        "inUnderMinute": "i lalo ole 1 minute"
+    },
+    "browser": {
+        "insecureContext": "E mana&#39;omia lou su&#39;esu&#39;e i totonu ose fa&#39;asinomaga fa&#39;amautu mo lenei mea e fa&#39;atino"
+    },
+    "scan": {
+        "QR": "Su&#39;e le QR code"
+    },
+    "input": {
+        "Placeholder": "Amata taina..."
+    }
+}

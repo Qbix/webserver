@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Pogre\u0161ka {{status}} tijekom zahtjeva",
+		"canceled": "Zahtjev je otkazan",
+		"500": "Interna pogre\u0161ka poslu\u017eitelja",
+		"404": "Nije prona\u0111eno: {{url}}",
+		"501": "Zahtjev je prekinut",
+		"401": "Neovla\u0161teno",
+		"403": "Zabranjeno"
+	},
+	"nonce": {
+		"sameDomain": "Vrijeme isteklo. Osvje\u017eite stranicu i poku\u0161ajte ponovno.",
+		"otherDomain": "Blokirani zahtjev {{method}} za me\u0111udomenski pristup sa strane domene u {{baseUrl}}"
+	},
+	"words": {
+		"tap": "dodir",
+		"click": "klik",
+		"yes": "Da",
+		"no": "Ne",
+		"Tap": "Dodir",
+		"Click": "Klik",
+		"Yes": "Da",
+		"No": "Ne",
+		"OK": "u redu",
+		"Alert": "uzbuna",
+		"Confirm": "Potvrda",
+		"Prompt": "Unesite tekst"
+	},
+	"months": {
+		"1": "sije\u010dnja",
+		"2": "velja\u010da",
+		"3": "o\u017eujak",
+		"4": "travanj",
+		"5": "svibanj",
+		"6": "lipanj",
+		"7": "srpanj",
+		"8": "kolovoz",
+		"9": "rujan",
+		"10": "listopad",
+		"11": "studeni",
+		"12": "prosinac"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Dopustite pristup svom mikrofonu",
+		"record": "Snimiti",
+		"recording": "Snimanje",
+		"remains": "ostaci",
+		"maximum": "maksimum",
+		"playing": "Igranje",
+		"recorded": "Snimljeno",
+		"clip": "isje\u010dak",
+		"orupload": "Ili u\u010ditajte",
+		"usethis": "Koristi ovo",
+		"discard": "Odbaciti",
+		"encoding": "Kodiranje"
+	},
+	"alert": {
+		"title": "Obavijest"
+	},
+	"confirm": {
+		"title": "Potvrdite",
+		"ok": "Da",
+		"cancel": "Ne"
+	},
+	"prompt": {
+		"title": "Unesite tekst",
+		"ok": "u redu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Pogre\u0161ka pri \u010ditanju datoteke",
+		"cameraCommands": {
+			"prompt": "\u0160to biste \u017eeljeli raditi?",
+			"photo": "Snimite novu fotografiju",
+			"library": "Odaberite iz biblioteke"
+		},
+		"tooSmall": "Molimo odaberite ve\u0107u sliku.",
+		"cropping": {
+			"title": "Prilagodite veli\u010dinu i polo\u017eaj",
+			"touchscreen": "Koristite prste za zumiranje i povla\u010denje",
+			"notTouchscreen": "Koristite mi\u0161 i kota\u010di\u0107 za zumiranje i povla\u010denje"
+		},
+		"errorType": "\u017dao nam je, ali ova vrsta datoteke nije podr\u017eana"
+	},
+	"timestamp": {
+		"lastNight": "pro\u0161lu no\u0107",
+		"lastEvening": "zadnje ve\u010deri",
+		"yesterday": "ju\u010der",
+		"thisMorning": "jutros",
+		"today": "danas",
+		"tonight": "ve\u010deras",
+		"tomorrowMorning": "tom jutro",
+		"tomorrow": "sutra",
+		"hoursAgo": "prije {{h}} sati",
+		"hourAgo": "prije {{h}} sat",
+		"minuteAgo": "Prije {{m}} minute",
+		"minutesAgo": "Prije {{m}} minuta",
+		"secondAgo": "Prije {{s}} sekunde",
+		"secondsAgo": "Prije {{s}} sekundi",
+		"fewSecondsAgo": "prije nekoliko sekundi",
+		"rightNow": "sada",
+		"inSecond": "u {{s}} sekundi",
+		"inSeconds": "za {{s}} sekundi",
+		"inMinute": "za {{m}} minuta",
+		"inMinutes": "za {{m}} minuta",
+		"inHour": "za {{h}} sat",
+		"inHours": "za {{h}} sati",
+		"inUnderMinute": "za manje od 1 minute"
+	},
+	"tabs": {
+		"more": "vi\u0161e",
+		"Menu": "izbornik"
+	},
+	"video": {
+		"clip": "isje\u010dak",
+		"errorNoSource": "Nema video izvora",
+		"SkipAfter": "Presko\u010di nakon",
+		"Skip": "Presko\u010diti"
+	},
+	"pdf": {
+		"clip": "isje\u010dak",
+		"errorNoSource": "Nema pdf izvora"
+	},
+	"clip": {
+		"SetClipStart": "Postavite Clip Start",
+		"ClipStart": "Po\u010detak isje\u010dka",
+		"SetClipEnd": "Postavite Clip End",
+		"ClipEnd": "Kraj isje\u010dka",
+		"StartMoreEnd": "Po\u010detni polo\u017eaj ne mo\u017ee biti ve\u0107i od krajnjeg polo\u017eaja",
+		"EndLessStart": "Krajnji polo\u017eaj ne mo\u017ee biti manji od po\u010detne pozicije",
+		"WhichInvalid": "Argument &#39;koji&#39; je neva\u017ee\u0107i"
+	},
+	"durations": {
+		"second": "drugi",
+		"seconds": "sekundi",
+		"minute": "minuta",
+		"minutes": "minutama",
+		"hour": "sati",
+		"day": "dan",
+		"days": "dana",
+		"week": "tjedan",
+		"weeks": "tjedni",
+		"month": "mjesec",
+		"months": "mjeseci",
+		"year": "godina",
+		"years": "godine",
+		"decade": "desetlje\u0107e",
+		"decades": "desetlje\u0107ima",
+		"century": "stolje\u0107a",
+		"centuries": "stolje\u0107a"
+	},
+	"browser": {
+		"insecureContext": "Morate pregledavati u sigurnom kontekstu da bi ovo funkcioniralo"
+	},
+	"scan": {
+		"QR": "Skenirajte QR kodove"
+	},
+	"input": {
+		"Placeholder": "Po\u010dni tipkati..."
+	}
+}

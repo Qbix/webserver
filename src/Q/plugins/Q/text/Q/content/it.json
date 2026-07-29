@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Errore {{status}} durante la richiesta",
+		"canceled": "Richiesta annullata",
+		"500": "Errore interno del server",
+		"404": "Non trovato: {{url}}",
+		"501": "Richiesta interrotta",
+		"401": "Non autorizzato",
+		"403": "Proibito"
+	},
+	"nonce": {
+		"sameDomain": "Sessione scaduta. Aggiorna la pagina e riprova.",
+		"otherDomain": "Richiesta cross-domain {{method}} bloccata da dominio straniero a {{baseUrl}}"
+	},
+	"words": {
+		"tap": "rubinetto",
+		"click": "clic",
+		"yes": "s\u00ec",
+		"no": "no",
+		"Tap": "Tocco",
+		"Click": "Clic",
+		"Yes": "s\u00ec",
+		"No": "No",
+		"OK": "OK",
+		"Alert": "Mettere in guardia",
+		"Confirm": "Conferma",
+		"Prompt": "Inserire il testo"
+	},
+	"months": {
+		"1": "gennaio",
+		"2": "febbraio",
+		"3": "marzo",
+		"4": "aprile",
+		"5": "Maggio",
+		"6": "giugno",
+		"7": "luglio",
+		"8": "agosto",
+		"9": "settembre",
+		"10": "ottobre",
+		"11": "novembre",
+		"12": "dicembre"
+	},
+	"durations": {
+		"second": "secondo",
+		"seconds": "secondi",
+		"minute": "minuto",
+		"minutes": "minuti",
+		"hour": "ore",
+		"day": "giorno",
+		"days": "giorni",
+		"week": "settimana",
+		"weeks": "settimane",
+		"month": "mese",
+		"months": "mesi",
+		"year": "anno",
+		"years": "anni",
+		"decade": "decennio",
+		"decades": "decenni",
+		"century": "secolo",
+		"centuries": "secoli"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Si prega di consentire l&#39;accesso al microfono",
+		"record": "Disco",
+		"recording": "Registrazione",
+		"remains": "resti",
+		"maximum": "massimo",
+		"playing": "Giocando",
+		"recorded": "Registrato",
+		"clip": "clip",
+		"discard": "Scartare",
+		"encoding": "Codifica"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "Nessuna sorgente video",
+		"SkipAfter": "Salta dopo",
+		"Skip": "Saltare"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "Nessuna fonte pdf"
+	},
+	"clip": {
+		"SetClipStart": "Imposta inizio clip",
+		"ClipStart": "Inizio clip",
+		"SetClipEnd": "Imposta fine clip",
+		"ClipEnd": "Fine clip",
+		"StartMoreEnd": "La posizione iniziale non pu\u00f2 essere superiore alla posizione finale",
+		"EndLessStart": "La posizione finale non pu\u00f2 essere inferiore alla posizione iniziale",
+		"WhichInvalid": "Argomento &#39;quale&#39; non valido"
+	},
+	"alert": {
+		"title": "Avviso"
+	},
+	"confirm": {
+		"title": "Confermare",
+		"ok": "s\u00ec",
+		"cancel": "No"
+	},
+	"prompt": {
+		"title": "Inserire il testo",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "Di pi\u00f9",
+		"Menu": "Men\u00f9"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Errore durante la lettura del file",
+		"errorType": "Siamo spiacenti, ma questo tipo di file non \u00e8 supportato",
+		"cameraCommands": {
+			"prompt": "Cosa ti piacerebbe fare?",
+			"photo": "Scatta una nuova foto",
+			"library": "Seleziona dalla libreria"
+		},
+		"tooSmall": "Si prega di scegliere un&#39;immagine pi\u00f9 grande.",
+		"cropping": {
+			"title": "Regola dimensione e posizione",
+			"touchscreen": "Usa le dita per ingrandire e trascinare",
+			"notTouchscreen": "Usa il mouse e la rotellina per ingrandire e trascinare"
+		}
+	},
+	"timestamp": {
+		"lastNight": "la notte scorsa",
+		"lastEvening": "ultima vigilia",
+		"yesterday": "ieri",
+		"thisMorning": "questa mattina",
+		"today": "oggi",
+		"tonight": "stasera",
+		"tomorrowMorning": "tom mattina",
+		"tomorrow": "Domani",
+		"hoursAgo": "{{h}} ore fa",
+		"hourAgo": "{{h}} ora fa",
+		"minuteAgo": "{{m}} minuto fa",
+		"minutesAgo": "{{m}} minuti fa",
+		"secondAgo": "{{s}} secondo fa",
+		"secondsAgo": "{{s}} secondi fa",
+		"fewSecondsAgo": "secondi fa",
+		"rightNow": "proprio adesso",
+		"inSecond": "tra {{s}} secondi",
+		"inSeconds": "tra {{s}} secondi",
+		"inMinute": "tra {{m}} minuto",
+		"inMinutes": "tra {{m}} minuti",
+		"inHour": "tra {{h}} ora",
+		"inHours": "tra {{h}} ore",
+		"inUnderMinute": "in meno di 1 minuto"
+	},
+	"browser": {
+		"insecureContext": "Devi navigare in un contesto sicuro affinch\u00e9 funzioni"
+	},
+	"scan": {
+		"QR": "Scansiona i codici QR"
+	},
+	"input": {
+		"Placeholder": "Iniziare a digitare..."
+	}
+}

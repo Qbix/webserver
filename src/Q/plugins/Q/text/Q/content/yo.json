@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Aṣiṣe {999}} nigba ibeere",
+        "canceled": "Ti fagilee ibeere",
+        "500": "Asa",
+        "404": "Ko ri: {{url}}",
+        "501": "Ibere ti daduro",
+        "401": "Laigba aṣẹ",
+        "403": "Eewọ"
+    },
+    "nonce": {
+        "sameDomain": "Akoko ti pari. Tun oju-iwe naa sọ ki o tun gbiyanju lẹẹkansi.",
+        "otherDomain": "Ti dina fun ibeere agbekọja-ibugbe si agbegbe ajeji ni {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tẹ ni kia kia",
+        "click": "tẹ",
+        "yes": "beeni",
+        "no": "rara",
+        "Tap": "Fọwọ ba",
+        "Click": "Tẹ",
+        "Yes": "Bẹẹni",
+        "No": "Rara",
+        "OK": "O DARA",
+        "Alert": "Itaniji",
+        "Confirm": "Jẹrisi",
+        "Prompt": "Ni kiakia"
+    },
+    "months": {
+        "1": "Oṣu Kini",
+        "2": "Kínní",
+        "3": "Oṣu Kẹta",
+        "4": "Oṣu Kẹrin",
+        "5": "May",
+        "6": "Oṣu Kẹfa",
+        "7": "Oṣu Keje",
+        "8": "Oṣu Kẹjọ",
+        "9": "Oṣu Kẹsan",
+        "10": "Oṣu Kẹwa",
+        "11": "Oṣu kọkanla",
+        "12": "Oṣu kejila"
+    },
+    "durations": {
+        "second": "keji",
+        "seconds": "iṣẹju-aaya",
+        "minute": "iseju",
+        "minutes": "iseju",
+        "hour": "wakati",
+        "day": "ojo",
+        "days": "awọn ọjọ",
+        "week": "ose",
+        "weeks": "ọsẹ",
+        "month": "osu",
+        "months": "osu",
+        "year": "odun",
+        "years": "ọdun",
+        "decade": "ewadun",
+        "decades": "ewadun",
+        "century": "orundun",
+        "centuries": "sehin"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Jọwọ gba iraye si gbohungbohun rẹ",
+        "record": "Gba silẹ",
+        "recording": "Gbigbasilẹ",
+        "remains": "ku",
+        "maximum": "o pọju",
+        "playing": "Ti ndun",
+        "recorded": "Ti gbasilẹ",
+        "clip": "agekuru",
+        "discard": "Jabọ",
+        "encoding": "fifi koodu"
+    },
+    "video": {
+        "clip": "agekuru",
+        "errorNoSource": "Ko si orisun fidio",
+        "SkipAfter": "Rekọja lẹhin",
+        "Skip": "Rekọja"
+    },
+    "pdf": {
+        "clip": "agekuru",
+        "errorNoSource": "Ko si orisun pdf"
+    },
+    "clip": {
+        "SetClipStart": "Ṣeto Agekuru Bẹrẹ",
+        "ClipStart": "Agekuru Bẹrẹ",
+        "SetClipEnd": "Ṣeto Agekuru Ipari",
+        "ClipEnd": "Agekuru Ipari",
+        "StartMoreEnd": "Ipo ibẹrẹ ko le ju ipo ipari lọ",
+        "EndLessStart": "Ipo ipari ko le kere si ipo ibẹrẹ",
+        "WhichInvalid": "Ariyanjiyan &#39;eyi ti&#39; ko wulo"
+    },
+    "alert": {
+        "title": "Itaniji"
+    },
+    "confirm": {
+        "title": "Jẹrisi",
+        "ok": "Bẹẹni",
+        "cancel": "Rara"
+    },
+    "prompt": {
+        "title": "Ni kiakia",
+        "ok": "Lọ"
+    },
+    "tabs": {
+        "more": "siwaju sii",
+        "Menu": "Akojọ aṣyn"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Aṣiṣe kika faili",
+        "errorType": "Ma binu, ṣugbọn iru faili yii ko ni atilẹyin",
+        "cameraCommands": {
+            "prompt": "Kí l&#39;ó wù ẹ láti ṣe?",
+            "photo": "Ya fọto titun",
+            "library": "Yan lati ile-ikawe"
+        },
+        "tooSmall": "Jọwọ yan aworan nla kan.",
+        "cropping": {
+            "title": "Ṣatunṣe iwọn ati ipo",
+            "touchscreen": "Lo awọn ika ọwọ rẹ lati sun-un ati fa",
+            "notTouchscreen": "Lo asin rẹ &amp; kẹkẹ lati sun-un ati fa"
+        }
+    },
+    "timestamp": {
+        "lastNight": "ni alẹ Ana",
+        "lastEvening": "kẹhin aṣalẹ",
+        "yesterday": "lana",
+        "thisMorning": "owurọ yi",
+        "today": "loni",
+        "tonight": "lalẹ",
+        "tomorrowMorning": "tom owurọ",
+        "tomorrow": "ọla",
+        "hoursAgo": "{{h}} wakati seyin",
+        "hourAgo": "{{h}} wakati seyin",
+        "minuteAgo": "{{m}} iseju seyin",
+        "minutesAgo": "{{m}} iseju seyin",
+        "secondAgo": "{{s}} iseju seyin",
+        "secondsAgo": "{{s}} iseju iseju seyin",
+        "fewSecondsAgo": "aaya seyin",
+        "rightNow": "ni bayi",
+        "inSecond": "ni iṣẹju-aaya {{s}}",
+        "inSeconds": "ni {999}} iseju aaya",
+        "inMinute": "ni {999}} iseju",
+        "inMinutes": "ni {999} iseju",
+        "inHour": "ni wakati {999}",
+        "inHours": "ni {999} wakati",
+        "inUnderMinute": "labẹ 1 iṣẹju"
+    },
+    "browser": {
+        "insecureContext": "O nilo lati lọ kiri ni aaye to ni aabo fun eyi lati ṣiṣẹ"
+    },
+    "scan": {
+        "QR": "Ṣayẹwo awọn koodu QR"
+    },
+    "input": {
+        "Placeholder": "Bẹrẹ titẹ..."
+    }
+}

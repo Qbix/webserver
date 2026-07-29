@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Errore bat {{status}} eskaeran",
+		"canceled": "Eskaera bertan behera utzi da",
+		"500": "Barneko zerbitzari-errorea",
+		"404": "Ez da aurkitu: {{url}}",
+		"501": "Eskaera eten da",
+		"401": "Baimenik gabe",
+		"403": "Debekatuta"
+	},
+	"nonce": {
+		"sameDomain": "Saioa iraungi da. Freskatu orria eta saiatu berriro.",
+		"otherDomain": "{{baseUrl}} atzerriko domeinutik domeinu arteko {{method}} eskaera blokeatu da"
+	},
+	"words": {
+		"tap": "ukitu",
+		"click": "egin klik",
+		"yes": "bai",
+		"no": "ez",
+		"Tap": "Ukitu",
+		"Click": "Egin klik",
+		"Yes": "Bai",
+		"No": "Ez",
+		"OK": "Ados",
+		"Alert": "Alerta",
+		"Confirm": "Berrespena",
+		"Prompt": "Sartu testua"
+	},
+	"months": {
+		"1": "Urtarrila",
+		"2": "Otsaila",
+		"3": "martxoa",
+		"4": "Apirila",
+		"5": "maiatza",
+		"6": "ekaina",
+		"7": "uztaila",
+		"8": "Abuztu",
+		"9": "Iraila",
+		"10": "urria",
+		"11": "Azaroa",
+		"12": "abendua"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Mesedez, baimendu mikrofonorako sarbidea",
+		"record": "Grabatu",
+		"recording": "Grabaketa",
+		"remains": "hondarrak",
+		"maximum": "gehienez",
+		"playing": "Jolasean",
+		"recorded": "Grabatua",
+		"clip": "klipa",
+		"orupload": "Edo kargatu",
+		"usethis": "Erabili hau",
+		"discard": "Baztertu",
+		"encoding": "Kodeketa"
+	},
+	"alert": {
+		"title": "Oharra"
+	},
+	"confirm": {
+		"title": "Berretsi",
+		"ok": "Bai",
+		"cancel": "Ez"
+	},
+	"prompt": {
+		"title": "Sartu testua",
+		"ok": "Ados"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Errore bat gertatu da fitxategia irakurtzean",
+		"cameraCommands": {
+			"prompt": "Zer egin nahi duzu?",
+			"photo": "Atera argazki berria",
+			"library": "Hautatu liburutegitik"
+		},
+		"tooSmall": "Mesedez, aukeratu irudi handiago bat.",
+		"cropping": {
+			"title": "Doitu tamaina eta posizioa",
+			"touchscreen": "Erabili hatzak zooma egiteko eta arrastatu",
+			"notTouchscreen": "Erabili sagua eta gurpila handitzeko eta arrastatu"
+		},
+		"errorType": "Barkatu, baina fitxategi mota hau ez da onartzen"
+	},
+	"timestamp": {
+		"lastNight": "bart",
+		"lastEvening": "azken bezpera",
+		"yesterday": "atzo",
+		"thisMorning": "gaur goizean",
+		"today": "gaur",
+		"tonight": "gaur gauean",
+		"tomorrowMorning": "bihar goizean",
+		"tomorrow": "bihar",
+		"hoursAgo": "Duela {{h}} ordu",
+		"hourAgo": "Duela {{h}} ordu",
+		"minuteAgo": "Duela {{m}} minutu",
+		"minutesAgo": "Duela {{m}} minutu",
+		"secondAgo": "Duela {{s}} segundo",
+		"secondsAgo": "Duela {{s}} segundo",
+		"fewSecondsAgo": "duela segundo",
+		"rightNow": "oraintxe bertan",
+		"inSecond": "{{s}} segundoan",
+		"inSeconds": "{{s}} segundotan",
+		"inMinute": "{{m}} minutu barru",
+		"inMinutes": "{{m}} minututan",
+		"inHour": "{{h}} ordu barru",
+		"inHours": "{{h}} ordutan",
+		"inUnderMinute": "minutu 1 baino gutxiagoan"
+	},
+	"tabs": {
+		"more": "gehiago",
+		"Menu": "Menua"
+	},
+	"video": {
+		"clip": "klipa",
+		"errorNoSource": "Ez dago bideo iturririk",
+		"SkipAfter": "Saltatu ondoren",
+		"Skip": "Saltatu"
+	},
+	"pdf": {
+		"clip": "klipa",
+		"errorNoSource": "Ez dago pdf iturririk"
+	},
+	"clip": {
+		"SetClipStart": "Ezarri Clip Start",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Ezarri cliparen amaiera",
+		"ClipEnd": "Clip amaiera",
+		"StartMoreEnd": "Hasierako posizioa ezin da izan amaierako posizioa baino gehiago",
+		"EndLessStart": "Amaiera-posizioa ezin da izan hasierako posizioa baino txikiagoa",
+		"WhichInvalid": "&#39;zein&#39; argudio baliogabea"
+	},
+	"durations": {
+		"second": "bigarrena",
+		"seconds": "segundoak",
+		"minute": "minutua",
+		"minutes": "minutu",
+		"hour": "orduak",
+		"day": "eguna",
+		"days": "egunak",
+		"week": "astea",
+		"weeks": "asteak",
+		"month": "hilabetea",
+		"months": "hilabeteak",
+		"year": "urtean",
+		"years": "urteak",
+		"decade": "hamarkada",
+		"decades": "hamarkadak",
+		"century": "mendean",
+		"centuries": "mendeetan"
+	},
+	"browser": {
+		"insecureContext": "Testuinguru seguru batean arakatu behar duzu honek funtziona dezan"
+	},
+	"scan": {
+		"QR": "Eskaneatu QR kodeak"
+	},
+	"input": {
+		"Placeholder": "Hasi idazten..."
+	}
+}

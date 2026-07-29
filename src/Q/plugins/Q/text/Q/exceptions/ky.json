@@ -1,0 +1,5 @@
+{
+    "MissingFile": "жок файл {{filename}}",
+    "InvalidLanguage": "жараксыз тил {{language}}",
+    "RequiredField": "{{field}} керек"
+}

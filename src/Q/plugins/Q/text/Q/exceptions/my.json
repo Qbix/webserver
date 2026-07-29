@@ -1,0 +1,5 @@
+{
+    "MissingFile": "ပျောက်ဆုံးနေသောဖိုင် {{filename}}",
+    "InvalidLanguage": "မမှန်ကန်သော ဘာသာစကား {{language}}",
+    "RequiredField": "{{field}} လိုအပ်ပါသည်။"
+}

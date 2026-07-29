@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Error {{status}} during request",
+		"canceled": "Request canceled",
+		"500": "Internal server error",
+		"404": "Not found: {{url}}",
+		"401": "Unauthorized",
+		"403": "Forbidden",
+		"501": "Request interrupted"
+	},
+	"nonce": {
+		"sameDomain": "Session expired. Refresh the page and try again.",
+		"otherDomain": "Blocked cross-domain {{method}} request from foreign domain at {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tap",
+		"click": "click",
+		"yes": "yes",
+		"no": "no",
+		"Tap": "Tap",
+		"Click": "Click",
+		"Yes": "Yes",
+		"No": "No",
+		"OK": "OK",
+		"Alert": "Alert",
+		"Confirm": "Confirm",
+		"Prompt": "Prompt"
+	},
+	"months": {
+		"1": "January",
+		"2": "February",
+		"3": "March",
+		"4": "April",
+		"5": "May",
+		"6": "June",
+		"7": "July",
+		"8": "August",
+		"9": "September",
+		"10": "October",
+		"11": "November",
+		"12": "December"
+	},
+	"durations": {
+		"second": "second",
+		"seconds": "seconds",
+		"minute": "minute",
+		"minutes": "minutes",
+		"hour": "hours",
+		"day": "day",
+		"days": "days",
+		"week": "week",
+		"weeks": "weeks",
+		"month": "month",
+		"months": "months",
+		"year": "year",
+		"years": "years",
+		"decade": "decade",
+		"decades": "decades",
+		"century": "century",
+		"centuries": "centuries"
+	},
+	"browser": {
+		"insecureContext": "You need to browse in a secure context for this to work"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Please allow access to your microphone",
+		"record": "Record",
+		"recording": "Recording",
+		"remains": "remains",
+		"maximum": "maximum",
+		"playing": "Playing",
+		"recorded": "Recorded",
+		"clip": "clip",
+		"discard": "Discard",
+		"encoding": "Encoding"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "No video source",
+		"SkipAfter": "Skip after",
+		"Skip": "Skip"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "No pdf source"
+	},
+	"clip": {
+		"SetClipStart": "Set Clip Start",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Set Clip End",
+		"ClipEnd": "Clip End",
+		"StartMoreEnd": "Start position can't be more than end position",
+		"EndLessStart": "End position can't be less than start position",
+		"WhichInvalid": "Argument 'which' invalid"
+	},
+	"alert": {
+		"title": "Notice"
+	},
+	"confirm": {
+		"title": "Confirm",
+		"ok": "Yes",
+		"cancel": "No"
+	},
+	"prompt": {
+		"title": "Prompt",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "more",
+		"Menu": "Menu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Error reading file",
+		"errorType": "Sorry, but this file type not supported",
+		"cameraCommands": {
+			"prompt": "What would you like to do?",
+			"photo": "Take new photo",
+			"library": "Select from library"
+		},
+		"tooSmall": "Please choose a larger image.",
+		"cropping": {
+			"title": "Adjust size and position",
+			"touchscreen": "Use your fingers to zoom and drag",
+			"notTouchscreen": "Use your mouse & wheel to zoom and drag"
+		}
+	},
+	"timestamp": {
+		"lastNight": "last night",
+		"lastEvening": "last eve",
+		"yesterday": "yesterday",
+		"thisMorning": "this morn",
+		"today": "today",
+		"tonight": "tonight",
+		"tomorrowMorning": "tom morn",
+		"tomorrow": "tomorrow",
+		"hoursAgo": "{{h}} hours ago",
+		"hourAgo": "{{h}} hour ago",
+		"minuteAgo": "{{m}} minute ago",
+		"minutesAgo": "{{m}} minutes ago",
+		"secondAgo": "{{s}} second ago",
+		"secondsAgo": "{{s}} seconds ago",
+		"fewSecondsAgo": "seconds ago",
+		"rightNow": "right now",
+		"inSecond": "in {{s}} second",
+		"inSeconds": "in {{s}} seconds",
+		"inMinute": "in {{m}} minute",
+		"inMinutes": "in {{m}} minutes",
+		"inHour": "in {{h}} hour",
+		"inHours": "in {{h}} hours",
+		"inUnderMinute": "in under 1 minute"
+	},
+	"scan": {
+		"QR": "Scan QR codes"
+	},
+	"input": {
+		"Placeholder": "Start typing..."
+	}
+}

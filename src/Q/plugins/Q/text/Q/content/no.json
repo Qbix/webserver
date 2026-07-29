@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Feil {{status}} under forespørsel",
+        "canceled": "Forespørsel kansellert",
+        "500": "Intern server feil",
+        "404": "Ikke funnet: {{url}}",
+        "501": "Forespørselen ble avbrutt",
+        "401": "Uautorisert",
+        "403": "Forbudt"
+    },
+    "nonce": {
+        "sameDomain": "Sesjon utløpt. Oppdater siden og prøv igjen.",
+        "otherDomain": "Blokkert forespørsel på tvers av domener til utenlandsk domene på {{baseUrl}}"
+    },
+    "words": {
+        "tap": "trykk",
+        "click": "klikk",
+        "yes": "ja",
+        "no": "Nei",
+        "Tap": "Trykk på",
+        "Click": "Klikk",
+        "Yes": "Ja",
+        "No": "Nei",
+        "OK": "OK",
+        "Alert": "Varsle",
+        "Confirm": "Bekrefte",
+        "Prompt": "Spør"
+    },
+    "months": {
+        "1": "januar",
+        "2": "februar",
+        "3": "mars",
+        "4": "april",
+        "5": "Kan",
+        "6": "juni",
+        "7": "juli",
+        "8": "august",
+        "9": "september",
+        "10": "oktober",
+        "11": "november",
+        "12": "desember"
+    },
+    "durations": {
+        "second": "sekund",
+        "seconds": "sekunder",
+        "minute": "minutt",
+        "minutes": "minutter",
+        "hour": "timer",
+        "day": "dag",
+        "days": "dager",
+        "week": "uke",
+        "weeks": "uker",
+        "month": "måned",
+        "months": "måneder",
+        "year": "år",
+        "years": "år",
+        "decade": "tiår",
+        "decades": "tiår",
+        "century": "århundre",
+        "centuries": "århundrer"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Gi tilgang til mikrofonen din",
+        "record": "Ta opp",
+        "recording": "Innspilling",
+        "remains": "rester",
+        "maximum": "maksimum",
+        "playing": "Spiller",
+        "recorded": "Innspilt",
+        "clip": "klipp",
+        "discard": "Kast",
+        "encoding": "Koding"
+    },
+    "video": {
+        "clip": "klipp",
+        "errorNoSource": "Ingen videokilde",
+        "SkipAfter": "Hopp over etter",
+        "Skip": "Hopp over"
+    },
+    "pdf": {
+        "clip": "klipp",
+        "errorNoSource": "Ingen pdf-kilde"
+    },
+    "clip": {
+        "SetClipStart": "Still inn klippstart",
+        "ClipStart": "Klipp Start",
+        "SetClipEnd": "Sett Clip End",
+        "ClipEnd": "Klipp slutt",
+        "StartMoreEnd": "Startposisjon kan ikke være mer enn sluttposisjon",
+        "EndLessStart": "Sluttposisjon kan ikke være mindre enn startposisjon",
+        "WhichInvalid": "Argumentet &quot;hvilket&quot; er ugyldig"
+    },
+    "alert": {
+        "title": "Varsling"
+    },
+    "confirm": {
+        "title": "Bekrefte",
+        "ok": "Ja",
+        "cancel": "Nei"
+    },
+    "prompt": {
+        "title": "Spør",
+        "ok": "Gå"
+    },
+    "tabs": {
+        "more": "mer",
+        "Menu": "Meny"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Feil ved lesing av fil",
+        "errorType": "Beklager, men denne filtypen støttes ikke",
+        "cameraCommands": {
+            "prompt": "Hva har du lyst til å gjøre?",
+            "photo": "Ta nytt bilde",
+            "library": "Velg fra biblioteket"
+        },
+        "tooSmall": "Vennligst velg et større bilde.",
+        "cropping": {
+            "title": "Juster størrelse og plassering",
+            "touchscreen": "Bruk fingrene til å zoome og dra",
+            "notTouchscreen": "Bruk musen og hjulet for å zoome og dra"
+        }
+    },
+    "timestamp": {
+        "lastNight": "i går kveld",
+        "lastEvening": "siste kveld",
+        "yesterday": "i går",
+        "thisMorning": "denne morgenen",
+        "today": "i dag",
+        "tonight": "i kveld",
+        "tomorrowMorning": "i morgen",
+        "tomorrow": "i morgen",
+        "hoursAgo": "{{h}} timer siden",
+        "hourAgo": "{{h}} time siden",
+        "minuteAgo": "For {{m}} minutt siden",
+        "minutesAgo": "For {{m}} minutter siden",
+        "secondAgo": "{{s}} sekund siden",
+        "secondsAgo": "{{s}} sekunder siden",
+        "fewSecondsAgo": "sekunder siden",
+        "rightNow": "akkurat nå",
+        "inSecond": "om {{s}} sekund",
+        "inSeconds": "om {{s}} sekunder",
+        "inMinute": "om {{m}} minutt",
+        "inMinutes": "om {{m}} minutter",
+        "inHour": "om {{h}} time",
+        "inHours": "om {{h}} timer",
+        "inUnderMinute": "på under 1 minutt"
+    },
+    "browser": {
+        "insecureContext": "Du må surfe i en sikker kontekst for at dette skal fungere"
+    },
+    "scan": {
+        "QR": "Skann QR-koder"
+    },
+    "input": {
+        "Placeholder": "Begynn å skrive..."
+    }
+}

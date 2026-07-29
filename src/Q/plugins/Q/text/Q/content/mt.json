@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "\u017bball {{status}} waqt it-talba",
+		"canceled": "Talba kkan\u010bellata",
+		"500": "\u017bball intern tas-server",
+		"404": "Mhux misjub: {{url}}",
+		"501": "Talba interrotta",
+		"401": "Mhux awtorizzat",
+		"403": "Projbit"
+	},
+	"nonce": {
+		"sameDomain": "Is-sessjoni skadiet. A\u0121\u0121orna l-pa\u0121na u er\u0121a&#39; pprova.",
+		"otherDomain": "Talba {{method}} bejn id-dominji mblukkata minn dominju barrani {{baseUrl}}"
+	},
+	"words": {
+		"tap": "vit",
+		"click": "ikklikkja",
+		"yes": "iva",
+		"no": "le",
+		"Tap": "Mess",
+		"Click": "Ikklikkja",
+		"Yes": "Iva",
+		"No": "Nru",
+		"OK": "kollox sew",
+		"Alert": "Twissija",
+		"Confirm": "Konferma",
+		"Prompt": "Da\u0127\u0127al it-Test"
+	},
+	"months": {
+		"1": "Jannar",
+		"2": "Frar",
+		"3": "Marzu",
+		"4": "April",
+		"5": "Mejju",
+		"6": "\u0120unju",
+		"7": "Lulju",
+		"8": "Awissu",
+		"9": "Settembru",
+		"10": "Ottubru",
+		"11": "Novembru",
+		"12": "Di\u010bembru"
+	},
+	"durations": {
+		"second": "it-tieni",
+		"seconds": "sekondi",
+		"minute": "minuta",
+		"minutes": "minuti",
+		"hour": "sig\u0127at",
+		"day": "jum",
+		"days": "jiem",
+		"week": "\u0121img\u0127a",
+		"weeks": "\u0121img\u0127at",
+		"month": "xahar",
+		"months": "xhur",
+		"year": "sena",
+		"years": "snin",
+		"decade": "g\u0127axar snin",
+		"decades": "g\u0127exieren ta\u2019 snin",
+		"century": "seklu",
+		"centuries": "sekli"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Jekk jog\u0127\u0121bok \u0127alli a\u010b\u010bess g\u0127all-mikrofonu tieg\u0127ek",
+		"record": "Rekord",
+		"recording": "Re\u0121istrazzjoni",
+		"remains": "jibqa\u2019",
+		"maximum": "massimu",
+		"playing": "Playing",
+		"recorded": "Irre\u0121istrat",
+		"clip": "clip",
+		"discard": "Armi",
+		"encoding": "Kodifikazzjoni"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "L-ebda sors tal-vidjo",
+		"SkipAfter": "Aqbe\u017c wara",
+		"Skip": "Aqbe\u017c"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "L-ebda sors pdf"
+	},
+	"clip": {
+		"SetClipStart": "Issettja Clip Start",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Issettja Tmiem tal-Klip",
+		"ClipEnd": "Tmiem tal-Klip",
+		"StartMoreEnd": "Il-po\u017cizzjoni tal-bidu ma tistax tkun aktar minn po\u017cizzjoni tat-tmiem",
+		"EndLessStart": "Il-po\u017cizzjoni tat-tmiem ma tistax tkun inqas mill-po\u017cizzjoni tal-bidu",
+		"WhichInvalid": "Argument &#39;li&#39; invalidu"
+	},
+	"alert": {
+		"title": "Avvi\u017c"
+	},
+	"confirm": {
+		"title": "Ikkonferma",
+		"ok": "Iva",
+		"cancel": "Nru"
+	},
+	"prompt": {
+		"title": "Da\u0127\u0127al it-Test",
+		"ok": "kollox sew"
+	},
+	"tabs": {
+		"more": "aktar",
+		"Menu": "Menu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "\u017bball fil-qari tal-fajl",
+		"errorType": "Jiddispja\u010bini, i\u017cda dan it-tip ta&#39; fajl mhux appo\u0121\u0121jat",
+		"cameraCommands": {
+			"prompt": "X&#39;tixtieq tag\u0127mel?",
+			"photo": "\u0126u ritratt \u0121did",
+			"library": "Ag\u0127\u017cel mil-librerija"
+		},
+		"tooSmall": "Jekk jog\u0127\u0121bok ag\u0127\u017cel imma\u0121ni akbar.",
+		"cropping": {
+			"title": "A\u0121\u0121usta d-daqs u l-po\u017cizzjoni",
+			"touchscreen": "U\u017ca s-swaba &#39;tieg\u0127ek biex tkabbar u tkaxkar",
+			"notTouchscreen": "U\u017ca l-maws u r-rota biex tkabbar u tkaxkar"
+		}
+	},
+	"timestamp": {
+		"lastNight": "il-lejl li g\u0127adda",
+		"lastEvening": "lejliet l-a\u0127\u0127ar",
+		"yesterday": "ilbierah",
+		"thisMorning": "dalg\u0127odu",
+		"today": "illum",
+		"tonight": "illejla",
+		"tomorrowMorning": "g\u0127ada filg\u0127odu",
+		"tomorrow": "g\u0127ada",
+		"hoursAgo": "{{h}} sig\u0127at ilu",
+		"hourAgo": "{{h}} sieg\u0127a ilu",
+		"minuteAgo": "{{m}} minuta ilu",
+		"minutesAgo": "{{m}} minuti ilu",
+		"secondAgo": "{{s}} it-tieni ilu",
+		"secondsAgo": "{{s}} sekondi ilu",
+		"fewSecondsAgo": "sekondi ilu",
+		"rightNow": "B\u0127alissa",
+		"inSecond": "fi {{s}} it-tieni",
+		"inSeconds": "fi {{s}} sekondi",
+		"inMinute": "fi {{m}} minuta",
+		"inMinutes": "fi {{m}} minuti",
+		"inHour": "fi {{h}} sieg\u0127a",
+		"inHours": "fi {{h}} sig\u0127at",
+		"inUnderMinute": "f&#39;inqas minn minuta"
+	},
+	"browser": {
+		"insecureContext": "Ikollok b\u017conn tfittex f&#39;kuntest sigur biex dan ja\u0127dem"
+	},
+	"scan": {
+		"QR": "Skennja l-kodi\u010bijiet QR"
+	},
+	"input": {
+		"Placeholder": "Ibda ittajpja..."
+	}
+}

@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Earr\u00e1id {{status}} le linn an iarratais",
+		"canceled": "Iarratas cealaithe",
+		"500": "Earr\u00e1id Freastala\u00ed Inmhe\u00e1nach",
+		"404": "Gan aimsi\u00fa: {{url}}",
+		"501": "Cuireadh isteach ar an iarratas",
+		"401": "Neamh\u00fadaraithe",
+		"403": "Toirmiscthe"
+	},
+	"nonce": {
+		"sameDomain": "Chuaigh an seisi\u00fan in \u00e9ag. Athnuaigh an leathanach agus bain triail eile as.",
+		"otherDomain": "Iarratas tras-fhearainn {{method}} \u00f3 fhearann eachtrach bloc\u00e1ilte ag {{baseUrl}}"
+	},
+	"words": {
+		"tap": "sconna",
+		"click": "clice\u00e1il",
+		"yes": "t\u00e1",
+		"no": "n\u00edl",
+		"Tap": "Dteagmh\u00e1il",
+		"Click": "Clice\u00e1il",
+		"Yes": "T\u00e1",
+		"No": "N\u00edl",
+		"OK": "ceart go leor",
+		"Alert": "Airdeall",
+		"Confirm": "Daingni\u00fa",
+		"Prompt": "Iontr\u00e1il T\u00e9acs"
+	},
+	"months": {
+		"1": "Ean\u00e1ir",
+		"2": "Feabhra",
+		"3": "M\u00e1rta",
+		"4": "Aibre\u00e1n",
+		"5": "Bealtaine",
+		"6": "Meitheamh",
+		"7": "I\u00fail",
+		"8": "L\u00fanasa",
+		"9": "Me\u00e1n F\u00f3mhair",
+		"10": "Deireadh F\u00f3mhair",
+		"11": "Samhain",
+		"12": "Nollaig"
+	},
+	"durations": {
+		"second": "dara",
+		"seconds": "soicind",
+		"minute": "n\u00f3im\u00e9ad",
+		"minutes": "n\u00f3im\u00e9ad",
+		"hour": "uair an chloig",
+		"day": "l\u00e1",
+		"days": "laethanta",
+		"week": "seachtain",
+		"weeks": "seachtaine",
+		"month": "m\u00ed",
+		"months": "m\u00edonna",
+		"year": "bhliain",
+		"years": "blianta",
+		"decade": "deich mbliana",
+		"decades": "sc\u00f3r bliain",
+		"century": "haois",
+		"centuries": "cianta"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Ceadaigh rochtain ar do mhicreaf\u00f3n",
+		"record": "Taifead",
+		"recording": "Taifeadadh",
+		"remains": "iarsma\u00ed",
+		"maximum": "uasta",
+		"playing": "Ag imirt",
+		"recorded": "Taifeadta",
+		"clip": "gearrth\u00f3g",
+		"discard": "Caith amach",
+		"encoding": "Ionch\u00f3d\u00fa"
+	},
+	"video": {
+		"clip": "gearrth\u00f3g",
+		"errorNoSource": "Gan fhoinse f\u00edse\u00e1in",
+		"SkipAfter": "Scipe\u00e1il tar \u00e9is",
+		"Skip": "Scipe\u00e1il"
+	},
+	"pdf": {
+		"clip": "gearrth\u00f3g",
+		"errorNoSource": "N\u00edl aon fhoinse pdf"
+	},
+	"clip": {
+		"SetClipStart": "Socraigh Tosaigh Clip",
+		"ClipStart": "Tosaigh gearrth\u00f3g",
+		"SetClipEnd": "Socraigh Deireadh Clip",
+		"ClipEnd": "Cr\u00edoch Clip",
+		"StartMoreEnd": "N\u00ed f\u00e9idir leis an su\u00edomh tosaigh a bheith n\u00edos m\u00f3 n\u00e1 an su\u00edomh deiridh",
+		"EndLessStart": "N\u00ed f\u00e9idir leis an su\u00edomh deiridh a bheith n\u00edos l\u00fa n\u00e1 an t-ionad tosaigh",
+		"WhichInvalid": "Argument \u2018which\u2019 neamhbhail\u00ed"
+	},
+	"alert": {
+		"title": "F\u00f3gra"
+	},
+	"confirm": {
+		"title": "Deimhnigh",
+		"ok": "T\u00e1",
+		"cancel": "N\u00edl"
+	},
+	"prompt": {
+		"title": "Iontr\u00e1il T\u00e9acs",
+		"ok": "ceart go leor"
+	},
+	"tabs": {
+		"more": "n\u00edos m\u00f3",
+		"Menu": "Roghchl\u00e1r"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Earr\u00e1id agus an comhad \u00e1 l\u00e9amh",
+		"errorType": "\u00c1r leithsc\u00e9al, ach n\u00ed thaca\u00edtear leis an gcine\u00e1l comhaid seo",
+		"cameraCommands": {
+			"prompt": "C\u00e9ard ba mhaith leat a dh\u00e9anamh?",
+			"photo": "T\u00f3g grianghraf nua",
+			"library": "Roghnaigh \u00f3n leabharlann"
+		},
+		"tooSmall": "Roghnaigh \u00edomh\u00e1 n\u00edos m\u00f3.",
+		"cropping": {
+			"title": "Coigeartaigh m\u00e9id agus su\u00edomh",
+			"touchscreen": "Bain \u00fas\u00e1id as do mh\u00e9ara chun z\u00fam\u00e1il agus tarraing",
+			"notTouchscreen": "Bain \u00fas\u00e1id as do luch &amp; roth chun z\u00fam\u00e1il agus tarraing"
+		}
+	},
+	"timestamp": {
+		"lastNight": "ar\u00e9ir",
+		"lastEvening": "o\u00edche dheireanach",
+		"yesterday": "inn\u00e9",
+		"thisMorning": "ar maidin",
+		"today": "inniu",
+		"tonight": "anocht",
+		"tomorrowMorning": "maidin tom",
+		"tomorrow": "am\u00e1rach",
+		"hoursAgo": "{{h}} uair \u00f3 shin",
+		"hourAgo": "{{h}} uair \u00f3 shin",
+		"minuteAgo": "{{m}} n\u00f3im\u00e9ad \u00f3 shin",
+		"minutesAgo": "{{m}} n\u00f3im\u00e9ad \u00f3 shin",
+		"secondAgo": "{{s}} soicind \u00f3 shin",
+		"secondsAgo": "{{s}} soicind \u00f3 shin",
+		"fewSecondsAgo": "soicind \u00f3 shin",
+		"rightNow": "Anois",
+		"inSecond": "i {{s}} soicind",
+		"inSeconds": "i {{s}} soicind",
+		"inMinute": "i {{m}} n\u00f3im\u00e9ad",
+		"inMinutes": "i {{m}} n\u00f3im\u00e9ad",
+		"inHour": "i {{h}} uair",
+		"inHours": "i {{h}} uair an chloig",
+		"inUnderMinute": "i n\u00edos l\u00fa n\u00e1 1 n\u00f3im\u00e9ad"
+	},
+	"browser": {
+		"insecureContext": "N\u00ed m\u00f3r duit brabhs\u00e1il i gcomhth\u00e9acs sl\u00e1n le go n-oibreoidh s\u00e9 seo"
+	},
+	"scan": {
+		"QR": "Scan c\u00f3id QR"
+	},
+	"input": {
+		"Placeholder": "Tosaigh ag cl\u00f3scr\u00edobh..."
+	}
+}

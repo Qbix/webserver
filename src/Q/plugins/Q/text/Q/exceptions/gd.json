@@ -1,0 +1,5 @@
+{
+    "MissingFile": "faidhle {{filename}} a dhìth",
+    "InvalidLanguage": "cànan mì-dhligheach {{language}}",
+    "RequiredField": "Tha feum air {{field}}"
+}

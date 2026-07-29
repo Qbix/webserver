@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Soʻrov paytida xatolik {{status}}",
+        "canceled": "So‘rov bekor qilindi",
+        "500": "Serverdagi ichki xatolik",
+        "404": "Topilmadi: {{url}}",
+        "501": "Soʻrov uzildi",
+        "401": "Ruxsatsiz",
+        "403": "Taqiqlangan"
+    },
+    "nonce": {
+        "sameDomain": "Seans muddati tugadi. Sahifani yangilang va qaytadan urinib ko&#39;ring.",
+        "otherDomain": "{{baseUrl}} da xorijiy domenga oʻzaro domen soʻrovi bloklangan"
+    },
+    "words": {
+        "tap": "teging",
+        "click": "bosing",
+        "yes": "ha",
+        "no": "yo&#39;q",
+        "Tap": "ga teging",
+        "Click": "bosing",
+        "Yes": "Ha",
+        "No": "Yo&#39;q",
+        "OK": "KELISHDIKMI",
+        "Alert": "Ogohlantirish",
+        "Confirm": "Tasdiqlang",
+        "Prompt": "Tezkor"
+    },
+    "months": {
+        "1": "Yanvar",
+        "2": "fevral",
+        "3": "Mart",
+        "4": "aprel",
+        "5": "may",
+        "6": "iyun",
+        "7": "iyul",
+        "8": "avgust",
+        "9": "sentyabr",
+        "10": "oktyabr",
+        "11": "noyabr",
+        "12": "dekabr"
+    },
+    "durations": {
+        "second": "ikkinchi",
+        "seconds": "soniya",
+        "minute": "daqiqa",
+        "minutes": "daqiqa",
+        "hour": "soat",
+        "day": "kun",
+        "days": "kunlar",
+        "week": "hafta",
+        "weeks": "haftalar",
+        "month": "oy",
+        "months": "oylar",
+        "year": "yil",
+        "years": "yillar",
+        "decade": "o&#39;n yil",
+        "decades": "o&#39;n yillar",
+        "century": "asr",
+        "centuries": "asrlar"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Mikrofoningizga kirishga ruxsat bering",
+        "record": "Yozib olish",
+        "recording": "Yozib olish",
+        "remains": "qoladi",
+        "maximum": "maksimal",
+        "playing": "Oʻynamoqda",
+        "recorded": "Yozib olingan",
+        "clip": "klip",
+        "discard": "Bekor qilish",
+        "encoding": "Kodlash"
+    },
+    "video": {
+        "clip": "klip",
+        "errorNoSource": "Video manbasi yo&#39;q",
+        "SkipAfter": "Keyin o&#39;tkazib yuboring",
+        "Skip": "Oʻtkazib yuborish"
+    },
+    "pdf": {
+        "clip": "klip",
+        "errorNoSource": "Pdf manbasi yo&#39;q"
+    },
+    "clip": {
+        "SetClipStart": "Klipni boshlashni o&#39;rnating",
+        "ClipStart": "Klipni boshlash",
+        "SetClipEnd": "Klip oxirini o&#39;rnating",
+        "ClipEnd": "Klip oxiri",
+        "StartMoreEnd": "Boshlang&#39;ich pozitsiyasi oxirgi holatdan oshmasligi kerak",
+        "EndLessStart": "Yakuniy pozitsiya boshlang&#39;ich pozitsiyasidan kam bo&#39;lmasligi kerak",
+        "WhichInvalid": "“Qaysi” argumenti yaroqsiz"
+    },
+    "alert": {
+        "title": "Ogohlantirish"
+    },
+    "confirm": {
+        "title": "Tasdiqlash",
+        "ok": "Ha",
+        "cancel": "Yo&#39;q"
+    },
+    "prompt": {
+        "title": "Tezkor",
+        "ok": "Bor"
+    },
+    "tabs": {
+        "more": "Ko&#39;proq",
+        "Menu": "Menyu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Faylni o‘qishda xatolik yuz berdi",
+        "errorType": "Kechirasiz, lekin bu fayl turi qo&#39;llab-quvvatlanmaydi",
+        "cameraCommands": {
+            "prompt": "Nima qilgingiz kelyapdi?",
+            "photo": "Yangi suratga oling",
+            "library": "Kutubxonadan tanlang"
+        },
+        "tooSmall": "Iltimos, kattaroq rasmni tanlang.",
+        "cropping": {
+            "title": "O&#39;lcham va joylashuvni sozlang",
+            "touchscreen": "Kattalashtirish va sudrab borish uchun barmoqlaringizdan foydalaning",
+            "notTouchscreen": "Kattalashtirish va sudrab borish uchun sichqoncha va g‘ildirakdan foydalaning"
+        }
+    },
+    "timestamp": {
+        "lastNight": "kecha tunda",
+        "lastEvening": "oxirgi oqshom",
+        "yesterday": "kecha",
+        "thisMorning": "bugun ertalab",
+        "today": "Bugun",
+        "tonight": "bugun kechqurun",
+        "tomorrowMorning": "tom tong",
+        "tomorrow": "ertaga",
+        "hoursAgo": "{{h}} soat oldin",
+        "hourAgo": "{{h}} soat oldin",
+        "minuteAgo": "{{m}} daqiqa oldin",
+        "minutesAgo": "{{m}} daqiqa oldin",
+        "secondAgo": "{{s}} soniya oldin",
+        "secondsAgo": "{{s}} soniya oldin",
+        "fewSecondsAgo": "soniya oldin",
+        "rightNow": "hoziroq",
+        "inSecond": "{{s}} soniyada",
+        "inSeconds": "{{s}} soniyada",
+        "inMinute": "{{m}} daqiqada",
+        "inMinutes": "{{m}} daqiqada",
+        "inHour": "{{h}} soatdan keyin",
+        "inHours": "{{h}} soatdan keyin",
+        "inUnderMinute": "1 daqiqa ichida"
+    },
+    "browser": {
+        "insecureContext": "Buning ishlashi uchun xavfsiz kontekstda ko&#39;rib chiqishingiz kerak"
+    },
+    "scan": {
+        "QR": "QR kodlarini skanerlang"
+    },
+    "input": {
+        "Placeholder": "Yozishni boshlang..."
+    }
+}

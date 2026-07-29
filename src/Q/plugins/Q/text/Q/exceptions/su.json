@@ -1,0 +1,5 @@
+{
+    "MissingFile": "leungit file {{filename}}",
+    "InvalidLanguage": "basa teu sah {{language}}",
+    "RequiredField": "{{field}} diperlukeun"
+}

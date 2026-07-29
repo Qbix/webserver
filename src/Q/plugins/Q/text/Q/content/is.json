@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Villa {{status}} vi\u00f0 bei\u00f0ni",
+		"canceled": "H\u00e6tt vi\u00f0 bei\u00f0ni",
+		"500": "Innri net\u00fej\u00f3nsvilla",
+		"404": "Fannst ekki: {{url}}",
+		"501": "Bei\u00f0ni rofin",
+		"401": "\u00d3vi\u00f0komandi",
+		"403": "Banna\u00f0"
+	},
+	"nonce": {
+		"sameDomain": "Fundur rann \u00fat. Endurn\u00fdja\u00f0u s\u00ed\u00f0una og reyndu aftur.",
+		"otherDomain": "Loka\u00f0 fyrir {{method}} bei\u00f0ni milli l\u00e9na fr\u00e1 erlendu l\u00e9ni vi\u00f0 {{baseUrl}}"
+	},
+	"words": {
+		"tap": "snerta",
+		"click": "smellur",
+		"yes": "J\u00e1",
+		"no": "nei",
+		"Tap": "Snertu",
+		"Click": "Smellur",
+		"Yes": "J\u00e1",
+		"No": "Nei",
+		"OK": "Allt \u00ed lagi",
+		"Alert": "Vi\u00f0v\u00f6run",
+		"Confirm": "Sta\u00f0festing",
+		"Prompt": "Sl\u00e1\u00f0u inn texta"
+	},
+	"months": {
+		"1": "jan\u00faar",
+		"2": "febr\u00faar",
+		"3": "mars",
+		"4": "apr\u00edl",
+		"5": "ma\u00ed",
+		"6": "j\u00fan\u00ed",
+		"7": "j\u00fal\u00ed",
+		"8": "\u00e1g\u00fast",
+		"9": "september",
+		"10": "okt\u00f3ber",
+		"11": "n\u00f3vember",
+		"12": "desember"
+	},
+	"durations": {
+		"second": "anna\u00f0",
+		"seconds": "sek\u00fandur",
+		"minute": "m\u00edn\u00fatu",
+		"minutes": "m\u00edn\u00fatur",
+		"hour": "klukkustundir",
+		"day": "dagur",
+		"days": "daga",
+		"week": "vika",
+		"weeks": "vikur",
+		"month": "m\u00e1nu\u00f0i",
+		"months": "m\u00e1nu\u00f0um",
+		"year": "\u00e1ri",
+		"years": "\u00e1r",
+		"decade": "\u00c1ratugur",
+		"decades": "\u00e1ratugir",
+		"century": "\u00f6ld",
+		"centuries": "aldir"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Vinsamlegast leyf\u00f0u a\u00f0gang a\u00f0 hlj\u00f3\u00f0nemanum \u00fe\u00ednum",
+		"record": "Met",
+		"recording": "Upptaka",
+		"remains": "eftir",
+		"maximum": "h\u00e1marki",
+		"playing": "A\u00f0 spila",
+		"recorded": "Skr\u00e1\u00f0",
+		"clip": "b\u00fat",
+		"discard": "Farga\u00f0u",
+		"encoding": "K\u00f3\u00f0un"
+	},
+	"video": {
+		"clip": "b\u00fat",
+		"errorNoSource": "Enginn myndbandsuppspretta",
+		"SkipAfter": "Slepptu eftir",
+		"Skip": "Sleppa"
+	},
+	"pdf": {
+		"clip": "b\u00fat",
+		"errorNoSource": "Engin pdf heimild"
+	},
+	"clip": {
+		"SetClipStart": "Stilltu Clip Start",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Stilltu Clip End",
+		"ClipEnd": "Clip End",
+		"StartMoreEnd": "Upphafssta\u00f0a getur ekki veri\u00f0 meira en lokasta\u00f0a",
+		"EndLessStart": "Lokasta\u00f0a m\u00e1 ekki vera minni en upphafssta\u00f0a",
+		"WhichInvalid": "R\u00f6k \u201ehver\u201c \u00f3gild"
+	},
+	"alert": {
+		"title": "Taki\u00f0 eftir"
+	},
+	"confirm": {
+		"title": "Sta\u00f0festa",
+		"ok": "J\u00e1",
+		"cancel": "Nei"
+	},
+	"prompt": {
+		"title": "Sl\u00e1\u00f0u inn texta",
+		"ok": "Allt \u00ed lagi"
+	},
+	"tabs": {
+		"more": "meira",
+		"Menu": "Matse\u00f0ill"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Villa vi\u00f0 a\u00f0 lesa skr\u00e1",
+		"errorType": "\u00dev\u00ed mi\u00f0ur, en \u00feessi skr\u00e1arger\u00f0 er ekki studd",
+		"cameraCommands": {
+			"prompt": "Hva\u00f0 viltu gera?",
+			"photo": "Taktu n\u00fdja mynd",
+			"library": "Veldu \u00far b\u00f3kasafni"
+		},
+		"tooSmall": "Vinsamlegast veldu st\u00e6rri mynd.",
+		"cropping": {
+			"title": "Stilltu st\u00e6r\u00f0 og sta\u00f0setningu",
+			"touchscreen": "Nota\u00f0u fingurna til a\u00f0 \u00feysja og draga",
+			"notTouchscreen": "Nota\u00f0u m\u00fasina og hj\u00f3li\u00f0 til a\u00f0 \u00feysja og draga"
+		}
+	},
+	"timestamp": {
+		"lastNight": "g\u00e6rkv\u00f6ld",
+		"lastEvening": "s\u00ed\u00f0asta kv\u00f6ld",
+		"yesterday": "\u00ed g\u00e6r",
+		"thisMorning": "\u00ed morgun",
+		"today": "\u00ed dag",
+		"tonight": "\u00ed kv\u00f6ld",
+		"tomorrowMorning": "\u00ed fyrram\u00e1li\u00f0",
+		"tomorrow": "\u00e1 morgun",
+		"hoursAgo": "Fyrir {{h}} klukkustundum",
+		"hourAgo": "Fyrir {{h}} klukkustund s\u00ed\u00f0an",
+		"minuteAgo": "Fyrir {{m}} m\u00edn\u00fatu s\u00ed\u00f0an",
+		"minutesAgo": "Fyrir {{m}} m\u00edn\u00fatum",
+		"secondAgo": "{{s}} sek\u00fandu s\u00ed\u00f0an",
+		"secondsAgo": "Fyrir {{s}} sek\u00fandum",
+		"fewSecondsAgo": "sek\u00fandum s\u00ed\u00f0an",
+		"rightNow": "n\u00fana strax",
+		"inSecond": "\u00e1 {{s}} sek\u00fandu",
+		"inSeconds": "eftir {{s}} sek\u00fandur",
+		"inMinute": "eftir {{m}} m\u00edn\u00fatu",
+		"inMinutes": "eftir {{m}} m\u00edn\u00fatur",
+		"inHour": "eftir {{h}} klukkustund",
+		"inHours": "eftir {{h}} klukkustundir",
+		"inUnderMinute": "\u00e1 innan vi\u00f0 1 m\u00edn\u00fatu"
+	},
+	"browser": {
+		"insecureContext": "\u00de\u00fa \u00fearft a\u00f0 vafra \u00ed \u00f6ruggu samhengi til a\u00f0 \u00feetta virki"
+	},
+	"scan": {
+		"QR": "Skanna\u00f0u QR k\u00f3\u00f0a"
+	},
+	"input": {
+		"Placeholder": "Byrja\u00f0u a\u00f0 skrifa..."
+	}
+}

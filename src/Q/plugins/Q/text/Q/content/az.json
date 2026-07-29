@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Sor\u011fu zaman\u0131 x\u0259ta {{status}}",
+		"canceled": "Sor\u011fu l\u0259\u011fv edildi",
+		"500": "Daxili server x\u0259tas\u0131",
+		"404": "Tap\u0131lmad\u0131: {{url}}",
+		"501": "Sor\u011fu k\u0259sildi",
+		"401": "\u0130caz\u0259siz",
+		"403": "Qada\u011fan"
+	},
+	"nonce": {
+		"sameDomain": "Sessiya ba\u015fa \u00e7at\u0131b. S\u0259hif\u0259ni yenil\u0259yin v\u0259 yenid\u0259n c\u0259hd edin.",
+		"otherDomain": "{{baseUrl}} d\u0259 xarici domend\u0259n domenl\u0259raras\u0131 {{method}} sor\u011fusu blokland\u0131"
+	},
+	"words": {
+		"tap": "vurun",
+		"click": "bas\u0131n",
+		"yes": "b\u0259li",
+		"no": "yox",
+		"Tap": "toxunun",
+		"Click": "klikl\u0259yin",
+		"Yes": "B\u0259li",
+		"No": "Yox",
+		"OK": "tamam",
+		"Alert": "X\u0259b\u0259rdarl\u0131q",
+		"Confirm": "T\u0259sdiq",
+		"Prompt": "M\u0259tni daxil edin"
+	},
+	"months": {
+		"1": "yanvar",
+		"2": "fevral",
+		"3": "mart",
+		"4": "aprel",
+		"5": "Bil\u0259r",
+		"6": "iyun",
+		"7": "iyul",
+		"8": "avqust",
+		"9": "sentyabr",
+		"10": "oktyabr",
+		"11": "noyabr",
+		"12": "dekabr"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Z\u0259hm\u0259t olmasa mikrofonunuza giri\u015f\u0259 icaz\u0259 verin",
+		"record": "Qeyd",
+		"recording": "S\u0259syazma",
+		"remains": "qal\u0131r",
+		"maximum": "maksimum",
+		"playing": "Oynayan",
+		"recorded": "Qeyd\u0259 al\u0131n\u0131b",
+		"clip": "klip",
+		"orupload": "V\u0259 ya y\u00fckl\u0259yin",
+		"usethis": "Bunu istifad\u0259 et",
+		"discard": "R\u0259dd etm\u0259k",
+		"encoding": "Kodla\u015fd\u0131rma"
+	},
+	"alert": {
+		"title": "X\u0259b\u0259rdarl\u0131q"
+	},
+	"confirm": {
+		"title": "T\u0259sdiq edin",
+		"ok": "B\u0259li",
+		"cancel": "Yox"
+	},
+	"prompt": {
+		"title": "M\u0259tni daxil edin",
+		"ok": "tamam"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Fayl\u0131n oxunmas\u0131 x\u0259tas\u0131",
+		"cameraCommands": {
+			"prompt": "N\u0259 etm\u0259k ist\u0259rdiniz?",
+			"photo": "Yeni \u015f\u0259kil \u00e7\u0259kin",
+			"library": "Kitabxanadan se\u00e7in"
+		},
+		"tooSmall": "Z\u0259hm\u0259t olmasa daha b\u00f6y\u00fck \u015f\u0259kil se\u00e7in.",
+		"cropping": {
+			"title": "\u00d6l\u00e7\u00fc v\u0259 m\u00f6vqeyi t\u0259nziml\u0259yin",
+			"touchscreen": "B\u00f6y\u00fctm\u0259k v\u0259 s\u00fcr\u00fckl\u0259m\u0259k \u00fc\u00e7\u00fcn barmaqlar\u0131n\u0131zdan istifad\u0259 edin",
+			"notTouchscreen": "B\u00f6y\u00fctm\u0259k v\u0259 s\u00fcr\u00fc\u015fd\u00fcrm\u0259k \u00fc\u00e7\u00fcn si\u00e7an v\u0259 t\u0259k\u0259rd\u0259n istifad\u0259 edin"
+		},
+		"errorType": "\u00dczr ist\u0259yirik, lakin bu fayl n\u00f6v\u00fc d\u0259st\u0259kl\u0259nmir"
+	},
+	"timestamp": {
+		"lastNight": "ke\u00e7\u0259n gec\u0259",
+		"lastEvening": "son ax\u015fam",
+		"yesterday": "d\u00fcn\u0259n",
+		"thisMorning": "bu s\u0259h\u0259r",
+		"today": "bu g\u00fcn",
+		"tonight": "bu ax\u015fam",
+		"tomorrowMorning": "tom s\u0259h\u0259r",
+		"tomorrow": "sabah",
+		"hoursAgo": "{{h}} saat \u0259vv\u0259l",
+		"hourAgo": "{{h}} saat \u0259vv\u0259l",
+		"minuteAgo": "{{m}} d\u0259qiq\u0259 \u0259vv\u0259l",
+		"minutesAgo": "{{m}} d\u0259qiq\u0259 \u0259vv\u0259l",
+		"secondAgo": "{{s}} saniy\u0259 \u0259vv\u0259l",
+		"secondsAgo": "{{s}} saniy\u0259 \u0259vv\u0259l",
+		"fewSecondsAgo": "saniy\u0259 \u0259vv\u0259l",
+		"rightNow": "indi",
+		"inSecond": "{{s}} saniy\u0259y\u0259",
+		"inSeconds": "{{s}} saniy\u0259 \u0259rzind\u0259",
+		"inMinute": "{{m}} d\u0259qiq\u0259y\u0259",
+		"inMinutes": "{{m}} d\u0259qiq\u0259y\u0259",
+		"inHour": "{{h}} saat \u0259rzind\u0259",
+		"inHours": "{{h}} saat \u0259rzind\u0259",
+		"inUnderMinute": "1 d\u0259qiq\u0259d\u0259n az m\u00fcdd\u0259td\u0259"
+	},
+	"tabs": {
+		"more": "daha \u00e7ox",
+		"Menu": "Menyu"
+	},
+	"video": {
+		"clip": "klip",
+		"errorNoSource": "Video m\u0259nb\u0259yi yoxdur",
+		"SkipAfter": "Sonra ke\u00e7in",
+		"Skip": "Ke\u00e7"
+	},
+	"pdf": {
+		"clip": "klip",
+		"errorNoSource": "Pdf m\u0259nb\u0259 yoxdur"
+	},
+	"clip": {
+		"SetClipStart": "Klip Ba\u015flan\u011f\u0131c\u0131n\u0131 t\u0259yin edin",
+		"ClipStart": "Klip Ba\u015flan\u011f\u0131c",
+		"SetClipEnd": "Klip Sonunu t\u0259yin edin",
+		"ClipEnd": "Klipin sonu",
+		"StartMoreEnd": "Ba\u015flan\u011f\u0131c m\u00f6vqeyi son m\u00f6vqed\u0259n \u00e7ox ola bilm\u0259z",
+		"EndLessStart": "Son m\u00f6vqe ba\u015flan\u011f\u0131c m\u00f6vqeyind\u0259n az ola bilm\u0259z",
+		"WhichInvalid": "&quot;Hans\u0131&quot; arqumenti etibars\u0131zd\u0131r"
+	},
+	"durations": {
+		"second": "ikinci",
+		"seconds": "saniy\u0259",
+		"minute": "d\u0259qiq\u0259",
+		"minutes": "d\u0259qiq\u0259",
+		"hour": "saat",
+		"day": "g\u00fcn",
+		"days": "g\u00fcnl\u0259r",
+		"week": "h\u0259ft\u0259",
+		"weeks": "h\u0259ft\u0259l\u0259r",
+		"month": "ay",
+		"months": "ay",
+		"year": "il",
+		"years": "ill\u0259r",
+		"decade": "onillik",
+		"decades": "onillikl\u0259r",
+		"century": "\u0259sr",
+		"centuries": "\u0259srl\u0259r"
+	},
+	"browser": {
+		"insecureContext": "Bunun i\u015fl\u0259m\u0259si \u00fc\u00e7\u00fcn t\u0259hl\u00fck\u0259siz kontekstd\u0259 axtar\u0131\u015f etm\u0259lisiniz"
+	},
+	"scan": {
+		"QR": "QR kodlar\u0131 skan edin"
+	},
+	"input": {
+		"Placeholder": "Yazma\u011fa ba\u015flay\u0131n..."
+	}
+}

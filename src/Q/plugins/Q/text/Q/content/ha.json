@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Kuskure {{status}} yayin nema",
+        "canceled": "An soke nema",
+        "500": "Kuskuren na Cikin Saba",
+        "404": "Ba a samo shi ba: {{url}}",
+        "501": "An katse buƙatar",
+        "401": "Ba tare da izini ba",
+        "403": "An haramta"
+    },
+    "nonce": {
+        "sameDomain": "Zaman ya kare. Sake sabunta shafin kuma a sake gwadawa.",
+        "otherDomain": "An toshe buƙatun yanki zuwa yankin waje a {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "danna",
+        "yes": "iya",
+        "no": "a&#39;a",
+        "Tap": "Taɓa",
+        "Click": "Danna",
+        "Yes": "Ee",
+        "No": "A&#39;a",
+        "OK": "KO",
+        "Alert": "Fadakarwa",
+        "Confirm": "Tabbatar",
+        "Prompt": "Da sauri"
+    },
+    "months": {
+        "1": "Janairu",
+        "2": "Fabrairu",
+        "3": "Maris",
+        "4": "Afrilu",
+        "5": "Mayu",
+        "6": "Yuni",
+        "7": "Yuli",
+        "8": "Agusta",
+        "9": "Satumba",
+        "10": "Oktoba",
+        "11": "Nuwamba",
+        "12": "Disamba"
+    },
+    "durations": {
+        "second": "na biyu",
+        "seconds": "seconds",
+        "minute": "minti",
+        "minutes": "mintuna",
+        "hour": "hours",
+        "day": "rana",
+        "days": "kwanaki",
+        "week": "mako",
+        "weeks": "makonni",
+        "month": "wata",
+        "months": "watanni",
+        "year": "shekara",
+        "years": "shekaru",
+        "decade": "shekaru goma",
+        "decades": "shekarun da suka gabata",
+        "century": "karni",
+        "centuries": "ƙarni"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Da fatan za a ba da damar yin amfani da makirufo",
+        "record": "Yi rikodin",
+        "recording": "Rikodi",
+        "remains": "ragowar",
+        "maximum": "matsakaicin",
+        "playing": "Yin wasa",
+        "recorded": "An yi rikodin",
+        "clip": "clip",
+        "discard": "Yi watsi da",
+        "encoding": "Rufewa"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Babu tushen bidiyo",
+        "SkipAfter": "Tsallake bayan",
+        "Skip": "Tsallake"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Babu tushen pdf"
+    },
+    "clip": {
+        "SetClipStart": "Saita Clip Start",
+        "ClipStart": "Clip Fara",
+        "SetClipEnd": "Saita Ƙarshen shirin",
+        "ClipEnd": "Ƙarshen shirin",
+        "StartMoreEnd": "Matsayin farawa ba zai iya wuce matsayi na ƙarshe ba",
+        "EndLessStart": "Matsayin ƙarshe ba zai iya zama ƙasa da matsayin farawa ba",
+        "WhichInvalid": "Hujja &#39;wanda&#39; bata aiki"
+    },
+    "alert": {
+        "title": "Fadakarwa"
+    },
+    "confirm": {
+        "title": "Tabbatar",
+        "ok": "Ee",
+        "cancel": "A&#39;a"
+    },
+    "prompt": {
+        "title": "Da sauri",
+        "ok": "Tafi"
+    },
+    "tabs": {
+        "more": "Kara",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Kuskuren karanta fayil",
+        "errorType": "Yi haƙuri, amma wannan nau&#39;in fayil ɗin ba shi da tallafi",
+        "cameraCommands": {
+            "prompt": "Me kuke so kuyi?",
+            "photo": "Ɗauki sabon hoto",
+            "library": "Zaɓi daga ɗakin karatu"
+        },
+        "tooSmall": "Da fatan za a zaɓi hoto mafi girma.",
+        "cropping": {
+            "title": "Daidaita girman da matsayi",
+            "touchscreen": "Yi amfani da yatsunsu don zuƙowa da ja",
+            "notTouchscreen": "Yi amfani da linzamin kwamfuta da dabaran ku don zuƙowa da ja"
+        }
+    },
+    "timestamp": {
+        "lastNight": "daren jiya",
+        "lastEvening": "daren jiya",
+        "yesterday": "jiya",
+        "thisMorning": "wannan safiya",
+        "today": "yau",
+        "tonight": "yau da dare",
+        "tomorrowMorning": "da safe",
+        "tomorrow": "gobe",
+        "hoursAgo": "Awanni {{h}} da suka wuce",
+        "hourAgo": "awa {999}} da ta wuce",
+        "minuteAgo": "Minti {999}} da suka wuce",
+        "minutesAgo": "Mintuna {{m}} da suka wuce",
+        "secondAgo": "{999}} dakika daya da suka wuce",
+        "secondsAgo": "{{s}} seconds da suka wuce",
+        "fewSecondsAgo": "seconds da suka wuce",
+        "rightNow": "a yanzu",
+        "inSecond": "a cikin dakika {{s}}",
+        "inSeconds": "a cikin dakika {{s}}",
+        "inMinute": "a cikin minti {{m}}",
+        "inMinutes": "a cikin mintuna {{m}}",
+        "inHour": "a cikin sa&#39;a {{h}}",
+        "inHours": "a cikin sa&#39;o&#39;i {{h}}",
+        "inUnderMinute": "a kasa da minti 1"
+    },
+    "browser": {
+        "insecureContext": "Kuna buƙatar bincika cikin mahallin amintacce don wannan ya yi aiki"
+    },
+    "scan": {
+        "QR": "Duba lambobin QR"
+    },
+    "input": {
+        "Placeholder": "Fara bugawa..."
+    }
+}

@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Fout {{status}} tydens versoek",
+		"canceled": "Versoek gekanselleer",
+		"500": "Interne bedienerfout",
+		"404": "Nie gevind nie: {{url}}",
+		"501": "Versoek onderbreek",
+		"401": "Ongemagtig",
+		"403": "Verbode"
+	},
+	"nonce": {
+		"sameDomain": "Sessie het verval. Herlaai die bladsy en probeer weer.",
+		"otherDomain": "Geblokkeerde kruisdomein {{method}} -versoek van buitelandse domein by {{baseUrl}}"
+	},
+	"words": {
+		"tap": "raak",
+		"click": "klik",
+		"yes": "ja",
+		"no": "geen",
+		"Tap": "Raak",
+		"Click": "Klik",
+		"Yes": "Ja",
+		"No": "Geen",
+		"OK": "OK",
+		"Alert": "Waarskuwing",
+		"Confirm": "Bevestiging",
+		"Prompt": "Voer teks in"
+	},
+	"months": {
+		"1": "Januarie",
+		"2": "Februarie",
+		"3": "Maart",
+		"4": "April",
+		"5": "Mei",
+		"6": "Junie",
+		"7": "Julie",
+		"8": "Augustus",
+		"9": "September",
+		"10": "Oktober",
+		"11": "November",
+		"12": "Desember"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Laat asseblief toegang tot jou mikrofoon toe",
+		"record": "Rekord",
+		"recording": "Opname",
+		"remains": "oorbly",
+		"maximum": "maksimum",
+		"playing": "Speel",
+		"recorded": "Opgeneem",
+		"clip": "knip",
+		"orupload": "Of oplaai",
+		"usethis": "Gebruik hierdie",
+		"discard": "Gooi weg",
+		"encoding": "Enkodering"
+	},
+	"alert": {
+		"title": "Kennisgewing"
+	},
+	"confirm": {
+		"title": "Bevestig",
+		"ok": "Ja",
+		"cancel": "Geen"
+	},
+	"prompt": {
+		"title": "Voer teks in",
+		"ok": "OK"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Kon nie l\u00eaer lees nie",
+		"cameraCommands": {
+			"prompt": "Wat wil jy doen?",
+			"photo": "Neem nuwe foto",
+			"library": "Kies uit biblioteek"
+		},
+		"tooSmall": "Kies asseblief &#39;n groter prent.",
+		"cropping": {
+			"title": "Pas grootte en posisie aan",
+			"touchscreen": "Gebruik jou vingers om te zoem en te sleep",
+			"notTouchscreen": "Gebruik jou muis en wiel om te zoem en te sleep"
+		},
+		"errorType": "Jammer, maar hierdie l\u00eaertipe word nie ondersteun nie"
+	},
+	"timestamp": {
+		"lastNight": "gisteraand",
+		"lastEvening": "laaste aand",
+		"yesterday": "gister",
+		"thisMorning": "vanoggend",
+		"today": "vandag",
+		"tonight": "vanaand",
+		"tomorrowMorning": "m\u00f4reoggend",
+		"tomorrow": "m\u00f4re",
+		"hoursAgo": "{{h}} ure gelede",
+		"hourAgo": "{{h}} uur gelede",
+		"minuteAgo": "{{m}} minuut gelede",
+		"minutesAgo": "{{m}} minute gelede",
+		"secondAgo": "{{s}} sekonde gelede",
+		"secondsAgo": "{{s}} sekondes gelede",
+		"fewSecondsAgo": "sekondes gelede",
+		"rightNow": "nou dadelik",
+		"inSecond": "in {{s}} sekonde",
+		"inSeconds": "oor {{s}} sekondes",
+		"inMinute": "oor {{m}} minuut",
+		"inMinutes": "oor {{m}} minute",
+		"inHour": "oor {{h}} uur",
+		"inHours": "oor {{h}} ure",
+		"inUnderMinute": "binne minder as 1 minuut"
+	},
+	"tabs": {
+		"more": "meer",
+		"Menu": "Spyskaart"
+	},
+	"video": {
+		"clip": "knip",
+		"errorNoSource": "Geen videobron nie",
+		"SkipAfter": "Slaan oor na",
+		"Skip": "Huppel"
+	},
+	"pdf": {
+		"clip": "knip",
+		"errorNoSource": "Geen pdf-bron nie"
+	},
+	"clip": {
+		"SetClipStart": "Stel Clip Start in",
+		"ClipStart": "Knip Begin",
+		"SetClipEnd": "Stel Clip End",
+		"ClipEnd": "Knip Einde",
+		"StartMoreEnd": "Beginposisie kan nie meer as eindposisie wees nie",
+		"EndLessStart": "Eindposisie kan nie minder as beginposisie wees nie",
+		"WhichInvalid": "Argument &#39;watter&#39; ongeldig"
+	},
+	"durations": {
+		"second": "tweede",
+		"seconds": "sekondes",
+		"minute": "minuut",
+		"minutes": "minute",
+		"hour": "ure",
+		"day": "dag",
+		"days": "dae",
+		"week": "week",
+		"weeks": "weke",
+		"month": "maand",
+		"months": "maande",
+		"year": "jaar",
+		"years": "jare",
+		"decade": "dekade",
+		"decades": "dekades",
+		"century": "eeu",
+		"centuries": "eeue"
+	},
+	"browser": {
+		"insecureContext": "Jy moet in &#39;n veilige konteks blaai om dit te werk"
+	},
+	"scan": {
+		"QR": "Skandeer QR-kodes"
+	},
+	"input": {
+		"Placeholder": "Begin tik..."
+	}
+}

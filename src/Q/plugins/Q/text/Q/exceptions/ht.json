@@ -1,0 +1,5 @@
+{
+    "MissingFile": "dosye {{filename}} ki manke",
+    "InvalidLanguage": "lang envalid {{language}}",
+    "RequiredField": "{{field}} obligatwa"
+}

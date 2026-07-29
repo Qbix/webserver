@@ -1,0 +1,5 @@
+{
+    "MissingFile": "файли {{filename}} гумшуда",
+    "InvalidLanguage": "забони беэътибор {{language}}",
+    "RequiredField": "{{field}} лозим аст"
+}

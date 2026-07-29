@@ -1,0 +1,5 @@
+{
+    "MissingFile": "{{filename}} дутуу файл",
+    "InvalidLanguage": "буруу хэл {{language}}",
+    "RequiredField": "{{field}} шаардлагатай"
+}

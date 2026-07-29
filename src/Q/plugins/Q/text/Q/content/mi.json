@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Hapa {{status}} i te wa e tono ana",
+        "canceled": "Kua whakakorehia te tono",
+        "500": "Hapa tūmau ā-roto",
+        "404": "Kāore i kitea: {{url}}",
+        "501": "I haukotia te tono",
+        "401": "Kare i mana",
+        "403": "Kua rāhuitia"
+    },
+    "nonce": {
+        "sameDomain": "Kua pau te wahanga. Tāmatahia te whārangi ka ngana anō.",
+        "otherDomain": "Kua aukatihia te tono rohe-whiti ki te rohe ke i {{baseUrl}}"
+    },
+    "words": {
+        "tap": "paopao",
+        "click": "pawhiria",
+        "yes": "āe",
+        "no": "kahore",
+        "Tap": "Tap",
+        "Click": "Pāwhiri",
+        "Yes": "Ae",
+        "No": "Kao",
+        "OK": "pai",
+        "Alert": "Matohi",
+        "Confirm": "Whakaū",
+        "Prompt": "Whakatairanga"
+    },
+    "months": {
+        "1": "Hanuere",
+        "2": "Pepuere",
+        "3": "Maehe",
+        "4": "Paenga-whāwhā",
+        "5": "Mei",
+        "6": "Hune",
+        "7": "Hōngongoi",
+        "8": "Akuhata",
+        "9": "Hepetema",
+        "10": "Oketopa",
+        "11": "Noema",
+        "12": "Hakihea"
+    },
+    "durations": {
+        "second": "tuarua",
+        "seconds": "hēkona",
+        "minute": "meneti",
+        "minutes": "meneti",
+        "hour": "haora",
+        "day": "rā",
+        "days": "nga ra",
+        "week": "wiki",
+        "weeks": "wiki",
+        "month": "marama",
+        "months": "marama",
+        "year": "tau",
+        "years": "tau",
+        "decade": "tekau tau",
+        "decades": "tekau tau",
+        "century": "rautau",
+        "centuries": "rautau"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Whakaaetia te uru ki to hopuorooro",
+        "record": "Tuhia",
+        "recording": "Te tuhi",
+        "remains": "noho tonu",
+        "maximum": "mōrahi",
+        "playing": "Te purei",
+        "recorded": "Kua tuhia",
+        "clip": "topenga",
+        "discard": "Makahia",
+        "encoding": "Whakawaehere"
+    },
+    "video": {
+        "clip": "topenga",
+        "errorNoSource": "Kaore he puna ataata",
+        "SkipAfter": "Tīpoka i muri",
+        "Skip": "Tīpoka"
+    },
+    "pdf": {
+        "clip": "topenga",
+        "errorNoSource": "Karekau he puna pdf"
+    },
+    "clip": {
+        "SetClipStart": "Tautuhi Topenga Tīmata",
+        "ClipStart": "Topenga Tīmata",
+        "SetClipEnd": "Tautuhi Mutunga Topenga",
+        "ClipEnd": "Topenga Mutunga",
+        "StartMoreEnd": "Ko te tuunga timatanga kaua e neke ake i te tuunga mutunga",
+        "EndLessStart": "Ko te tuunga mutunga kaua e iti iho i te tuunga timatanga",
+        "WhichInvalid": "Tohenga &#39;he&#39; muhu"
+    },
+    "alert": {
+        "title": "Matohi"
+    },
+    "confirm": {
+        "title": "Whakaū",
+        "ok": "Ae",
+        "cancel": "Kao"
+    },
+    "prompt": {
+        "title": "Whakatairanga",
+        "ok": "Haere"
+    },
+    "tabs": {
+        "more": "atu",
+        "Menu": "Tahua"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Hapa te panui i te konae",
+        "errorType": "Aroha mai, engari kaore tenei momo kōnae i te tautokohia",
+        "cameraCommands": {
+            "prompt": "He aha to hiahia ki te mahi?",
+            "photo": "Tangohia he whakaahua hou",
+            "library": "Tīpakohia mai i te whare pukapuka"
+        },
+        "tooSmall": "Tena koa whiriwhiria he ahua nui ake.",
+        "cropping": {
+            "title": "Whakaritehia te rahi me te waahi",
+            "touchscreen": "Whakamahia o maihao ki te topa me te toia",
+            "notTouchscreen": "Whakamahia to kiore me to wira ki te topa me te toia"
+        }
+    },
+    "timestamp": {
+        "lastNight": "inapo",
+        "lastEvening": "po whakamutunga",
+        "yesterday": "inanahi",
+        "thisMorning": "i tenei ata",
+        "today": "i tenei ra",
+        "tonight": "i tenei po",
+        "tomorrowMorning": "ata ata",
+        "tomorrow": "apopo",
+        "hoursAgo": "{{h}} haora i mua",
+        "hourAgo": "{{h}} haora i mua",
+        "minuteAgo": "{{m}} meneti i mua",
+        "minutesAgo": "{{m}} meneti i mua",
+        "secondAgo": "{{s}} tuarua i mua",
+        "secondsAgo": "{{s}} hekona i mua",
+        "fewSecondsAgo": "hekona i mua",
+        "rightNow": "inaianei tonu",
+        "inSecond": "i {{s}} tuarua",
+        "inSeconds": "i roto i {{s}} hēkona",
+        "inMinute": "i roto i {{m}} meneti",
+        "inMinutes": "i roto i {{m}} meneti",
+        "inHour": "i {{h}} haora",
+        "inHours": "i {{h}} haora",
+        "inUnderMinute": "i raro i te 1 meneti"
+    },
+    "browser": {
+        "insecureContext": "Me tirotiro koe i roto i te horopaki haumaru mo tenei mahi"
+    },
+    "scan": {
+        "QR": "Matawai waehere QR"
+    },
+    "input": {
+        "Placeholder": "Tīmatahia te pato..."
+    }
+}

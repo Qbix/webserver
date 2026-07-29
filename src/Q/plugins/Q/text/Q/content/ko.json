@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "\uc694\uccad \uc911 \uc624\ub958 {{status}}",
+		"canceled": "\ucde8\uc18c\ub41c \uc694\uccad",
+		"500": "\uc778\ud130\ub137 \uc11c\ubc84 \uc624\ub958",
+		"404": "\ucc3e\uc744 \uc218 \uc5c6\uc74c: {{url}}",
+		"501": "\uc694\uccad\uc774 \uc911\ub2e8\ub428",
+		"401": "\ubb34\ub2e8",
+		"403": "\uae08\uc9c0"
+	},
+	"nonce": {
+		"sameDomain": "\uc138\uc158\uc774 \ub9cc\ub8cc\ub418\uc5c8\uc2b5\ub2c8\ub2e4. \ud398\uc774\uc9c0\ub97c \uc0c8\ub85c\uace0\uce68\ud558\uace0 \ub2e4\uc2dc \uc2dc\ub3c4\ud558\uc138\uc694.",
+		"otherDomain": "{{baseUrl}} \uc5d0\uc11c \uc678\ubd80 \ub3c4\uba54\uc778\uc758 \ud06c\ub85c\uc2a4 \ub3c4\uba54\uc778 {{method}} \uc694\uccad\uc774 \ucc28\ub2e8\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
+	},
+	"words": {
+		"tap": "\uc218\ub3c4\uaf2d\uc9c0",
+		"click": "\ub538\uae4d \ud558\ub294 \uc18c\ub9ac",
+		"yes": "\ub124",
+		"no": "\uc544\ub2c8\uc694",
+		"Tap": "\ub9cc\uc9c0\ub2e4",
+		"Click": "\ub538\uae4d \ud558\ub294 \uc18c\ub9ac",
+		"Yes": "\ub124",
+		"No": "\uc544\ub2c8",
+		"OK": "\uc88b\uc544\uc694",
+		"Alert": "\uc54c\ub9ac\ub2e4",
+		"Confirm": "\ud655\uc778",
+		"Prompt": "\ud14d\uc2a4\ud2b8 \uc785\ub825"
+	},
+	"months": {
+		"1": "1 \uc6d4",
+		"2": "2 \uc6d4",
+		"3": "3 \uc6d4",
+		"4": "4 \uc6d4",
+		"5": "\ud560 \uc218\uc788\ub2e4",
+		"6": "6 \uc6d4",
+		"7": "\uce60\uc6d4",
+		"8": "\ud314\uc6d4",
+		"9": "\uad6c\uc6d4",
+		"10": "\uc2ed\uc6d4",
+		"11": "\uc2ed\uc77c\uc6d4",
+		"12": "12 \uc6d4"
+	},
+	"durations": {
+		"second": "\ub458\uc9f8",
+		"seconds": "\ucd08",
+		"minute": "\ubd84",
+		"minutes": "\ubd84",
+		"hour": "\uc2dc\uac04",
+		"day": "\ub0ae",
+		"days": "\ub0a0",
+		"week": "\uc8fc",
+		"weeks": "\uc8fc",
+		"month": "\uc6d4",
+		"months": "\uac1c\uc6d4",
+		"year": "\ub144\ub3c4",
+		"years": "\uc5f0\ub839",
+		"decade": "\uc5f4\uac1c\uc758",
+		"decades": "\uc218\uc2ed \ub144",
+		"century": "\uc138\uae30",
+		"centuries": "\uc218\uc138\uae30"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "\ub9c8\uc774\ud06c\uc5d0 \ub300\ud55c \uc561\uc138\uc2a4\ub97c \ud5c8\uc6a9\ud558\uc138\uc694.",
+		"record": "\uae30\ub85d",
+		"recording": "\ub179\uc74c",
+		"remains": "\uc720\uc801",
+		"maximum": "\ucd5c\uace0",
+		"playing": "\ub180\uc774",
+		"recorded": "\ub179\uc74c",
+		"clip": "\ud074\ub9bd",
+		"discard": "\ubc84\ub9ac\ub2e4",
+		"encoding": "\ubd80\ud638\ud654"
+	},
+	"video": {
+		"clip": "\ud074\ub9bd",
+		"errorNoSource": "\ube44\ub514\uc624 \uc18c\uc2a4 \uc5c6\uc74c",
+		"SkipAfter": "\ub2e4\uc74c \uc2dc\uac04 \uc774\ud6c4 \uac74\ub108\ub6f0\uae30",
+		"Skip": "\uac74\ub108 \ub6f0\ub2e4"
+	},
+	"pdf": {
+		"clip": "\ud074\ub9bd",
+		"errorNoSource": "pdf \uc18c\uc2a4 \uc5c6\uc74c"
+	},
+	"clip": {
+		"SetClipStart": "\ud074\ub9bd \uc2dc\uc791 \uc124\uc815",
+		"ClipStart": "\ud074\ub9bd \uc2dc\uc791",
+		"SetClipEnd": "\ud074\ub9bd \ub05d \uc124\uc815",
+		"ClipEnd": "\ud074\ub9bd \ub05d",
+		"StartMoreEnd": "\uc2dc\uc791 \uc704\uce58\ub294 \ub05d \uc704\uce58\ubcf4\ub2e4 \ud074 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.",
+		"EndLessStart": "\uc885\ub8cc \uc704\uce58\ub294 \uc2dc\uc791 \uc704\uce58\ubcf4\ub2e4 \uc791\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.",
+		"WhichInvalid": "&#39;\uc5b4\ub5a4&#39; \uc778\uc218\uac00 \uc720\ud6a8\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
+	},
+	"alert": {
+		"title": "\uc54c\uc544\ucc44\ub2e4"
+	},
+	"confirm": {
+		"title": "\ud655\uc778\ud558\ub2e4",
+		"ok": "\ub124",
+		"cancel": "\uc544\ub2c8"
+	},
+	"prompt": {
+		"title": "\ud14d\uc2a4\ud2b8 \uc785\ub825",
+		"ok": "\uc88b\uc544\uc694"
+	},
+	"tabs": {
+		"more": "\ub354",
+		"Menu": "\uba54\ub274"
+	},
+	"imagepicker": {
+		"errorReadingFile": "\ud30c\uc77c\uc744 \uc77d\ub294 \ub3d9\uc548 \uc624\ub958\uac00 \ubc1c\uc0dd\ud588\uc2b5\ub2c8\ub2e4.",
+		"errorType": "\uc8c4\uc1a1\ud569\ub2c8\ub2e4. \uc774 \ud30c\uc77c \ud615\uc2dd\uc740 \uc9c0\uc6d0\ub418\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.",
+		"cameraCommands": {
+			"prompt": "\ubb34\uc5c7\uc744\ud558\uace0 \uc2f6\uc73c\uc2ed\ub2c8\uae4c?",
+			"photo": "\uc0c8 \uc0ac\uc9c4 \ucc0d\uae30",
+			"library": "\ub77c\uc774\ube0c\ub7ec\ub9ac\uc5d0\uc11c \uc120\ud0dd"
+		},
+		"tooSmall": "\ub354 \ud070 \uc774\ubbf8\uc9c0\ub97c \uc120\ud0dd\ud558\uc138\uc694.",
+		"cropping": {
+			"title": "\ud06c\uae30 \ubc0f \uc704\uce58 \uc870\uc815",
+			"touchscreen": "\uc190\uac00\ub77d\uc744 \uc0ac\uc6a9\ud558\uc5ec \ud655\ub300/\ucd95\uc18c \ubc0f \ub4dc\ub798\uadf8",
+			"notTouchscreen": "\ub9c8\uc6b0\uc2a4\uc640 \ud720\uc744 \uc0ac\uc6a9\ud558\uc5ec \ud655\ub300/\ucd95\uc18c \ubc0f \ub4dc\ub798\uadf8"
+		}
+	},
+	"timestamp": {
+		"lastNight": "\uc9c0\ub09c \ubc24",
+		"lastEvening": "\uc9c0\ub09c \ubc24",
+		"yesterday": "\uc5b4\uc81c",
+		"thisMorning": "\uc624\ub298 \uc544\uce68",
+		"today": "\uc624\ub298",
+		"tonight": "\uc624\ub298 \ubc24",
+		"tomorrowMorning": "\ud1b0 \uc544\uce68",
+		"tomorrow": "\ub0b4\uc77c",
+		"hoursAgo": "{{h}}\uc2dc\uac04 \uc804",
+		"hourAgo": "{{h}}\uc2dc\uac04 \uc804",
+		"minuteAgo": "{{m}}\ubd84 \uc804",
+		"minutesAgo": "{{m}}\ubd84 \uc804",
+		"secondAgo": "{{s}}\ucd08 \uc804",
+		"secondsAgo": "{{s}}\ucd08 \uc804",
+		"fewSecondsAgo": "\ucd08 \uc804",
+		"rightNow": "\uc9c0\uae08 \ubc14\ub85c",
+		"inSecond": "{{s}}\ucd08 \ud6c4",
+		"inSeconds": "{{s}}\ucd08 \ud6c4",
+		"inMinute": "{{m}}\ubd84 \ud6c4",
+		"inMinutes": "{{m}}\ubd84 \ud6c4",
+		"inHour": "{{h}}\uc2dc\uac04 \ud6c4",
+		"inHours": "{{h}}\uc2dc\uac04 \ud6c4",
+		"inUnderMinute": "1\ubd84 \uc774\ub0b4"
+	},
+	"browser": {
+		"insecureContext": "\uc774\uac83\uc774 \uc791\ub3d9\ud558\ub824\uba74 \ubcf4\uc548 \ucee8\ud14d\uc2a4\ud2b8\uc5d0\uc11c \uac80\uc0c9\ud574\uc57c \ud569\ub2c8\ub2e4."
+	},
+	"scan": {
+		"QR": "QR \ucf54\ub4dc \uc2a4\uce94"
+	},
+	"input": {
+		"Placeholder": "\uc785\ub825 \uc2dc\uc791..."
+	}
+}

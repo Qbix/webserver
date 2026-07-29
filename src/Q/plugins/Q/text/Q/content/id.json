@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Kesalahan {{status}} selama permintaan",
+        "canceled": "Permintaan dibatalkan",
+        "500": "Kesalahan server dari dalam",
+        "404": "Tidak ditemukan: {{url}}",
+        "501": "Permintaan terputus",
+        "401": "Tidak sah",
+        "403": "Terlarang"
+    },
+    "nonce": {
+        "sameDomain": "Sesi berakhir. Segarkan halaman dan coba lagi.",
+        "otherDomain": "Permintaan lintas domain yang diblokir ke domain asing di {{baseUrl}}"
+    },
+    "words": {
+        "tap": "mengetuk",
+        "click": "klik",
+        "yes": "Ya",
+        "no": "tidak",
+        "Tap": "Mengetuk",
+        "Click": "Klik",
+        "Yes": "Ya",
+        "No": "Tidak",
+        "OK": "OKE",
+        "Alert": "Peringatan",
+        "Confirm": "Mengonfirmasi",
+        "Prompt": "Mengingatkan"
+    },
+    "months": {
+        "1": "Januari",
+        "2": "Februari",
+        "3": "berbaris",
+        "4": "April",
+        "5": "Boleh",
+        "6": "Juni",
+        "7": "Juli",
+        "8": "Agustus",
+        "9": "September",
+        "10": "Oktober",
+        "11": "November",
+        "12": "Desember"
+    },
+    "durations": {
+        "second": "kedua",
+        "seconds": "detik",
+        "minute": "menit",
+        "minutes": "menit",
+        "hour": "jam",
+        "day": "hari",
+        "days": "hari",
+        "week": "pekan",
+        "weeks": "minggu",
+        "month": "bulan",
+        "months": "bulan",
+        "year": "tahun",
+        "years": "bertahun-tahun",
+        "decade": "dasawarsa",
+        "decades": "dekade",
+        "century": "abad",
+        "centuries": "abad"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Mohon izinkan akses ke mikrofon Anda",
+        "record": "Catatan",
+        "recording": "Rekaman",
+        "remains": "tetap",
+        "maximum": "maksimum",
+        "playing": "Bermain",
+        "recorded": "Tercatat",
+        "clip": "klip",
+        "discard": "Membuang",
+        "encoding": "pengkodean"
+    },
+    "video": {
+        "clip": "klip",
+        "errorNoSource": "Tidak ada sumber video",
+        "SkipAfter": "Lewati setelah",
+        "Skip": "Melewati"
+    },
+    "pdf": {
+        "clip": "klip",
+        "errorNoSource": "Tidak ada sumber pdf"
+    },
+    "clip": {
+        "SetClipStart": "Setel Klip Mulai",
+        "ClipStart": "Klip Mulai",
+        "SetClipEnd": "Setel Akhir Klip",
+        "ClipEnd": "Klip Akhir",
+        "StartMoreEnd": "Posisi awal tidak boleh lebih dari posisi akhir",
+        "EndLessStart": "Posisi akhir tidak boleh kurang dari posisi awal",
+        "WhichInvalid": "Argumen &#39;yang&#39; tidak valid"
+    },
+    "alert": {
+        "title": "Peringatan"
+    },
+    "confirm": {
+        "title": "Mengonfirmasi",
+        "ok": "Ya",
+        "cancel": "Tidak"
+    },
+    "prompt": {
+        "title": "Mengingatkan",
+        "ok": "Pergi"
+    },
+    "tabs": {
+        "more": "lagi",
+        "Menu": "Tidak bisa"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Kesalahan membaca file",
+        "errorType": "Maaf, tetapi jenis file ini tidak didukung",
+        "cameraCommands": {
+            "prompt": "Apa yang ingin Anda lakukan?",
+            "photo": "Ambil foto baru",
+            "library": "Pilih dari perpustakaan"
+        },
+        "tooSmall": "Pilih gambar yang lebih besar.",
+        "cropping": {
+            "title": "Sesuaikan ukuran dan posisi",
+            "touchscreen": "Gunakan jari Anda untuk memperbesar dan menyeret",
+            "notTouchscreen": "Gunakan mouse &amp; roda untuk memperbesar dan menyeret"
+        }
+    },
+    "timestamp": {
+        "lastNight": "Tadi malam",
+        "lastEvening": "malam terakhir",
+        "yesterday": "kemarin",
+        "thisMorning": "pagi ini",
+        "today": "hari ini",
+        "tonight": "malam ini",
+        "tomorrowMorning": "besok pagi",
+        "tomorrow": "besok",
+        "hoursAgo": "{0}{999}} jam yang lalu",
+        "hourAgo": "{0}{999}} jam yang lalu",
+        "minuteAgo": "{{m}} menit yang lalu",
+        "minutesAgo": "{{m}} menit yang lalu",
+        "secondAgo": "{{s}} detik yang lalu",
+        "secondsAgo": "{{s}} detik yang lalu",
+        "fewSecondsAgo": "beberapa detik lalu",
+        "rightNow": "sekarang",
+        "inSecond": "dalam {{s}} detik",
+        "inSeconds": "dalam {{s}} detik",
+        "inMinute": "dalam {{m}} menit",
+        "inMinutes": "dalam {{m}} menit",
+        "inHour": "dalam {{h}} jam",
+        "inHours": "dalam {{h}} jam",
+        "inUnderMinute": "dalam waktu kurang dari 1 menit"
+    },
+    "browser": {
+        "insecureContext": "Anda perlu menjelajah dalam konteks aman agar ini berfungsi"
+    },
+    "scan": {
+        "QR": "Pindai kode QR"
+    },
+    "input": {
+        "Placeholder": "Mulai mengetik..."
+    }
+}

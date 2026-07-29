@@ -1,0 +1,5 @@
+{
+    "MissingFile": "file {{filename}} ilang",
+    "InvalidLanguage": "basa ora bener {{language}}",
+    "RequiredField": "{{field}} dibutuhake"
+}

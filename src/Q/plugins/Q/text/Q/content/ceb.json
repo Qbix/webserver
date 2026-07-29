@@ -1,0 +1,160 @@
+{
+    "request": {
+        "error": "Sayop {{status}} sa panahon sa paghangyo",
+        "canceled": "Gikansela ang hangyo",
+        "500": "Sayop sa internal nga server",
+        "404": "Wala makit-an: {{url}}",
+        "501": "Nabalda ang hangyo",
+        "401": "Dili awtorisado",
+        "403": "Gidili"
+    },
+    "nonce": {
+        "sameDomain": "Nag-expire ang sesyon. I-refresh ang panid ug sulayi pag-usab.",
+        "otherDomain": "Gibabagan ang cross-domain nga hangyo sa langyaw nga dominyo sa {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "pag-klik",
+        "yes": "oo",
+        "no": "dili",
+        "Tap": "Tapik",
+        "Click": "Pag-klik",
+        "Yes": "Oo",
+        "No": "Dili",
+        "OK": "OK ra",
+        "Alert": "Alerto",
+        "Confirm": "Confirm",
+        "Prompt": "Giaghat"
+    },
+    "months": {
+        "1": "Enero",
+        "2": "Pebrero",
+        "3": "Marso",
+        "4": "Abril",
+        "5": "May",
+        "6": "Hunyo",
+        "7": "Hulyo",
+        "8": "Agosto",
+        "9": "Septyembre",
+        "10": "Oktubre",
+        "11": "Nobyembre",
+        "12": "Disyembre"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Palihug tugoti ang pag-access sa imong mikropono",
+        "record": "Pagrekord",
+        "recording": "Pagrekord",
+        "remains": "nagpabilin",
+        "maximum": "maximum",
+        "playing": "Nagdula",
+        "recorded": "Natala",
+        "clip": "clip",
+        "orupload": "O Pag-upload",
+        "usethis": "Gamita ni",
+        "discard": "Isalikway",
+        "encoding": "Pag-encode"
+    },
+    "alert": {
+        "title": "Alerto"
+    },
+    "confirm": {
+        "title": "Sa pagmatuod sa",
+        "ok": "Oo",
+        "cancel": "Dili"
+    },
+    "prompt": {
+        "title": "Giaghat",
+        "ok": "Lakaw"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Sayop sa pagbasa sa file",
+        "cameraCommands": {
+            "prompt": "Unsay gusto nimong buhaton?",
+            "photo": "Pagkuha og bag-ong litrato",
+            "library": "Pagpili gikan sa librarya"
+        },
+        "tooSmall": "Palihug pagpili og mas dako nga hulagway.",
+        "cropping": {
+            "title": "I-adjust ang gidak-on ug posisyon",
+            "touchscreen": "Gamita ang imong mga tudlo sa pag-zoom ug pag-drag",
+            "notTouchscreen": "Gamita ang imong mouse ug ligid sa pag-zoom ug pag-drag"
+        },
+        "errorType": "Pasayloa, apan kini nga matang sa file wala gisuportahan"
+    },
+    "timestamp": {
+        "lastNight": "kagabii",
+        "lastEvening": "miaging bisperas",
+        "yesterday": "kagahapon",
+        "thisMorning": "karong buntaga",
+        "today": "karong adlawa",
+        "tonight": "karong gabii",
+        "tomorrowMorning": "ugma sa buntag",
+        "tomorrow": "ugma",
+        "hoursAgo": "{{h}} mga oras ang milabay",
+        "hourAgo": "{{h}} oras ang milabay",
+        "minuteAgo": "{{m}} minuto ang milabay",
+        "minutesAgo": "{{m}} mga minuto ang milabay",
+        "secondAgo": "{{s}} segundo na ang milabay",
+        "secondsAgo": "{{s}} segundos ang milabay",
+        "fewSecondsAgo": "segundos ang milabay",
+        "rightNow": "karon dayon",
+        "inSecond": "sa {{s}} segundo",
+        "inSeconds": "sa {{s}} segundos",
+        "inMinute": "sa {{m}} minuto",
+        "inMinutes": "sa {{m}} mga minuto",
+        "inHour": "sa {{h}} oras",
+        "inHours": "sa {{h}} ka oras",
+        "inUnderMinute": "sa ubos sa 1 ka minuto"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Walay tinubdan sa video",
+        "SkipAfter": "Laktaw pagkahuman",
+        "Skip": "Laktaw"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Walay pdf nga tinubdan"
+    },
+    "clip": {
+        "SetClipStart": "Ibutang ang Pagsugod sa Clip",
+        "ClipStart": "Pagsugod sa Clip",
+        "SetClipEnd": "Ibutang ang Clip End",
+        "ClipEnd": "Katapusan sa Clip",
+        "StartMoreEnd": "Ang posisyon sa pagsugod dili mahimong labaw pa sa posisyon sa katapusan",
+        "EndLessStart": "Ang katapusan nga posisyon dili mahimong mubu sa pagsugod nga posisyon",
+        "WhichInvalid": "Ang argumento &#39;nga&#39; dili balido"
+    },
+    "tabs": {
+        "more": "labaw pa",
+        "Menu": "Menu"
+    },
+    "durations": {
+        "second": "ikaduha",
+        "seconds": "segundos",
+        "minute": "minuto",
+        "minutes": "minuto",
+        "hour": "oras",
+        "day": "adlaw",
+        "days": "mga adlaw",
+        "week": "semana",
+        "weeks": "semana",
+        "month": "bulan",
+        "months": "mga bulan",
+        "year": "tuig",
+        "years": "mga tuig",
+        "decade": "dekada",
+        "decades": "mga dekada",
+        "century": "siglo",
+        "centuries": "mga siglo"
+    },
+    "browser": {
+        "insecureContext": "Kinahanglan ka nga mag-browse sa usa ka luwas nga konteksto aron kini molihok"
+    },
+    "scan": {
+        "QR": "I-scan ang mga QR code"
+    },
+    "input": {
+        "Placeholder": "Pagsugod sa pag-type..."
+    }
+}

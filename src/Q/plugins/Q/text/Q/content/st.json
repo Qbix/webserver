@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Phoso {{status}} nakong ea kopo",
+        "canceled": "Kopo e hlakotsoe",
+        "500": "Phoso ea Kahare ea Seva",
+        "404": "Ha e fumanehe: {{url}}",
+        "501": "Kopo e sitisitsoe",
+        "401": "E sa dumellwang",
+        "403": "E thibetsoe"
+    },
+    "nonce": {
+        "sameDomain": "Nako e felile. Hlahisa leqephe hape &#39;me u leke hape.",
+        "otherDomain": "Kopo e thibetsoeng ho ea sebakeng sa linaha tse ling ho {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tlanya",
+        "click": "tobetsa",
+        "yes": "ho joalo",
+        "no": "che",
+        "Tap": "Tlanya",
+        "Click": "Tobetsa",
+        "Yes": "Ee",
+        "No": "Che",
+        "OK": "HO LOKILE",
+        "Alert": "Tlhokomeliso",
+        "Confirm": "Netefatsa",
+        "Prompt": "Potlakisa"
+    },
+    "months": {
+        "1": "Pherekhong",
+        "2": "Hlakola",
+        "3": "Tlhakubele",
+        "4": "Mmesa",
+        "5": "Mots&#39;eanong",
+        "6": "Phuptjane",
+        "7": "Phupu",
+        "8": "Phato",
+        "9": "Loetse",
+        "10": "Mphalane",
+        "11": "Pulungoana",
+        "12": "Tshitwe"
+    },
+    "durations": {
+        "second": "ea bobeli",
+        "seconds": "metsotsoana",
+        "minute": "motsotso",
+        "minutes": "metsotso",
+        "hour": "lihora",
+        "day": "letsatsi",
+        "days": "matsatsi",
+        "week": "beke",
+        "weeks": "libeke",
+        "month": "khoeli",
+        "months": "likhoeli",
+        "year": "selemo",
+        "years": "lilemo",
+        "decade": "lilemo tse leshome",
+        "decades": "lilemo tse mashome",
+        "century": "lekholo la lilemo",
+        "centuries": "lilemo tse makholo"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Ka kopo lumella maekerofounu ea hau",
+        "record": "Rekota",
+        "recording": "Ho rekota",
+        "remains": "masalla",
+        "maximum": "boholo",
+        "playing": "Ho bapala",
+        "recorded": "E rekotiloeng",
+        "clip": "sekotwana",
+        "discard": "Lahla",
+        "encoding": "Khouto"
+    },
+    "video": {
+        "clip": "sekotwana",
+        "errorNoSource": "Ha ho mohloli oa video",
+        "SkipAfter": "Tlola kamora",
+        "Skip": "Tlola"
+    },
+    "pdf": {
+        "clip": "sekotwana",
+        "errorNoSource": "Ha ho mohloli oa pdf"
+    },
+    "clip": {
+        "SetClipStart": "Seta Clip Start",
+        "ClipStart": "Clip Qala",
+        "SetClipEnd": "Beha Clip End",
+        "ClipEnd": "Qetello ea Sekotwana",
+        "StartMoreEnd": "Boemo ba ho qala ha bo na ho feta boemo ba ho qetela",
+        "EndLessStart": "Boemo ba ho qetela bo ka se be tlase ho boemo ba ho qala",
+        "WhichInvalid": "Khang &#39;efe&#39; ha e sebetse"
+    },
+    "alert": {
+        "title": "Tlhokomeliso"
+    },
+    "confirm": {
+        "title": "Netefatsa",
+        "ok": "Ee",
+        "cancel": "Che"
+    },
+    "prompt": {
+        "title": "Potlakisa",
+        "ok": "Eya"
+    },
+    "tabs": {
+        "more": "Hape",
+        "Menu": "Lenane"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Phoso ea ho bala faele",
+        "errorType": "Tšoarelo, empa mofuta ona oa faele ha o sebetse",
+        "cameraCommands": {
+            "prompt": "U ka rata ho etsa eng?",
+            "photo": "Nka senepe se secha",
+            "library": "Khetha ho tloha laebraring"
+        },
+        "tooSmall": "Ka kopo, khetha setšoantšo se seholoanyane.",
+        "cropping": {
+            "title": "Fetola boholo le boemo",
+            "touchscreen": "Sebelisa menoana ea hau ho atametsa le ho hula",
+            "notTouchscreen": "Sebelisa toeba le lebili la hau ho atametsa le ho hula"
+        }
+    },
+    "timestamp": {
+        "lastNight": "bosiu ba maobane",
+        "lastEvening": "bosiu bo fetileng",
+        "yesterday": "maobane",
+        "thisMorning": "hoseng hona",
+        "today": "kajeno",
+        "tonight": "bosiung bona",
+        "tomorrowMorning": "hoseng",
+        "tomorrow": "hosane",
+        "hoursAgo": "{{h}} lihora tse fetileng",
+        "hourAgo": "Hora e {{h}} e fetileng",
+        "minuteAgo": "{{m}} motsotso o fetileng",
+        "minutesAgo": "{{m}} metsotso e fetileng",
+        "secondAgo": "Motsotsoana o {{s}} o fetileng",
+        "secondsAgo": "{{s}} metsotsoana e fetileng",
+        "fewSecondsAgo": "metsotsoana e fetileng",
+        "rightNow": "hona joale",
+        "inSecond": "ka motsotsoana {{s}}",
+        "inSeconds": "ka metsotsoana e {{s}}",
+        "inMinute": "ka {{m}} motsotso",
+        "inMinutes": "ka mor&#39;a metsotso e {{m}}",
+        "inHour": "ka {{h}} hora",
+        "inHours": "ka lihora tse {{h}}",
+        "inUnderMinute": "ka tlase ho motsotso"
+    },
+    "browser": {
+        "insecureContext": "U hloka ho sheba sebakeng se sireletsehileng hore sena se sebetse"
+    },
+    "scan": {
+        "QR": "Hlakola likhoutu tsa QR"
+    },
+    "input": {
+        "Placeholder": "Qala ho ngola..."
+    }
+}

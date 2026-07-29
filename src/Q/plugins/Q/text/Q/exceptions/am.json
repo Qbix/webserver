@@ -1,0 +1,5 @@
+{
+	"MissingFile": "\u12e8\u1320\u134b \u134b\u12ed\u120d {{filename}}",
+	"InvalidLanguage": "\u120d\u12ad \u12eb\u120d\u1206\u1290 \u124b\u1295\u124b {{language}}",
+	"RequiredField": "{{field}} \u12eb\u1235\u1348\u120d\u130b\u120d"
+}

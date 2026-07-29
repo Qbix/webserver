@@ -246,6 +246,8 @@ class Q_WebServer_Panel
 				return self::apiRunScript($parsed);
 			case 'plugins':
 				return self::apiListPlugins();
+			case 'plugins/add':
+				return self::apiAddPlugin($parsed);
 			case 'system':
 				return self::apiSystemInfo();
 			case 'auth/password':
@@ -594,6 +596,74 @@ class Q_WebServer_Panel
 	 * Run PHP code in an isolated forked child. 5 second timeout.
 	 * The child has no filesystem write access and no network.
 	 */
+	/**
+	 * Add a plugin by cloning from github.com/Qbix/{name}.
+	 * If the repo is private or doesn't exist, returns {private: true}.
+	 */
+	static function apiAddPlugin($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$name = preg_replace('/[^A-Za-z0-9_-]/', '', $body['name'] ?? '');
+		if (!$name) return array('status' => 400, 'error' => 'Plugin name required');
+
+		// Find plugins directory
+		$platformDir = null;
+		if (defined('APP_DIR')) {
+			$pathsFile = APP_DIR . DS . 'local' . DS . 'paths.json';
+			if (file_exists($pathsFile)) {
+				$paths = json_decode(file_get_contents($pathsFile), true);
+				if (!empty($paths['platform'])) $platformDir = realpath($paths['platform']);
+			}
+		}
+		if (!$platformDir && defined('Q_DIR')) $platformDir = Q_DIR;
+		if (!$platformDir) {
+			return array('error' => 'Qbix Platform not installed. Install it from the System tab first.');
+		}
+
+		$pluginsDir = $platformDir . DS . 'plugins';
+		if (!is_dir($pluginsDir)) {
+			$pluginsDir = dirname($platformDir) . DS . 'plugins';
+		}
+		if (!is_dir($pluginsDir)) {
+			return array('error' => 'Plugins directory not found at ' . $pluginsDir);
+		}
+
+		$targetDir = $pluginsDir . DS . $name;
+		if (is_dir($targetDir)) {
+			return array('error' => "$name is already installed at $targetDir");
+		}
+
+		if (!self::which('git')) {
+			return array('error' => 'git not found. Install git first.');
+		}
+
+		// Try to clone — test if accessible first with git ls-remote
+		$testCmd = 'git ls-remote https://github.com/Qbix/' . escapeshellarg($name) . '.git HEAD 2>&1';
+		$testOutput = shell_exec($testCmd);
+
+		if (strpos($testOutput, 'fatal') !== false
+			|| strpos($testOutput, 'not found') !== false
+			|| strpos($testOutput, 'could not read') !== false
+		) {
+			return array('private' => true, 'name' => $name);
+		}
+
+		// Clone into plugins directory
+		$cmd = 'cd ' . escapeshellarg($pluginsDir)
+			. ' && git clone https://github.com/Qbix/' . escapeshellarg($name) . '.git'
+			. ' ' . escapeshellarg($name) . ' 2>&1'
+			. ' && cd ' . escapeshellarg($name)
+			. ' && git submodule init 2>&1'
+			. ' && git submodule update --recursive 2>&1';
+		$output = shell_exec($cmd);
+
+		if (!is_dir($targetDir)) {
+			return array('error' => 'Clone failed', 'output' => $output);
+		}
+
+		return array('ok' => true, 'name' => $name, 'dir' => $targetDir, 'output' => $output);
+	}
+
 	static function apiPlaygroundRun($parsed)
 	{
 		$body = json_decode($parsed['body'], true);
@@ -1150,7 +1220,31 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 
 <!-- PLUGINS TAB -->
 <div id="tab-plugins" class="content hidden">
-  <h2 style="font-size:16px;margin-bottom:8px">Plugins</h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <h2 style="font-size:16px">Plugins</h2>
+    <button class="btn btn-primary" onclick="showAddPlugin()">+ Add Plugin</button>
+  </div>
+  <div id="add-plugin-form" class="card hidden" style="margin-bottom:14px">
+    <h3>Add Plugin</h3>
+    <div class="form-row"><label>Plugin name</label><input id="plugin-name" placeholder="e.g. Calendars, Communities, AI"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="addPlugin()">Install from GitHub</button>
+      <button class="btn btn-ghost" onclick="hideAddPlugin()">Cancel</button>
+    </div>
+    <pre id="plugin-log" style="display:none;margin-top:10px;font-size:11px;color:var(--dim);max-height:200px;overflow:auto;background:rgba(0,0,0,.2);padding:8px;border-radius:4px"></pre>
+  </div>
+  <div id="plugin-private-dialog" class="card hidden" style="margin-bottom:14px;text-align:center;padding:24px">
+    <div style="font-size:36px;margin-bottom:12px">🔒</div>
+    <h3 style="margin-bottom:8px">Private Plugin</h3>
+    <p style="color:var(--dim);font-size:13px;margin-bottom:16px">
+      The <strong id="plugin-private-name"></strong> plugin is in a private repository.
+      Contact the Qbix team to request access.
+    </p>
+    <div class="btn-row" style="justify-content:center">
+      <a id="plugin-contact-link" href="#" class="btn btn-primary" target="_blank" style="text-decoration:none">✉ Contact Us</a>
+      <button class="btn btn-ghost" onclick="hidePrivateDialog()">Close</button>
+    </div>
+  </div>
   <div id="plugins-platform" style="font-size:12px;color:var(--dim);margin-bottom:14px"></div>
   <div id="plugins-list"></div>
 </div>
@@ -1586,6 +1680,48 @@ function quickScript(name, args) {
 }
 
 // Plugins
+function showAddPlugin() {
+  document.getElementById('add-plugin-form').classList.remove('hidden');
+  document.getElementById('plugin-name').focus();
+}
+function hideAddPlugin() {
+  document.getElementById('add-plugin-form').classList.add('hidden');
+  document.getElementById('plugin-log').style.display = 'none';
+}
+function hidePrivateDialog() {
+  document.getElementById('plugin-private-dialog').classList.add('hidden');
+}
+async function addPlugin() {
+  var name = document.getElementById('plugin-name').value.trim();
+  if (!name) return alert('Enter a plugin name');
+  var log = document.getElementById('plugin-log');
+  log.style.display = 'block';
+  log.style.color = 'var(--dim)';
+  log.textContent = 'Cloning https://github.com/Qbix/' + name + '...\n';
+  try {
+    var r = await api('plugins/add', {name: name});
+    if (r.private) {
+      hideAddPlugin();
+      var d = document.getElementById('plugin-private-dialog');
+      document.getElementById('plugin-private-name').textContent = name;
+      var subject = encodeURIComponent('Access to ' + name + ' plugin');
+      var body = encodeURIComponent('Hi Qbix team,\n\nI would like access to the ' + name + ' plugin for my project.\n\nThanks!');
+      document.getElementById('plugin-contact-link').href = 'mailto:team@qbix.com?subject=' + subject + '&body=' + body;
+      d.classList.remove('hidden');
+    } else if (r.error) {
+      log.textContent += '\n⚠ ' + r.error;
+      log.style.color = 'var(--red)';
+    } else {
+      log.textContent += (r.output || '') + '\n✅ Installed!';
+      log.style.color = 'var(--grn)';
+      setTimeout(function() { hideAddPlugin(); loadPlugins(); }, 1500);
+    }
+  } catch(e) {
+    log.textContent += '\nError: ' + e.message;
+    log.style.color = 'var(--red)';
+  }
+}
+
 async function loadPlugins() {
   var d = await api('plugins');
   var pEl = document.getElementById('plugins-platform');

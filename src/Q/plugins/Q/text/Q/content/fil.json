@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Error {{status}} habang hiniling",
+		"canceled": "Ang kahilingan ay nakansela",
+		"500": "Error sa panloob na server",
+		"404": "Hindi natagpuan: {{url}}",
+		"501": "Ang kahilingan ay nagambala",
+		"401": "Hindi awtorisado",
+		"403": "Bawal"
+	},
+	"nonce": {
+		"sameDomain": "Nag-expire na ang sesyon. I-refresh ang pahina at subukang muli.",
+		"otherDomain": "Naka-block na kahilingan sa cross-domain {{method}} mula sa dayuhang domain sa {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tapikin",
+		"click": "mag-click",
+		"yes": "oo",
+		"no": "hindi",
+		"Tap": "Hawakan",
+		"Click": "Mag-click",
+		"Yes": "Oo",
+		"No": "Hindi",
+		"OK": "OK",
+		"Alert": "Alerto",
+		"Confirm": "Kumpirmasyon",
+		"Prompt": "Ipasok ang Teksto"
+	},
+	"months": {
+		"1": "Enero",
+		"2": "Pebrero",
+		"3": "Marso",
+		"4": "Abril",
+		"5": "Mayo",
+		"6": "Hunyo",
+		"7": "Hulyo",
+		"8": "Agosto",
+		"9": "Setyembre",
+		"10": "Oktubre",
+		"11": "Nobyembre",
+		"12": "Disyembre"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Mangyaring payagan ang pag-access sa iyong mikropono",
+		"record": "Mag-record",
+		"recording": "Pagre-record",
+		"remains": "labi",
+		"maximum": "pinakamataas",
+		"playing": "Nagpe-play",
+		"recorded": "Naka-record",
+		"clip": "clip",
+		"orupload": "O Upload",
+		"usethis": "Gamitin mo to",
+		"discard": "Itapon",
+		"encoding": "Pag-encode"
+	},
+	"alert": {
+		"title": "Pansinin"
+	},
+	"confirm": {
+		"title": "Kumpirmahin",
+		"ok": "Oo",
+		"cancel": "Hindi"
+	},
+	"prompt": {
+		"title": "Ipasok ang Teksto",
+		"ok": "OK"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Error sa pagbabasa ng file",
+		"cameraCommands": {
+			"prompt": "Anong gusto mong gawin?",
+			"photo": "Kumuha ng bagong larawan",
+			"library": "Pumili mula sa library"
+		},
+		"tooSmall": "Mangyaring pumili ng mas malaking imahe.",
+		"cropping": {
+			"title": "Ayusin ang laki at posisyon",
+			"touchscreen": "Gamitin ang iyong mga daliri upang mag-zoom at i-drag",
+			"notTouchscreen": "Gamitin ang iyong mouse &amp; wheel upang mag-zoom at i-drag"
+		},
+		"errorType": "Paumanhin, ngunit ang uri ng file na ito ay hindi suportado"
+	},
+	"timestamp": {
+		"lastNight": "kagabi",
+		"lastEvening": "huling bisperas",
+		"yesterday": "kahapon",
+		"thisMorning": "umaga na ito",
+		"today": "ngayon",
+		"tonight": "ngayong gabi",
+		"tomorrowMorning": "tom umaga",
+		"tomorrow": "bukas",
+		"hoursAgo": "{{h}} na oras na ang nakakaraan",
+		"hourAgo": "{{h}} na oras na ang nakakaraan",
+		"minuteAgo": "{{m}} minuto ang nakaraan",
+		"minutesAgo": "{{m}} minuto ang nakaraan",
+		"secondAgo": "{{s}} pangalawang nakaraan",
+		"secondsAgo": "{{s}} segundo na ang nakalilipas",
+		"fewSecondsAgo": "ilang segundo",
+		"rightNow": "ngayon na",
+		"inSecond": "sa {{s}} pangalawa",
+		"inSeconds": "sa {{s}} segundo",
+		"inMinute": "sa {{m}} minuto",
+		"inMinutes": "sa {{m}} minuto",
+		"inHour": "sa {{h}} oras",
+		"inHours": "sa {{h}} na oras",
+		"inUnderMinute": "sa ilalim ng 1 minuto"
+	},
+	"tabs": {
+		"more": "higit pa",
+		"Menu": "Menu"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "Walang mapagkukunan ng video",
+		"SkipAfter": "Laktawan pagkatapos",
+		"Skip": "Laktawan"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "Walang mapagkukunan ng pdf"
+	},
+	"clip": {
+		"SetClipStart": "Itakda ang Start ng Clip",
+		"ClipStart": "Magsimula sa Clip",
+		"SetClipEnd": "Itakda ang Clip End",
+		"ClipEnd": "Pagtatapos ng Clip",
+		"StartMoreEnd": "Ang panimulang posisyon ay hindi maaaring higit sa dulong posisyon",
+		"EndLessStart": "Ang posisyon ng pagtatapos ay hindi maaaring mas mababa sa panimulang posisyon",
+		"WhichInvalid": "Hindi wasto ang argumentong &#39;alin&#39;"
+	},
+	"durations": {
+		"second": "pangalawa",
+		"seconds": "segundo",
+		"minute": "minuto",
+		"minutes": "minuto",
+		"hour": "oras",
+		"day": "araw",
+		"days": "araw",
+		"week": "linggo",
+		"weeks": "linggo",
+		"month": "buwan",
+		"months": "buwan",
+		"year": "taon",
+		"years": "taon",
+		"decade": "dekada",
+		"decades": "mga dekada",
+		"century": "siglo",
+		"centuries": "mga siglo"
+	},
+	"browser": {
+		"insecureContext": "Kailangan mong mag-browse sa isang secure na konteksto para gumana ito"
+	},
+	"scan": {
+		"QR": "I-scan ang mga QR code"
+	},
+	"input": {
+		"Placeholder": "Magsimulang mag-type..."
+	}
+}

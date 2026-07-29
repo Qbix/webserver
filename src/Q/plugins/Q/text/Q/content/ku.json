@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Çewtiya {{status}} di dema daxwaziyê de",
+        "canceled": "Daxwaz hat betal kirin",
+        "500": "Çewtiya servera navxweyî",
+        "404": "nehat dîtin: {{url}}",
+        "501": "Daxwaz qut bû",
+        "401": "Bêmaf",
+        "403": "Qedexekirî"
+    },
+    "nonce": {
+        "sameDomain": "Rûniştin qediya. Rûpelê nûve bikin û dîsa biceribînin.",
+        "otherDomain": "Daxwaza xaça-domainê ji domaina biyanî re li {{baseUrl}} hate asteng kirin"
+    },
+    "words": {
+        "tap": "dîk",
+        "click": "bitikîne",
+        "yes": "Erê",
+        "no": "na",
+        "Tap": "Dîk",
+        "Click": "Bikirtînin",
+        "Yes": "Erê",
+        "No": "Na",
+        "OK": "OK",
+        "Alert": "Hişyar",
+        "Confirm": "Tesdîqkirin",
+        "Prompt": "Derhal"
+    },
+    "months": {
+        "1": "Rêbendan",
+        "2": "Reşemî",
+        "3": "Adar",
+        "4": "Avrêl",
+        "5": "Gulan",
+        "6": "Pûşper",
+        "7": "Tîrmeh",
+        "8": "Tebax",
+        "9": "Îlon",
+        "10": "Cotmeh",
+        "11": "Mijdar",
+        "12": "Berfanbar"
+    },
+    "durations": {
+        "second": "duyem",
+        "seconds": "seconds",
+        "minute": "deqqe",
+        "minutes": "minutes",
+        "hour": "saetan",
+        "day": "roj",
+        "days": "rojan",
+        "week": "hefte",
+        "weeks": "hefteyan",
+        "month": "meh",
+        "months": "mehan",
+        "year": "sal",
+        "years": "salan",
+        "decade": "dehsal",
+        "decades": "dehsalan",
+        "century": "sedsal",
+        "centuries": "sedsalan"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Ji kerema xwe destûrê bide gihîştina mîkrofona xwe",
+        "record": "Rekor",
+        "recording": "Girtinî",
+        "remains": "jibermayî",
+        "maximum": "zêdetir",
+        "playing": "Dilîstin",
+        "recorded": "Tomar kirin",
+        "clip": "clip",
+        "discard": "Davêjin",
+        "encoding": "Encoding"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Çavkaniyek vîdyoyê tune",
+        "SkipAfter": "Pişt re derbas bibin",
+        "Skip": "Hilperkîn"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Çavkaniyek pdf tune"
+    },
+    "clip": {
+        "SetClipStart": "Destpêka Klîpê saz bikin",
+        "ClipStart": "Destpêka Klîpê",
+        "SetClipEnd": "Set Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Helwesta destpêkê nikare ji pozîsyona dawîyê bêtir be",
+        "EndLessStart": "Helwesta dawî nikare ji pozîsyona destpêkê kêmtir be",
+        "WhichInvalid": "Argumenta &#39;kîjan&#39; nederbasdar e"
+    },
+    "alert": {
+        "title": "Hişyar"
+    },
+    "confirm": {
+        "title": "Tesdîqkirin",
+        "ok": "Erê",
+        "cancel": "Na"
+    },
+    "prompt": {
+        "title": "Derhal",
+        "ok": "Çûyin"
+    },
+    "tabs": {
+        "more": "zêde",
+        "Menu": "Qerta xûrekê"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Di xwendina pelê de çewtî",
+        "errorType": "Mixabin, lê ev cureyê pelê nayê piştgirî kirin",
+        "cameraCommands": {
+            "prompt": "Tu dixwazî çi bikî?",
+            "photo": "Wêneyek nû bistînin",
+            "library": "Ji pirtûkxaneyê hilbijêrin"
+        },
+        "tooSmall": "Ji kerema xwe wêneyek mezintir hilbijêrin.",
+        "cropping": {
+            "title": "Mezinahî û pozîsyonê eyar bikin",
+            "touchscreen": "Tiliyên xwe bikar bînin da ku zoom û kaş bikin",
+            "notTouchscreen": "Mişk û çerxa xwe bikar bînin da ku zoom û kaş bikin"
+        }
+    },
+    "timestamp": {
+        "lastNight": "şevê dî",
+        "lastEvening": "şeva dawîn",
+        "yesterday": "do",
+        "thisMorning": "vê sibê",
+        "today": "îro",
+        "tonight": "îro êvarî",
+        "tomorrowMorning": "tom sibê",
+        "tomorrow": "sibê",
+        "hoursAgo": "{{h}} saet berê",
+        "hourAgo": "{{h}} saet berê",
+        "minuteAgo": "{{m}} deqîqe berê",
+        "minutesAgo": "{{m}} deqîqe berê",
+        "secondAgo": "{{s}} saniye berê",
+        "secondsAgo": "{{s}} saniye berê",
+        "fewSecondsAgo": "seconds ago",
+        "rightNow": "Niha",
+        "inSecond": "di {{s}} çirkeyê de",
+        "inSeconds": "di {{s}} çirkeyan de",
+        "inMinute": "di {{m}} deqeyê de",
+        "inMinutes": "di {{m}} deqîqeyan de",
+        "inHour": "di {{h}} saetê de",
+        "inHours": "di {{h}} saetan de",
+        "inUnderMinute": "di bin 1 deqîqe"
+    },
+    "browser": {
+        "insecureContext": "Pêdivî ye ku hûn di çarçoveyek ewledar de bigerin da ku ev kar bike"
+    },
+    "scan": {
+        "QR": "Kodên QR bişopînin"
+    },
+    "input": {
+        "Placeholder": "Dest bi nivîsandinê bike..."
+    }
+}

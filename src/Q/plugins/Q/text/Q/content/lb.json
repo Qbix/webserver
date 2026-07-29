@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Feeler {{status}} während der Ufro",
+        "canceled": "Ufro annuléiert",
+        "500": "Interne Serverfehler",
+        "404": "Net fonnt: {{url}}",
+        "501": "Demande ënnerbrach",
+        "401": "Onerlaabt",
+        "403": "Verbueden"
+    },
+    "nonce": {
+        "sameDomain": "Sessioun ofgelaaf. Erfrëscht d&#39;Säit a probéiert nach eng Kéier.",
+        "otherDomain": "Blockéiert Cross-Domain Ufro un auslännesch Domain um {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "klickt",
+        "yes": "jo",
+        "no": "Nee",
+        "Tap": "Tap",
+        "Click": "Klickt",
+        "Yes": "jo",
+        "No": "Nee",
+        "OK": "OK",
+        "Alert": "Alarm",
+        "Confirm": "Confirméieren",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Januar",
+        "2": "Februar",
+        "3": "Mäerz",
+        "4": "Abrëll",
+        "5": "Mee",
+        "6": "Juni",
+        "7": "Juli",
+        "8": "August",
+        "9": "September",
+        "10": "Oktober",
+        "11": "November",
+        "12": "Dezember"
+    },
+    "durations": {
+        "second": "zweeten",
+        "seconds": "Sekonnen",
+        "minute": "Minutt",
+        "minutes": "Minutten",
+        "hour": "Stonnen",
+        "day": "Dag",
+        "days": "Deeg",
+        "week": "Woch",
+        "weeks": "Wochen",
+        "month": "Mount",
+        "months": "Méint",
+        "year": "Joer",
+        "years": "Joer",
+        "decade": "Jorzéngt",
+        "decades": "Joerzéngten",
+        "century": "Joerhonnert",
+        "centuries": "Joerhonnert"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Erlaabt w.e.g. Zougang zu Ärem Mikro",
+        "record": "Rekord",
+        "recording": "Opnam",
+        "remains": "bleift",
+        "maximum": "maximal",
+        "playing": "Spillen",
+        "recorded": "Opgeholl",
+        "clip": "clip",
+        "discard": "Wegwerfen",
+        "encoding": "Kodéierung"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Keng Videoquell",
+        "SkipAfter": "Sprangen duerno",
+        "Skip": "Sprangen"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Keng pdf Quell"
+    },
+    "clip": {
+        "SetClipStart": "Set Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Set Clip Enn",
+        "ClipEnd": "Clip Enn",
+        "StartMoreEnd": "Start Positioun kann net méi wéi Enn Positioun ginn",
+        "EndLessStart": "Enn Positioun kann net manner wéi Start Positioun ginn",
+        "WhichInvalid": "Argument &#39;wat&#39; ongëlteg"
+    },
+    "alert": {
+        "title": "Alarm"
+    },
+    "confirm": {
+        "title": "Confirméieren",
+        "ok": "jo",
+        "cancel": "Nee"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Gitt"
+    },
+    "tabs": {
+        "more": "méi",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Feeler beim Liesen vun der Datei",
+        "errorType": "Entschëllegt, awer dës Dateityp gëtt net ënnerstëtzt",
+        "cameraCommands": {
+            "prompt": "Wat géift Dir gären maachen?",
+            "photo": "Huelt eng nei Foto",
+            "library": "Wielt aus der Bibliothéik"
+        },
+        "tooSmall": "Wielt w.e.g. e méi grousst Bild.",
+        "cropping": {
+            "title": "Ajustéieren Gréisst a Positioun",
+            "touchscreen": "Benotzt Är Fanger fir ze zoomen an ze zéien",
+            "notTouchscreen": "Benotzt Är Maus &amp; Rad fir ze zoomen an ze zéien"
+        }
+    },
+    "timestamp": {
+        "lastNight": "d&#39;lescht Nuecht",
+        "lastEvening": "lescht Owend",
+        "yesterday": "gëschter",
+        "thisMorning": "dëse Moien",
+        "today": "haut",
+        "tonight": "den Owend",
+        "tomorrowMorning": "moien",
+        "tomorrow": "muer",
+        "hoursAgo": "{{h}} Stonnen virun",
+        "hourAgo": "virun {{h}} Stonn",
+        "minuteAgo": "{{m}} Minutt virun",
+        "minutesAgo": "{{m}} Minutte virun",
+        "secondAgo": "{{s}} Sekonn virun",
+        "secondsAgo": "{{s}} Sekonnen virun",
+        "fewSecondsAgo": "virun Sekonnen",
+        "rightNow": "an desem Moment",
+        "inSecond": "an {{s}} Sekonn",
+        "inSeconds": "an {{s}} Sekonnen",
+        "inMinute": "an {{m}} Minutt",
+        "inMinutes": "an {{m}} Minutten",
+        "inHour": "an {{h}} Stonn",
+        "inHours": "an {{h}} Stonnen",
+        "inUnderMinute": "an ënner 1 Minutt"
+    },
+    "browser": {
+        "insecureContext": "Dir musst an engem séchere Kontext surfen fir datt dëst funktionnéiert"
+    },
+    "scan": {
+        "QR": "Scan QR Coden"
+    },
+    "input": {
+        "Placeholder": "Fänkt un ze tippen ..."
+    }
+}

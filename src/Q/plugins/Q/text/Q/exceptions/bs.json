@@ -1,0 +1,5 @@
+{
+    "MissingFile": "nedostaje fajl {{filename}}",
+    "InvalidLanguage": "nevažeći jezik {{language}}",
+    "RequiredField": "{{field}} je potrebno"
+}

@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Fout {{status}} tijdens verzoek",
+		"canceled": "Verzoek geannuleerd",
+		"500": "Interne Server Fout",
+		"404": "Niet gevonden: {{url}}",
+		"501": "Verzoek onderbroken",
+		"401": "Onbevoegd",
+		"403": "Verboden"
+	},
+	"nonce": {
+		"sameDomain": "Sessie verlopen. Vernieuw de pagina en probeer het opnieuw.",
+		"otherDomain": "Cross-domein {{method}} verzoek van buitenlands domein geblokkeerd op {{baseUrl}}"
+	},
+	"words": {
+		"tap": "kraan",
+		"click": "Klik",
+		"yes": "Ja",
+		"no": "Nee",
+		"Tap": "Aanraken",
+		"Click": "Klik",
+		"Yes": "Ja",
+		"No": "Nee",
+		"OK": "OK",
+		"Alert": "Alarm",
+		"Confirm": "Bevestiging",
+		"Prompt": "Tekst invoeren"
+	},
+	"months": {
+		"1": "januari",
+		"2": "februari",
+		"3": "maart",
+		"4": "april",
+		"5": "Kunnen",
+		"6": "juni-",
+		"7": "juli-",
+		"8": "augustus",
+		"9": "september",
+		"10": "oktober",
+		"11": "november",
+		"12": "december"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Geef toegang tot uw microfoon a.u.b.",
+		"record": "Dossier",
+		"recording": "Opnemen",
+		"remains": "stoffelijk overschot",
+		"maximum": "maximum",
+		"playing": "Spelen",
+		"recorded": "Opgenomen",
+		"clip": "klem",
+		"orupload": "Of upload",
+		"usethis": "Gebruik dit",
+		"discard": "Weggooien",
+		"encoding": "codering"
+	},
+	"alert": {
+		"title": "Kennisgeving"
+	},
+	"confirm": {
+		"title": "Bevestigen",
+		"ok": "Ja",
+		"cancel": "Nee"
+	},
+	"prompt": {
+		"title": "Tekst invoeren",
+		"ok": "OK"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Fout bij lezen bestand",
+		"cameraCommands": {
+			"prompt": "Wat zou je willen doen?",
+			"photo": "Nieuwe foto maken",
+			"library": "Kies uit bibliotheek"
+		},
+		"tooSmall": "Kies een grotere afbeelding.",
+		"cropping": {
+			"title": "Pas grootte en positie aan",
+			"touchscreen": "Gebruik je vingers om in te zoomen en te slepen",
+			"notTouchscreen": "Gebruik je muis en wiel om te zoomen en te slepen"
+		},
+		"errorType": "Sorry, maar dit bestandstype wordt niet ondersteund"
+	},
+	"timestamp": {
+		"lastNight": "afgelopen nacht",
+		"lastEvening": "laatste avond",
+		"yesterday": "gisteren",
+		"thisMorning": "vanmorgen",
+		"today": "vandaag",
+		"tonight": "vanavond",
+		"tomorrowMorning": "morgenochtend",
+		"tomorrow": "morgen",
+		"hoursAgo": "{{h}} uur geleden",
+		"hourAgo": "{{h}} uur geleden",
+		"minuteAgo": "{{m}} minuut geleden",
+		"minutesAgo": "{{m}} minuten geleden",
+		"secondAgo": "{{s}} seconde geleden",
+		"secondsAgo": "{{s}} seconden geleden",
+		"fewSecondsAgo": "seconden geleden",
+		"rightNow": "direct",
+		"inSecond": "over {{s}} seconde",
+		"inSeconds": "over {{s}} seconden",
+		"inMinute": "over {{m}} minuut",
+		"inMinutes": "over {{m}} minuten",
+		"inHour": "over {{h}} uur",
+		"inHours": "over {{h}} uur",
+		"inUnderMinute": "in minder dan 1 minuut"
+	},
+	"tabs": {
+		"more": "meer",
+		"Menu": "Menu"
+	},
+	"video": {
+		"clip": "klem",
+		"errorNoSource": "Geen videobron",
+		"SkipAfter": "Overslaan na",
+		"Skip": "Overslaan"
+	},
+	"pdf": {
+		"clip": "klem",
+		"errorNoSource": "Geen pdf-bron"
+	},
+	"clip": {
+		"SetClipStart": "Clip starten instellen",
+		"ClipStart": "Clip starten",
+		"SetClipEnd": "Clip einde instellen",
+		"ClipEnd": "Clip einde",
+		"StartMoreEnd": "Startpositie kan niet meer zijn dan eindpositie",
+		"EndLessStart": "Eindpositie kan niet kleiner zijn dan startpositie",
+		"WhichInvalid": "Argument &#39;welke&#39; ongeldig"
+	},
+	"durations": {
+		"second": "seconde",
+		"seconds": "seconden",
+		"minute": "minuut",
+		"minutes": "minuten",
+		"hour": "uur",
+		"day": "dag",
+		"days": "dagen",
+		"week": "week",
+		"weeks": "weken",
+		"month": "maand",
+		"months": "maanden",
+		"year": "jaar",
+		"years": "jaar",
+		"decade": "decennium",
+		"decades": "tientallen jaren",
+		"century": "eeuw",
+		"centuries": "eeuwen"
+	},
+	"browser": {
+		"insecureContext": "U moet in een veilige context bladeren om dit te laten werken"
+	},
+	"scan": {
+		"QR": "QR-codes scannen"
+	},
+	"input": {
+		"Placeholder": "Beginnen met typen..."
+	}
+}

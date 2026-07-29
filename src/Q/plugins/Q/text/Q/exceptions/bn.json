@@ -1,0 +1,5 @@
+{
+	"MissingFile": "\u0985\u09a8\u09c1\u09aa\u09b8\u09cd\u09a5\u09bf\u09a4 \u09ab\u09be\u0987\u09b2 {{filename}}",
+	"InvalidLanguage": "\u0985\u09ac\u09c8\u09a7 \u09ad\u09be\u09b7\u09be {{language}}",
+	"RequiredField": "{{field}} \u09aa\u09cd\u09b0\u09af\u09bc\u09cb\u099c\u09a8"
+}

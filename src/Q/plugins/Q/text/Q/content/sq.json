@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Gabim {{status}} gjat\u00eb k\u00ebrkes\u00ebs",
+		"canceled": "K\u00ebrkesa u anulua",
+		"500": "Gabim i brendsh\u00ebm i serverit",
+		"404": "Nuk u gjet: {{url}}",
+		"501": "K\u00ebrkesa u nd\u00ebrpre",
+		"401": "I paautorizuar",
+		"403": "e ndaluar"
+	},
+	"nonce": {
+		"sameDomain": "Seanca skadoi. Rifresko faqen dhe provo s\u00ebrish.",
+		"otherDomain": "K\u00ebrkes\u00eb e bllokuar nd\u00ebr-domeni {{method}} nga domeni i huaj n\u00eb {{baseUrl}}"
+	},
+	"words": {
+		"tap": "trokitje e leht\u00eb",
+		"click": "klikoni",
+		"yes": "po",
+		"no": "nr",
+		"Tap": "Prekni",
+		"Click": "Klikoni",
+		"Yes": "po",
+		"No": "Nr",
+		"OK": "Ne rregull",
+		"Alert": "Alarmi",
+		"Confirm": "Konfirmimi",
+		"Prompt": "Futni Tekstin"
+	},
+	"months": {
+		"1": "janar",
+		"2": "shkurt",
+		"3": "marsh",
+		"4": "prill",
+		"5": "Mund",
+		"6": "qershor",
+		"7": "korrik",
+		"8": "gusht",
+		"9": "shtator",
+		"10": "tetor",
+		"11": "N\u00ebntor",
+		"12": "dhjetor"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Lejo qasjen n\u00eb mikrofonin t\u00ebnd",
+		"record": "Regjistro",
+		"recording": "Regjistrimi",
+		"remains": "Mbetet",
+		"maximum": "maksimale",
+		"playing": "Duke luajtur",
+		"recorded": "I regjistruar",
+		"clip": "klip",
+		"orupload": "Ose Ngarko",
+		"usethis": "P\u00ebrdor k\u00ebt\u00eb",
+		"discard": "Hidhni",
+		"encoding": "Kodimi"
+	},
+	"alert": {
+		"title": "Njoftim"
+	},
+	"confirm": {
+		"title": "Konfirmo",
+		"ok": "po",
+		"cancel": "Nr"
+	},
+	"prompt": {
+		"title": "Futni Tekstin",
+		"ok": "Ne rregull"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Gabim gjat\u00eb leximit t\u00eb skedarit",
+		"cameraCommands": {
+			"prompt": "\u00c7far\u00eb do t\u00eb d\u00ebshironit t\u00eb b\u00ebnit?",
+			"photo": "B\u00ebni nj\u00eb foto t\u00eb re",
+			"library": "Zgjidhni nga biblioteka"
+		},
+		"tooSmall": "Ju lutemi zgjidhni nj\u00eb imazh m\u00eb t\u00eb madh.",
+		"cropping": {
+			"title": "Rregulloni madh\u00ebsin\u00eb dhe pozicionin",
+			"touchscreen": "P\u00ebrdorni gishtat p\u00ebr t\u00eb zmadhuar dhe zvarritur",
+			"notTouchscreen": "P\u00ebrdorni miun dhe timonin p\u00ebr t\u00eb zmadhuar dhe zvarritur"
+		},
+		"errorType": "Na vjen keq, por ky lloj skedari nuk mb\u00ebshtetet"
+	},
+	"timestamp": {
+		"lastNight": "mbr\u00ebm\u00eb",
+		"lastEvening": "prag t\u00eb fundit",
+		"yesterday": "dje",
+		"thisMorning": "k\u00ebt\u00eb m\u00ebngjes",
+		"today": "sot",
+		"tonight": "sonte",
+		"tomorrowMorning": "tom Morn",
+		"tomorrow": "nes\u00ebr",
+		"hoursAgo": "{{h}} or\u00eb m\u00eb par\u00eb",
+		"hourAgo": "{{h}} or\u00eb m\u00eb par\u00eb",
+		"minuteAgo": "{{m}} minut\u00eb m\u00eb par\u00eb",
+		"minutesAgo": "{{m}} minuta m\u00eb par\u00eb",
+		"secondAgo": "{{s}} sekond\u00eb m\u00eb par\u00eb",
+		"secondsAgo": "{{s}} sekonda m\u00eb par\u00eb",
+		"fewSecondsAgo": "sekonda m\u00eb par\u00eb",
+		"rightNow": "pik\u00ebrisht tani",
+		"inSecond": "n\u00eb {{s}} sekond\u00eb",
+		"inSeconds": "n\u00eb {{s}} sekonda",
+		"inMinute": "n\u00eb {{m}} minut\u00eb",
+		"inMinutes": "n\u00eb {{m}} minuta",
+		"inHour": "n\u00eb {{h}} or\u00eb",
+		"inHours": "n\u00eb {{h}} or\u00eb",
+		"inUnderMinute": "n\u00eb m\u00eb pak se 1 minut\u00eb"
+	},
+	"tabs": {
+		"more": "m\u00eb shum\u00eb",
+		"Menu": "Menu"
+	},
+	"video": {
+		"clip": "klip",
+		"errorNoSource": "Nuk ka burim video",
+		"SkipAfter": "Kalo pas",
+		"Skip": "Kap\u00ebrceni"
+	},
+	"pdf": {
+		"clip": "klip",
+		"errorNoSource": "Nuk ka burim pdf"
+	},
+	"clip": {
+		"SetClipStart": "Cakto fillimin e klipit",
+		"ClipStart": "Fillimi i klipit",
+		"SetClipEnd": "Cakto Fundin e Klipit",
+		"ClipEnd": "Fundi i klipit",
+		"StartMoreEnd": "Pozicioni fillestar nuk mund t\u00eb jet\u00eb m\u00eb shum\u00eb se pozicioni i fundit",
+		"EndLessStart": "Pozicioni i fundit nuk mund t\u00eb jet\u00eb m\u00eb i vog\u00ebl se pozicioni i fillimit",
+		"WhichInvalid": "Argumenti &#39;cil&#39; \u00ebsht\u00eb i pavlefsh\u00ebm"
+	},
+	"durations": {
+		"second": "e dyta",
+		"seconds": "sekonda",
+		"minute": "minut\u00eb",
+		"minutes": "minuta",
+		"hour": "or\u00eb",
+		"day": "dit\u00eb",
+		"days": "dit\u00eb",
+		"week": "jav\u00eb",
+		"weeks": "jav\u00eb",
+		"month": "muaj",
+		"months": "muaj",
+		"year": "vit",
+		"years": "vjet",
+		"decade": "dekad\u00eb",
+		"decades": "dekada",
+		"century": "shekulli",
+		"centuries": "shekuj"
+	},
+	"browser": {
+		"insecureContext": "Ju duhet t\u00eb shfletoni n\u00eb nj\u00eb kontekst t\u00eb sigurt q\u00eb kjo t\u00eb funksionoj\u00eb"
+	},
+	"scan": {
+		"QR": "Skanoni kodet QR"
+	},
+	"input": {
+		"Placeholder": "Filloni t\u00eb shkruani..."
+	}
+}

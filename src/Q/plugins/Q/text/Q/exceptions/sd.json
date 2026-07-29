@@ -1,0 +1,5 @@
+{
+    "MissingFile": "غائب فائل {{filename}}",
+    "InvalidLanguage": "غلط ٻولي {{language}}",
+    "RequiredField": "{{field}} گھربل آھي"
+}

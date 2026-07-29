@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Fehler {{status}} w\u00e4hrend der Anfrage",
+		"canceled": "Anfrage abgebrochen",
+		"500": "Interner Serverfehler",
+		"404": "Nicht gefunden: {{url}}",
+		"501": "Anfrage unterbrochen",
+		"401": "Unbefugt",
+		"403": "Verboten"
+	},
+	"nonce": {
+		"sameDomain": "Sitzung abgelaufen. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
+		"otherDomain": "Cross-Domain {{method}} Anfrage von einer fremden Domain um {{baseUrl}} blockiert"
+	},
+	"words": {
+		"tap": "klopfen",
+		"click": "klicken",
+		"yes": "ja",
+		"no": "Nein",
+		"Tap": "Ber\u00fchren",
+		"Click": "Klicken",
+		"Yes": "ja",
+		"No": "Nein",
+		"OK": "OK",
+		"Alert": "Alarm",
+		"Confirm": "Best\u00e4tigung",
+		"Prompt": "Text eingeben"
+	},
+	"months": {
+		"1": "Januar",
+		"2": "Februar",
+		"3": "Marsch",
+		"4": "April",
+		"5": "Kann",
+		"6": "Juni",
+		"7": "Juli",
+		"8": "August",
+		"9": "September",
+		"10": "Oktober",
+		"11": "November",
+		"12": "Dezember"
+	},
+	"durations": {
+		"second": "zweite",
+		"seconds": "Sekunden",
+		"minute": "Minute",
+		"minutes": "Protokoll",
+		"hour": "Std",
+		"day": "Tag",
+		"days": "Tage",
+		"week": "Woche",
+		"weeks": "Wochen",
+		"month": "Monat",
+		"months": "Monate",
+		"year": "Jahr",
+		"years": "Jahre",
+		"decade": "Dekade",
+		"decades": "Jahrzehnte",
+		"century": "Jahrhundert",
+		"centuries": "Jahrhunderte"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Bitte erlauben Sie den Zugriff auf Ihr Mikrofon",
+		"record": "Aufzeichnen",
+		"recording": "Aufzeichnung",
+		"remains": "\u00dcberreste",
+		"maximum": "maximal",
+		"playing": "Spielen",
+		"recorded": "Verzeichnet",
+		"clip": "Clip",
+		"discard": "Verwerfen",
+		"encoding": "Codierung"
+	},
+	"video": {
+		"clip": "Clip",
+		"errorNoSource": "Keine Videoquelle",
+		"SkipAfter": "Danach \u00fcberspringen",
+		"Skip": "\u00dcberspringen"
+	},
+	"pdf": {
+		"clip": "Clip",
+		"errorNoSource": "Keine pdf-Quelle"
+	},
+	"clip": {
+		"SetClipStart": "Legen Sie den Clip-Start fest",
+		"ClipStart": "Clip-Start",
+		"SetClipEnd": "Legen Sie das Clip-Ende fest",
+		"ClipEnd": "Clip-Ende",
+		"StartMoreEnd": "Die Startposition darf nicht gr\u00f6\u00dfer als die Endposition sein",
+		"EndLessStart": "Die Endposition darf nicht kleiner als die Startposition sein",
+		"WhichInvalid": "Argument &#39;was&#39; ung\u00fcltig"
+	},
+	"alert": {
+		"title": "Notiz"
+	},
+	"confirm": {
+		"title": "Best\u00e4tigen Sie",
+		"ok": "ja",
+		"cancel": "Nein"
+	},
+	"prompt": {
+		"title": "Text eingeben",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "mehr",
+		"Menu": "Speisekarte"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Fehler beim Lesen der Datei",
+		"errorType": "Entschuldigung, aber dieser Dateityp wird nicht unterst\u00fctzt",
+		"cameraCommands": {
+			"prompt": "Was w\u00fcrdest du gern tun?",
+			"photo": "Neues Foto machen",
+			"library": "Aus Bibliothek ausw\u00e4hlen"
+		},
+		"tooSmall": "Bitte w\u00e4hlen Sie ein gr\u00f6\u00dferes Bild.",
+		"cropping": {
+			"title": "Gr\u00f6\u00dfe und Position anpassen",
+			"touchscreen": "Verwenden Sie Ihre Finger zum Zoomen und Ziehen",
+			"notTouchscreen": "Verwenden Sie Maus und Rad zum Zoomen und Ziehen"
+		}
+	},
+	"timestamp": {
+		"lastNight": "letzter Nacht",
+		"lastEvening": "letzte abend",
+		"yesterday": "gestern",
+		"thisMorning": "heute Morgen",
+		"today": "heute",
+		"tonight": "heute Abend",
+		"tomorrowMorning": "Tom Morgen",
+		"tomorrow": "Morgen",
+		"hoursAgo": "vor {{h}} Stunden",
+		"hourAgo": "vor {{h}} Stunde",
+		"minuteAgo": "vor {{m}} Minute",
+		"minutesAgo": "vor {{m}}\u00a0Minuten",
+		"secondAgo": "vor {{s}}\u00a0Sekunde",
+		"secondsAgo": "vor {{s}}\u00a0Sekunden",
+		"fewSecondsAgo": "Sekunden zuvor",
+		"rightNow": "im Augenblick",
+		"inSecond": "in {{s}} Sekunden",
+		"inSeconds": "in {{s}} Sekunden",
+		"inMinute": "in {{m}} Minute",
+		"inMinutes": "in {{m}} Minuten",
+		"inHour": "in {{h}} Stunde",
+		"inHours": "in {{h}} Stunden",
+		"inUnderMinute": "in weniger als 1 Minute"
+	},
+	"browser": {
+		"insecureContext": "Damit dies funktioniert, m\u00fcssen Sie in einem sicheren Kontext surfen"
+	},
+	"scan": {
+		"QR": "QR-Codes scannen"
+	},
+	"input": {
+		"Placeholder": "Anfangen zu tippen..."
+	}
+}

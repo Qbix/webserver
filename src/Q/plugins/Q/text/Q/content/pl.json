@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "B\u0142\u0105d {{status}} podczas \u017c\u0105dania",
+		"canceled": "Pro\u015bba anulowana",
+		"500": "Wewn\u0119trzny b\u0142\u0105d serwera",
+		"404": "Nie znaleziono: {{url}}",
+		"501": "\u017b\u0105danie przerwane",
+		"401": "Nieautoryzowany",
+		"403": "Zabroniony"
+	},
+	"nonce": {
+		"sameDomain": "Sesja wygas\u0142a. Od\u015bwie\u017c stron\u0119 i spr\u00f3buj ponownie.",
+		"otherDomain": "Zablokowano \u017c\u0105danie mi\u0119dzydomenowe {{method}} z domeny obcej o numerze {{baseUrl}}"
+	},
+	"words": {
+		"tap": "uzyskiwa\u0107",
+		"click": "Kliknij",
+		"yes": "tak",
+		"no": "nie",
+		"Tap": "Dotyka\u0107",
+		"Click": "Kliknij",
+		"Yes": "tak",
+		"No": "Nie",
+		"OK": "OK",
+		"Alert": "Alarm",
+		"Confirm": "Potwierdzenie",
+		"Prompt": "Wprowad\u017a tekst"
+	},
+	"months": {
+		"1": "Stycze\u0144",
+		"2": "luty",
+		"3": "Marsz",
+		"4": "kwiecie\u0144",
+		"5": "M\u00f3c",
+		"6": "czerwiec",
+		"7": "lipiec",
+		"8": "sierpie\u0144",
+		"9": "wrzesie\u0144",
+		"10": "pa\u017adziernik",
+		"11": "listopad",
+		"12": "grudzie\u0144"
+	},
+	"durations": {
+		"second": "druga",
+		"seconds": "sekundy",
+		"minute": "minuta",
+		"minutes": "minuty",
+		"hour": "godziny",
+		"day": "dzie\u0144",
+		"days": "dni",
+		"week": "tydzie\u0144",
+		"weeks": "tygodnie",
+		"month": "miesi\u0105c",
+		"months": "miesi\u0105ce",
+		"year": "rok",
+		"years": "lat",
+		"decade": "dekada",
+		"decades": "dziesi\u0119ciolecia",
+		"century": "stulecie",
+		"centuries": "wieki"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Zezw\u00f3l na dost\u0119p do swojego mikrofonu",
+		"record": "Nagrywa\u0107",
+		"recording": "Nagranie",
+		"remains": "pozostaje",
+		"maximum": "maksymalny",
+		"playing": "Gra",
+		"recorded": "Nagrany",
+		"clip": "spinacz",
+		"discard": "Wyrzuca\u0107",
+		"encoding": "Kodowanie"
+	},
+	"video": {
+		"clip": "spinacz",
+		"errorNoSource": "Brak \u017ar\u00f3d\u0142a wideo",
+		"SkipAfter": "Pomi\u0144 po",
+		"Skip": "Pomija\u0107"
+	},
+	"pdf": {
+		"clip": "spinacz",
+		"errorNoSource": "Brak \u017ar\u00f3d\u0142a pdf"
+	},
+	"clip": {
+		"SetClipStart": "Ustaw pocz\u0105tek klipu",
+		"ClipStart": "Pocz\u0105tek klipu",
+		"SetClipEnd": "Ustaw koniec klipu",
+		"ClipEnd": "Koniec klipu",
+		"StartMoreEnd": "Pozycja pocz\u0105tkowa nie mo\u017ce by\u0107 wi\u0119ksza ni\u017c pozycja ko\u0144cowa",
+		"EndLessStart": "Pozycja ko\u0144cowa nie mo\u017ce by\u0107 mniejsza ni\u017c pozycja pocz\u0105tkowa",
+		"WhichInvalid": "Argument \u201ekt\u00f3ry\u201d jest nieprawid\u0142owy"
+	},
+	"alert": {
+		"title": "Og\u0142oszenie"
+	},
+	"confirm": {
+		"title": "Potwierdza\u0107",
+		"ok": "tak",
+		"cancel": "Nie"
+	},
+	"prompt": {
+		"title": "Wprowad\u017a tekst",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "jeszcze",
+		"Menu": "Menu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "B\u0142\u0105d odczytu pliku",
+		"errorType": "Przepraszamy, ale ten typ pliku nie jest obs\u0142ugiwany",
+		"cameraCommands": {
+			"prompt": "Co chcia\u0142by\u015b robi\u0107?",
+			"photo": "Zr\u00f3b nowe zdj\u0119cie",
+			"library": "Wybierz z biblioteki"
+		},
+		"tooSmall": "Prosz\u0119 wybra\u0107 wi\u0119kszy obraz.",
+		"cropping": {
+			"title": "Dostosuj rozmiar i pozycj\u0119",
+			"touchscreen": "U\u017cyj palc\u00f3w do powi\u0119kszania i przeci\u0105gania",
+			"notTouchscreen": "U\u017cyj myszki i k\u00f3\u0142ka do powi\u0119kszania i przeci\u0105gania"
+		}
+	},
+	"timestamp": {
+		"lastNight": "Ostatnia noc",
+		"lastEvening": "ostatni wiecz\u00f3r",
+		"yesterday": "wczoraj",
+		"thisMorning": "dzi\u015b rano",
+		"today": "Dzi\u015b",
+		"tonight": "tej nocy",
+		"tomorrowMorning": "Tom rano",
+		"tomorrow": "jutro",
+		"hoursAgo": "{{h}} godzin temu",
+		"hourAgo": "{{h}} godz. temu",
+		"minuteAgo": "{{m}} minut temu",
+		"minutesAgo": "{{m}} minut temu",
+		"secondAgo": "{{s}} sekund temu",
+		"secondsAgo": "{{s}} sekund temu",
+		"fewSecondsAgo": "sekundy temu",
+		"rightNow": "teraz",
+		"inSecond": "w {{s}} sekundzie",
+		"inSeconds": "za {{s}} sekund",
+		"inMinute": "za {{m}} minut\u0119",
+		"inMinutes": "za {{m}} minut",
+		"inHour": "za {{h}} godzin\u0119",
+		"inHours": "za {{h}} godzin",
+		"inUnderMinute": "w mniej ni\u017c 1 minut\u0119"
+	},
+	"browser": {
+		"insecureContext": "Aby to zadzia\u0142a\u0142o, musisz przegl\u0105da\u0107 w bezpiecznym kontek\u015bcie"
+	},
+	"scan": {
+		"QR": "Zeskanuj kody QR"
+	},
+	"input": {
+		"Placeholder": "Zacznij pisa\u0107..."
+	}
+}

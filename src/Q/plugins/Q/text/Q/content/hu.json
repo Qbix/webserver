@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Hiba {{status}} a k\u00e9r\u00e9s sor\u00e1n",
+		"canceled": "A k\u00e9r\u00e9s t\u00f6r\u00f6lve",
+		"500": "Bels\u0151 Szerverhiba",
+		"404": "Nem tal\u00e1lhat\u00f3: {{url}}",
+		"501": "A k\u00e9r\u00e9s megszakadt",
+		"401": "Jogosulatlan",
+		"403": "Tiltott"
+	},
+	"nonce": {
+		"sameDomain": "A munkamenet ideje lej\u00e1rt. Friss\u00edtse az oldalt, \u00e9s pr\u00f3b\u00e1lja \u00fajra.",
+		"otherDomain": "Blokkolt cross-domain {{method}} k\u00e9r\u00e9s idegen domaint\u0151l {{baseUrl}} n\u00e9l"
+	},
+	"words": {
+		"tap": "\u00e9rint\u00e9s",
+		"click": "kattintson",
+		"yes": "Igen",
+		"no": "nem",
+		"Tap": "\u00c9rint\u00e9s",
+		"Click": "Kattintson",
+		"Yes": "Igen",
+		"No": "Nem",
+		"OK": "rendben",
+		"Alert": "\u00c9ber",
+		"Confirm": "Meger\u0151s\u00edt\u00e9s",
+		"Prompt": "\u00cdrja be a sz\u00f6veget"
+	},
+	"months": {
+		"1": "janu\u00e1r",
+		"2": "febru\u00e1r",
+		"3": "m\u00e1rcius",
+		"4": "\u00e1prilis",
+		"5": "Lehet",
+		"6": "j\u00fanius",
+		"7": "j\u00falius",
+		"8": "augusztus",
+		"9": "szeptember",
+		"10": "okt\u00f3ber",
+		"11": "november",
+		"12": "december"
+	},
+	"durations": {
+		"second": "m\u00e1sodik",
+		"seconds": "m\u00e1sodpercig",
+		"minute": "perc",
+		"minutes": "percek",
+		"hour": "\u00f3r\u00e1k",
+		"day": "nap",
+		"days": "napok",
+		"week": "h\u00e9t",
+		"weeks": "h\u00e9tig",
+		"month": "h\u00f3nap",
+		"months": "h\u00f3napok",
+		"year": "\u00e9v",
+		"years": "\u00e9vek",
+		"decade": "\u00e9vtized",
+		"decades": "\u00e9vtizedekben",
+		"century": "sz\u00e1zad",
+		"centuries": "sz\u00e1zadokban"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "K\u00e9rj\u00fck, enged\u00e9lyezze a hozz\u00e1f\u00e9r\u00e9st a mikrofonj\u00e1hoz",
+		"record": "Rekord",
+		"recording": "Felv\u00e9tel",
+		"remains": "maradv\u00e1nyok",
+		"maximum": "maxim\u00e1lis",
+		"playing": "J\u00e1t\u00e9k",
+		"recorded": "R\u00f6gz\u00edtve",
+		"clip": "csipesz",
+		"discard": "Eldobni",
+		"encoding": "K\u00f3dol\u00e1s"
+	},
+	"video": {
+		"clip": "csipesz",
+		"errorNoSource": "Nincs vide\u00f3 forr\u00e1s",
+		"SkipAfter": "Kihagy\u00e1s ut\u00e1n",
+		"Skip": "Kihagy\u00e1s"
+	},
+	"pdf": {
+		"clip": "csipesz",
+		"errorNoSource": "Nincs pdf forr\u00e1s"
+	},
+	"clip": {
+		"SetClipStart": "\u00c1ll\u00edtsa be a Clip Start",
+		"ClipStart": "Klip ind\u00edt\u00e1sa",
+		"SetClipEnd": "\u00c1ll\u00edtsa be a klip v\u00e9g\u00e9t",
+		"ClipEnd": "Klip v\u00e9ge",
+		"StartMoreEnd": "A kezd\u0151poz\u00edci\u00f3 nem lehet t\u00f6bb, mint a v\u00e9gpoz\u00edci\u00f3",
+		"EndLessStart": "A v\u00e9gpoz\u00edci\u00f3 nem lehet kisebb, mint a kezd\u0151poz\u00edci\u00f3",
+		"WhichInvalid": "A \u201emelyik\u201d \u00e9rv \u00e9rv\u00e9nytelen"
+	},
+	"alert": {
+		"title": "\u00c9rtes\u00edt\u00e9s"
+	},
+	"confirm": {
+		"title": "meger\u0151s\u00edt",
+		"ok": "Igen",
+		"cancel": "Nem"
+	},
+	"prompt": {
+		"title": "\u00cdrja be a sz\u00f6veget",
+		"ok": "rendben"
+	},
+	"tabs": {
+		"more": "t\u00f6bb",
+		"Menu": "Men\u00fc"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Hiba a f\u00e1jl olvas\u00e1sakor",
+		"errorType": "Sajn\u00e1ljuk, de ez a f\u00e1jlt\u00edpus nem t\u00e1mogatott",
+		"cameraCommands": {
+			"prompt": "Mit szeretn\u00e9l csin\u00e1lni?",
+			"photo": "K\u00e9sz\u00edtsen \u00faj f\u00e9nyk\u00e9pet",
+			"library": "V\u00e1lasszon a k\u00f6nyvt\u00e1rb\u00f3l"
+		},
+		"tooSmall": "K\u00e9rj\u00fck, v\u00e1lasszon nagyobb k\u00e9pet.",
+		"cropping": {
+			"title": "\u00c1ll\u00edtsa be a m\u00e9retet \u00e9s a poz\u00edci\u00f3t",
+			"touchscreen": "Haszn\u00e1lja ujjait a nagy\u00edt\u00e1shoz \u00e9s h\u00faz\u00e1shoz",
+			"notTouchscreen": "Haszn\u00e1lja az egeret \u00e9s a g\u00f6rg\u0151t a nagy\u00edt\u00e1shoz \u00e9s h\u00faz\u00e1shoz"
+		}
+	},
+	"timestamp": {
+		"lastNight": "tegnap \u00e9jjel",
+		"lastEvening": "m\u00falt este",
+		"yesterday": "tegnap",
+		"thisMorning": "ma reggel",
+		"today": "Ma",
+		"tonight": "ma este",
+		"tomorrowMorning": "tom reggel",
+		"tomorrow": "holnap",
+		"hoursAgo": "{{h}} \u00f3r\u00e1ja",
+		"hourAgo": "{{h}} \u00f3r\u00e1ja",
+		"minuteAgo": "{{m}} perce",
+		"minutesAgo": "{{m}} perce",
+		"secondAgo": "{{s}} m\u00e1sodperce",
+		"secondsAgo": "{{s}} m\u00e1sodperce",
+		"fewSecondsAgo": "m\u00e1sodpercekkel ezel\u0151tt",
+		"rightNow": "\u00e9pp most",
+		"inSecond": "{{s}} m\u00e1sodperc alatt",
+		"inSeconds": "{{s}} m\u00e1sodpercen bel\u00fcl",
+		"inMinute": "{{m}} perc m\u00falva",
+		"inMinutes": "{{m}} perc m\u00falva",
+		"inHour": "{{h}} \u00f3r\u00e1n bel\u00fcl",
+		"inHours": "{{h}} \u00f3r\u00e1n bel\u00fcl",
+		"inUnderMinute": "1 perc alatt"
+	},
+	"browser": {
+		"insecureContext": "Ahhoz, hogy ez m\u0171k\u00f6dj\u00f6n, biztons\u00e1gos k\u00f6rnyezetben kell b\u00f6ng\u00e9sznie"
+	},
+	"scan": {
+		"QR": "QR-k\u00f3dok beolvas\u00e1sa"
+	},
+	"input": {
+		"Placeholder": "Kezdj el g\u00e9pelni..."
+	}
+}

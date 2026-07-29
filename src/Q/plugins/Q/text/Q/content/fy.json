@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Flater {{status}} by fersyk",
+        "canceled": "Fersyk annulearre",
+        "500": "Ynterne tsjinner flater",
+        "404": "Net fûn: {{url}}",
+        "501": "Fersyk ûnderbrutsen",
+        "401": "Net autorisearre",
+        "403": "Ferbean"
+    },
+    "nonce": {
+        "sameDomain": "Sesje ferrûn. Ferfarskje de side en besykje it nochris.",
+        "otherDomain": "Blokkearre cross-domain fersyk nei bûtenlânsk domein by {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "klik",
+        "yes": "ja",
+        "no": "Nee",
+        "Tap": "Tap",
+        "Click": "Klikje",
+        "Yes": "ja",
+        "No": "Nee",
+        "OK": "OK",
+        "Alert": "Alert",
+        "Confirm": "Befêstigje",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "jannewaris",
+        "2": "febrewaris",
+        "3": "maart",
+        "4": "april",
+        "5": "Meie",
+        "6": "juny",
+        "7": "july",
+        "8": "augustus",
+        "9": "spetimber",
+        "10": "oktober",
+        "11": "novimber",
+        "12": "desimber"
+    },
+    "durations": {
+        "second": "twadde",
+        "seconds": "sekonden",
+        "minute": "minút",
+        "minutes": "minuten",
+        "hour": "oeren",
+        "day": "dei",
+        "days": "dagen",
+        "week": "wike",
+        "weeks": "wiken",
+        "month": "moanne",
+        "months": "moannen",
+        "year": "jier",
+        "years": "jier",
+        "decade": "dekade",
+        "decades": "desennia",
+        "century": "ieu",
+        "centuries": "ieuwen"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Tastean asjebleaft tagong ta jo mikrofoan",
+        "record": "Opnimme",
+        "recording": "Opname",
+        "remains": "oerbliuwsel",
+        "maximum": "maksimum",
+        "playing": "Boartsjen",
+        "recorded": "Opnommen",
+        "clip": "klip",
+        "discard": "Discard",
+        "encoding": "Kodearring"
+    },
+    "video": {
+        "clip": "klip",
+        "errorNoSource": "Gjin fideo boarne",
+        "SkipAfter": "Oerslaan nei",
+        "Skip": "Oerslaan"
+    },
+    "pdf": {
+        "clip": "klip",
+        "errorNoSource": "Gjin pdf boarne"
+    },
+    "clip": {
+        "SetClipStart": "Set Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Set Clip End",
+        "ClipEnd": "Klip ein",
+        "StartMoreEnd": "Startposysje kin net mear wêze as einposysje",
+        "EndLessStart": "Einposysje kin net minder wêze as begjinposysje",
+        "WhichInvalid": "Argumint &#39;wat&#39; ûnjildich"
+    },
+    "alert": {
+        "title": "Alarmearje"
+    },
+    "confirm": {
+        "title": "Befêstigje",
+        "ok": "ja",
+        "cancel": "Nee"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Gean"
+    },
+    "tabs": {
+        "more": "mear",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Flater by it lêzen fan bestân",
+        "errorType": "Sorry, mar dit triemtype wurdt net stipe",
+        "cameraCommands": {
+            "prompt": "Wat soesto dwaan wolle?",
+            "photo": "Nim nije foto",
+            "library": "Selektearje út bibleteek"
+        },
+        "tooSmall": "Kies asjebleaft in gruttere ôfbylding.",
+        "cropping": {
+            "title": "Pas grutte en posysje oan",
+            "touchscreen": "Brûk jo fingers om te zoomjen en te slepen",
+            "notTouchscreen": "Brûk jo mûs en tsjil om te zoomjen en te slepen"
+        }
+    },
+    "timestamp": {
+        "lastNight": "justerjûn",
+        "lastEvening": "lêste jûn",
+        "yesterday": "juster",
+        "thisMorning": "fannemoarn",
+        "today": "hjoed",
+        "tonight": "fannacht",
+        "tomorrowMorning": "moarn moarn",
+        "tomorrow": "moarn",
+        "hoursAgo": "{{h}} oeren lyn",
+        "hourAgo": "{{h}} oere lyn",
+        "minuteAgo": "{{m}} minút lyn",
+        "minutesAgo": "{{m}} minuten lyn",
+        "secondAgo": "{{s}} sekonde lyn",
+        "secondsAgo": "{{s}} sekonden lyn",
+        "fewSecondsAgo": "sekonden lyn",
+        "rightNow": "fuortendaalks",
+        "inSecond": "yn {{s}} sekonde",
+        "inSeconds": "yn {{s}} sekonden",
+        "inMinute": "yn {{m}} minút",
+        "inMinutes": "yn {{m}} minuten",
+        "inHour": "yn {{h}} oere",
+        "inHours": "yn {{h}} oeren",
+        "inUnderMinute": "yn minder as 1 minút"
+    },
+    "browser": {
+        "insecureContext": "Jo moatte blêdzje yn in feilige kontekst om dit te wurkjen"
+    },
+    "scan": {
+        "QR": "Scan QR-koades"
+    },
+    "input": {
+        "Placeholder": "Begjin te typen..."
+    }
+}

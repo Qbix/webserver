@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "\u0130stek s\u0131ras\u0131nda hata {{status}}",
+		"canceled": "istek iptal edildi",
+		"500": "\u0130\u00e7 Sunucu Hatas\u0131",
+		"404": "Bulunamad\u0131: {{url}}",
+		"501": "istek kesintiye u\u011frad\u0131",
+		"401": "Yetkisiz",
+		"403": "Yasakl\u0131"
+	},
+	"nonce": {
+		"sameDomain": "Oturum s\u00fcresi doldu. Sayfay\u0131 yenileyin ve tekrar deneyin.",
+		"otherDomain": "Yabanc\u0131 etki alan\u0131ndan {{baseUrl}} engellenen \u00e7apraz etki alan\u0131 {{method}} iste\u011fi"
+	},
+	"words": {
+		"tap": "dokunmak",
+		"click": "T\u0131klay\u0131n",
+		"yes": "Evet",
+		"no": "Hay\u0131r",
+		"Tap": "Dokunmak",
+		"Click": "T\u0131klamak",
+		"Yes": "Evet",
+		"No": "Numara",
+		"OK": "TAMAM",
+		"Alert": "Uyar\u0131",
+		"Confirm": "Onayla",
+		"Prompt": "Metni Girin"
+	},
+	"months": {
+		"1": "Ocak ay\u0131",
+		"2": "\u015eubat",
+		"3": "Mart",
+		"4": "Nisan",
+		"5": "May\u0131s ay\u0131",
+		"6": "Haziran",
+		"7": "Temmuz",
+		"8": "A\u011fustos",
+		"9": "Eyl\u00fcl",
+		"10": "Ekim",
+		"11": "Kas\u0131m",
+		"12": "ARALIK AYI"
+	},
+	"durations": {
+		"second": "ikinci",
+		"seconds": "saniye",
+		"minute": "dakika",
+		"minutes": "dakika",
+		"hour": "saatler",
+		"day": "g\u00fcn",
+		"days": "g\u00fcnler",
+		"week": "hafta",
+		"weeks": "haftalar",
+		"month": "ay",
+		"months": "aylar",
+		"year": "y\u0131l",
+		"years": "y\u0131llar",
+		"decade": "on y\u0131l",
+		"decades": "onlarca y\u0131l",
+		"century": "Y\u00fczy\u0131l",
+		"centuries": "y\u00fczy\u0131llar"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "L\u00fctfen mikrofonunuza eri\u015fime izin verin",
+		"record": "Kay\u0131t",
+		"recording": "Kay\u0131t",
+		"remains": "kal\u0131nt\u0131lar",
+		"maximum": "maksimum",
+		"playing": "oynamak",
+		"recorded": "kaydedildi",
+		"clip": "klips",
+		"discard": "atmak",
+		"encoding": "kodlama"
+	},
+	"video": {
+		"clip": "klips",
+		"errorNoSource": "Video kayna\u011f\u0131 yok",
+		"SkipAfter": "sonra atla",
+		"Skip": "Atlamak"
+	},
+	"pdf": {
+		"clip": "klips",
+		"errorNoSource": "pdf kayna\u011f\u0131 yok"
+	},
+	"clip": {
+		"SetClipStart": "Klip Ba\u015flang\u0131c\u0131n\u0131 Ayarla",
+		"ClipStart": "Klip Ba\u015flang\u0131\u00e7",
+		"SetClipEnd": "Klip Sonunu Ayarla",
+		"ClipEnd": "Klip Sonu",
+		"StartMoreEnd": "Ba\u015flang\u0131\u00e7 konumu, biti\u015f konumundan fazla olamaz",
+		"EndLessStart": "Biti\u015f konumu, ba\u015flang\u0131\u00e7 konumundan daha az olamaz",
+		"WhichInvalid": "Arg\u00fcman &#39;hangisi&#39; ge\u00e7ersiz"
+	},
+	"alert": {
+		"title": "Fark etme"
+	},
+	"confirm": {
+		"title": "Teyit etmek",
+		"ok": "Evet",
+		"cancel": "Numara"
+	},
+	"prompt": {
+		"title": "Metni Girin",
+		"ok": "TAMAM"
+	},
+	"tabs": {
+		"more": "daha fazla",
+		"Menu": "Men\u00fc"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Dosya okunurken hata olu\u015ftu",
+		"errorType": "\u00dczg\u00fcn\u00fcz, ancak bu dosya t\u00fcr\u00fc desteklenmiyor",
+		"cameraCommands": {
+			"prompt": "Ne yapmak istersin?",
+			"photo": "Yeni foto\u011fraf \u00e7ek",
+			"library": "Kitapl\u0131ktan se\u00e7"
+		},
+		"tooSmall": "L\u00fctfen daha b\u00fcy\u00fck bir resim se\u00e7in.",
+		"cropping": {
+			"title": "Boyutu ve konumu ayarlay\u0131n",
+			"touchscreen": "Yak\u0131nla\u015ft\u0131rmak ve s\u00fcr\u00fcklemek i\u00e7in parmaklar\u0131n\u0131z\u0131 kullan\u0131n",
+			"notTouchscreen": "Yak\u0131nla\u015ft\u0131rmak ve s\u00fcr\u00fcklemek i\u00e7in farenizi ve tekerle\u011finizi kullan\u0131n"
+		}
+	},
+	"timestamp": {
+		"lastNight": "d\u00fcn gece",
+		"lastEvening": "son arife",
+		"yesterday": "d\u00fcn",
+		"thisMorning": "bu sabah",
+		"today": "bug\u00fcn",
+		"tonight": "Bu gece",
+		"tomorrowMorning": "sabah erken",
+		"tomorrow": "yar\u0131n",
+		"hoursAgo": "{{h}} saat \u00f6nce",
+		"hourAgo": "{{h}} saat \u00f6nce",
+		"minuteAgo": "{{m}} dakika \u00f6nce",
+		"minutesAgo": "{{m}} dakika \u00f6nce",
+		"secondAgo": "{{s}} saniye \u00f6nce",
+		"secondsAgo": "{{s}} saniye \u00f6nce",
+		"fewSecondsAgo": "saniyeler \u00f6nce",
+		"rightNow": "\u015fu anda",
+		"inSecond": "{{s}} saniye i\u00e7inde",
+		"inSeconds": "{{s}} saniye i\u00e7inde",
+		"inMinute": "{{m}} dakika i\u00e7inde",
+		"inMinutes": "{{m}} dakika i\u00e7inde",
+		"inHour": "{{h}} saat i\u00e7inde",
+		"inHours": "{{h}} saat i\u00e7inde",
+		"inUnderMinute": "1 dakikan\u0131n alt\u0131nda"
+	},
+	"browser": {
+		"insecureContext": "Bunun \u00e7al\u0131\u015fmas\u0131 i\u00e7in g\u00fcvenli bir ba\u011flamda g\u00f6z atman\u0131z gerekir"
+	},
+	"scan": {
+		"QR": "QR kodlar\u0131n\u0131 taray\u0131n"
+	},
+	"input": {
+		"Placeholder": "Yazmaya ba\u015flay\u0131n..."
+	}
+}

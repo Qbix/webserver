@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Fejl {{status}} under anmodning",
+		"canceled": "Anmodning annulleret",
+		"500": "Intern serverfejl",
+		"404": "Ikke fundet: {{url}}",
+		"501": "Anmodning afbrudt",
+		"401": "Uberettiget",
+		"403": "Forbudt"
+	},
+	"nonce": {
+		"sameDomain": "Sessionen er udl\u00f8bet. Opdater siden, og pr\u00f8v igen.",
+		"otherDomain": "Blokeret {{method}} -anmodning p\u00e5 tv\u00e6rs af dom\u00e6ner fra udenlandsk dom\u00e6ne ved {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tryk",
+		"click": "klik",
+		"yes": "Ja",
+		"no": "ingen",
+		"Tap": "R\u00f8re ved",
+		"Click": "Klik",
+		"Yes": "Ja",
+		"No": "Ingen",
+		"OK": "Okay",
+		"Alert": "Alert",
+		"Confirm": "Bekr\u00e6ftelse",
+		"Prompt": "Indtast tekst"
+	},
+	"months": {
+		"1": "januar",
+		"2": "februar",
+		"3": "marts",
+		"4": "April",
+		"5": "Kan",
+		"6": "juni",
+		"7": "juli",
+		"8": "august",
+		"9": "september",
+		"10": "oktober",
+		"11": "november",
+		"12": "december"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Tillad venligst adgang til din mikrofon",
+		"record": "Optage",
+		"recording": "Indspilning",
+		"remains": "forbliver",
+		"maximum": "maksimum",
+		"playing": "Spiller",
+		"recorded": "Optaget",
+		"clip": "klip",
+		"orupload": "Eller Upload",
+		"usethis": "Brug denne",
+		"discard": "Kass\u00e9r",
+		"encoding": "Indkodning"
+	},
+	"alert": {
+		"title": "Varsel"
+	},
+	"confirm": {
+		"title": "Bekr\u00e6fte",
+		"ok": "Ja",
+		"cancel": "Ingen"
+	},
+	"prompt": {
+		"title": "Indtast tekst",
+		"ok": "Okay"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Fejl ved l\u00e6sning af fil",
+		"cameraCommands": {
+			"prompt": "Hvad vil du gerne lave?",
+			"photo": "Tag nyt billede",
+			"library": "V\u00e6lg fra biblioteket"
+		},
+		"tooSmall": "V\u00e6lg venligst et st\u00f8rre billede.",
+		"cropping": {
+			"title": "Juster st\u00f8rrelse og position",
+			"touchscreen": "Brug fingrene til at zoome og tr\u00e6kke",
+			"notTouchscreen": "Brug musen og hjulet til at zoome og tr\u00e6kke"
+		},
+		"errorType": "Beklager, men denne filtype underst\u00f8ttes ikke"
+	},
+	"timestamp": {
+		"lastNight": "ig\u00e5raftes",
+		"lastEvening": "sidste aften",
+		"yesterday": "i g\u00e5r",
+		"thisMorning": "denne morgen",
+		"today": "i dag",
+		"tonight": "i aften",
+		"tomorrowMorning": "imorgen",
+		"tomorrow": "i morgen",
+		"hoursAgo": "{{h}} timer siden",
+		"hourAgo": "{{h}} time siden",
+		"minuteAgo": "{{m}} minut siden",
+		"minutesAgo": "for {{m}} minutter siden",
+		"secondAgo": "{{s}} sekund siden",
+		"secondsAgo": "{{s}} sekunder siden",
+		"fewSecondsAgo": "sekunder siden",
+		"rightNow": "lige nu",
+		"inSecond": "om {{s}} sekund",
+		"inSeconds": "om {{s}} sekunder",
+		"inMinute": "om {{m}} minut",
+		"inMinutes": "om {{m}} minutter",
+		"inHour": "om {{h}} time",
+		"inHours": "om {{h}} timer",
+		"inUnderMinute": "p\u00e5 under 1 minut"
+	},
+	"tabs": {
+		"more": "mere",
+		"Menu": "Menu"
+	},
+	"video": {
+		"clip": "klip",
+		"errorNoSource": "Ingen videokilde",
+		"SkipAfter": "Spring over efter",
+		"Skip": "Springe"
+	},
+	"pdf": {
+		"clip": "klip",
+		"errorNoSource": "Ingen pdf-kilde"
+	},
+	"clip": {
+		"SetClipStart": "Indstil klipstart",
+		"ClipStart": "Klip start",
+		"SetClipEnd": "Indstil Clip End",
+		"ClipEnd": "Clip End",
+		"StartMoreEnd": "Startposition kan ikke v\u00e6re mere end slutposition",
+		"EndLessStart": "Slutpositionen m\u00e5 ikke v\u00e6re mindre end startpositionen",
+		"WhichInvalid": "Argumentet &#39;hvilket&#39; er ugyldigt"
+	},
+	"durations": {
+		"second": "anden",
+		"seconds": "sekunder",
+		"minute": "minut",
+		"minutes": "minutter",
+		"hour": "timer",
+		"day": "dag",
+		"days": "dage",
+		"week": "uge",
+		"weeks": "uger",
+		"month": "m\u00e5ned",
+		"months": "m\u00e5neder",
+		"year": "\u00e5r",
+		"years": "flere \u00e5r",
+		"decade": "\u00e5rti",
+		"decades": "\u00e5rtier",
+		"century": "\u00e5rhundrede",
+		"centuries": "\u00e5rhundreder"
+	},
+	"browser": {
+		"insecureContext": "Du skal browse i en sikker kontekst, for at dette fungerer"
+	},
+	"scan": {
+		"QR": "Scan QR-koder"
+	},
+	"input": {
+		"Placeholder": "Begynd at skrive..."
+	}
+}

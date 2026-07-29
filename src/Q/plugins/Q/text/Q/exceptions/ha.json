@@ -1,0 +1,5 @@
+{
+    "MissingFile": "babban fayil {{filename}}",
+    "InvalidLanguage": "harshe mara inganci {{language}}",
+    "RequiredField": "{{field}} ake bukata"
+}

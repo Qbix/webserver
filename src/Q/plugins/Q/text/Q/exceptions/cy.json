@@ -1,0 +1,5 @@
+{
+	"MissingFile": "ffeil ar goll {{filename}}",
+	"InvalidLanguage": "iaith annilys {{language}}",
+	"RequiredField": "Mae angen {{field}}"
+}

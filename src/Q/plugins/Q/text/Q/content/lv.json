@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Piepras\u012bjuma laik\u0101 rad\u0101s k\u013c\u016bda {{status}}",
+		"canceled": "Piepras\u012bjums atcelts",
+		"500": "Iek\u0161\u0113j\u0101 servera k\u013c\u016bda",
+		"404": "Nav atrasts: {{url}}",
+		"501": "Piepras\u012bjums p\u0101rtraukts",
+		"401": "Nesankcion\u0113ti",
+		"403": "Aizliegts"
+	},
+	"nonce": {
+		"sameDomain": "Sesija ir beigusies. Atsvaidziniet lapu un m\u0113\u0123iniet v\u0113lreiz.",
+		"otherDomain": "Blo\u0137\u0113ts starpdom\u0113nu {{method}} piepras\u012bjums no sve\u0161a dom\u0113na pie {{baseUrl}}"
+	},
+	"words": {
+		"tap": "pieskarties",
+		"click": "klik\u0161\u0137is",
+		"yes": "J\u0101",
+		"no": "N\u0113",
+		"Tap": "Pieskarieties",
+		"Click": "Klik\u0161\u0137is",
+		"Yes": "J\u0101",
+		"No": "N\u0113",
+		"OK": "labi",
+		"Alert": "Br\u012bdin\u0101jums",
+		"Confirm": "Apstiprin\u0101jums",
+		"Prompt": "Ievadiet tekstu"
+	},
+	"months": {
+		"1": "janv\u0101r\u012b",
+		"2": "febru\u0101ris",
+		"3": "marts",
+		"4": "apr\u012blis",
+		"5": "maij\u0101",
+		"6": "j\u016bnijs",
+		"7": "j\u016blij\u0101",
+		"8": "augusts",
+		"9": "septembris",
+		"10": "oktobris",
+		"11": "novembris",
+		"12": "decembris"
+	},
+	"durations": {
+		"second": "otrais",
+		"seconds": "sekundes",
+		"minute": "min\u016bte",
+		"minutes": "min\u016btes",
+		"hour": "stundas",
+		"day": "diena",
+		"days": "dienas",
+		"week": "ned\u0113\u013ca",
+		"weeks": "ned\u0113\u013cas",
+		"month": "m\u0113nesis",
+		"months": "m\u0113ne\u0161us",
+		"year": "gad\u0101",
+		"years": "gadiem",
+		"decade": "desmitgade",
+		"decades": "gadu desmitiem",
+		"century": "gadsimt\u0101",
+		"centuries": "gadsimtiem"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "L\u016bdzu, at\u013caujiet piek\u013cuvi savam mikrofonam",
+		"record": "Ieraksts",
+		"recording": "Ierakst\u012b\u0161ana",
+		"remains": "paliek",
+		"maximum": "maksimums",
+		"playing": "Sp\u0113l\u0113",
+		"recorded": "Ierakst\u012bts",
+		"clip": "klips",
+		"discard": "Izmest",
+		"encoding": "Kod\u0113\u0161ana"
+	},
+	"video": {
+		"clip": "klips",
+		"errorNoSource": "Nav video avota",
+		"SkipAfter": "Izlaist p\u0113c",
+		"Skip": "Izlaist"
+	},
+	"pdf": {
+		"clip": "klips",
+		"errorNoSource": "Nav pdf avota"
+	},
+	"clip": {
+		"SetClipStart": "Iestat\u012bt Clip Start",
+		"ClipStart": "Klipa s\u0101kums",
+		"SetClipEnd": "Iestat\u012bt klipa beigas",
+		"ClipEnd": "Klipa beigas",
+		"StartMoreEnd": "S\u0101kuma poz\u012bcija nedr\u012bkst b\u016bt augst\u0101ka par beigu poz\u012bciju",
+		"EndLessStart": "Beigu poz\u012bcija nevar b\u016bt maz\u0101ka par s\u0101kuma poz\u012bciju",
+		"WhichInvalid": "Arguments &quot;kur\u0161&quot; nav der\u012bgs"
+	},
+	"alert": {
+		"title": "Pazi\u0146ojums"
+	},
+	"confirm": {
+		"title": "Apstiprin\u0101t",
+		"ok": "J\u0101",
+		"cancel": "N\u0113"
+	},
+	"prompt": {
+		"title": "Ievadiet tekstu",
+		"ok": "labi"
+	},
+	"tabs": {
+		"more": "vair\u0101k",
+		"Menu": "Izv\u0113lne"
+	},
+	"imagepicker": {
+		"errorReadingFile": "K\u013c\u016bda, lasot failu",
+		"errorType": "Atvainojiet, bet \u0161is faila veids netiek atbalst\u012bts",
+		"cameraCommands": {
+			"prompt": "Ko tu grib\u0113tu dar\u012bt?",
+			"photo": "Uz\u0146emiet jaunu fotoatt\u0113lu",
+			"library": "Izv\u0113lieties no bibliot\u0113kas"
+		},
+		"tooSmall": "L\u016bdzu, izv\u0113lieties liel\u0101ku att\u0113lu.",
+		"cropping": {
+			"title": "Piel\u0101gojiet izm\u0113ru un poz\u012bciju",
+			"touchscreen": "Izmantojiet pirkstus, lai tuvin\u0101tu un vilktu",
+			"notTouchscreen": "Izmantojiet peli un riten\u012bti, lai tuvin\u0101tu un vilktu"
+		}
+	},
+	"timestamp": {
+		"lastNight": "pag\u0101ju\u0161o nakti",
+		"lastEvening": "pag\u0101ju\u0161aj\u0101 vakar\u0101",
+		"yesterday": "vakar",
+		"thisMorning": "\u0161or\u012bt",
+		"today": "\u0161odien",
+		"tonight": "\u0161ovakar",
+		"tomorrowMorning": "r\u012bt",
+		"tomorrow": "r\u012bt",
+		"hoursAgo": "pirms {{h}}\u00a0stund\u0101m",
+		"hourAgo": "pirms {{h}}\u00a0stundas",
+		"minuteAgo": "pirms {{m}}\u00a0min\u016btes",
+		"minutesAgo": "pirms {{m}}\u00a0min\u016bt\u0113m",
+		"secondAgo": "pirms {{s}} sekundes",
+		"secondsAgo": "pirms {{s}} sekund\u0113m",
+		"fewSecondsAgo": "pirms sekund\u0113m",
+		"rightNow": "tie\u0161i tagad",
+		"inSecond": "{{s}}\u00a0sekund\u0113",
+		"inSeconds": "p\u0113c {{s}} sekund\u0113m",
+		"inMinute": "p\u0113c {{m}}\u00a0min\u016btes",
+		"inMinutes": "p\u0113c {{m}}\u00a0min\u016bt\u0113m",
+		"inHour": "{{h}} stund\u0101",
+		"inHours": "p\u0113c {{h}} stund\u0101m",
+		"inUnderMinute": "maz\u0101k nek\u0101 1\u00a0min\u016bt\u0113"
+	},
+	"browser": {
+		"insecureContext": "Lai tas darbotos, jums ir j\u0101veic p\u0101rl\u016bko\u0161ana dro\u0161\u0101 kontekst\u0101"
+	},
+	"scan": {
+		"QR": "Sken\u0113jiet QR kodus"
+	},
+	"input": {
+		"Placeholder": "S\u0101ciet rakst\u012bt..."
+	}
+}

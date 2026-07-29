@@ -1,0 +1,5 @@
+{
+    "MissingFile": "tsis muaj ntaub ntawv {{filename}}",
+    "InvalidLanguage": "lus {{language}}",
+    "RequiredField": "{{field}} yog yuav tsum tau"
+}

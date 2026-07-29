@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Kesalahan {{status}} nalika njaluk",
+        "canceled": "Panjaluk dibatalake",
+        "500": "kesalahan server internal",
+        "404": "Ora ditemokake: {{url}}",
+        "501": "Panjaluk diselani",
+        "401": "ora sah",
+        "403": "Dilarang"
+    },
+    "nonce": {
+        "sameDomain": "Sesi kadaluwarsa. Refresh kaca lan coba maneh.",
+        "otherDomain": "Panjaluk lintas domain sing diblokir menyang domain manca ing {{baseUrl}}"
+    },
+    "words": {
+        "tap": "ketok",
+        "click": "klik",
+        "yes": "ya wis",
+        "no": "ora",
+        "Tap": "Tutul",
+        "Click": "Klik",
+        "Yes": "ya wis",
+        "No": "Ora",
+        "OK": "OK",
+        "Alert": "Tandha",
+        "Confirm": "Konfirmasi",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Januari",
+        "2": "Februari",
+        "3": "Maret",
+        "4": "April",
+        "5": "Mei",
+        "6": "Juni",
+        "7": "Juli",
+        "8": "Agustus",
+        "9": "September",
+        "10": "Oktober",
+        "11": "November",
+        "12": "Desember"
+    },
+    "durations": {
+        "second": "kapindho",
+        "seconds": "detik",
+        "minute": "menit",
+        "minutes": "menit",
+        "hour": "jam",
+        "day": "dina",
+        "days": "dina",
+        "week": "minggu",
+        "weeks": "minggu",
+        "month": "wulan",
+        "months": "wulan",
+        "year": "taun",
+        "years": "taun",
+        "decade": "dasawarsa",
+        "decades": "puluhan taun",
+        "century": "abad",
+        "centuries": "abad"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Mangga ngidini akses menyang mikropon sampeyan",
+        "record": "Rekam",
+        "recording": "Rekaman",
+        "remains": "tetep",
+        "maximum": "maksimal",
+        "playing": "dolanan",
+        "recorded": "Direkam",
+        "clip": "klip",
+        "discard": "Mbuwang",
+        "encoding": "Enkoding"
+    },
+    "video": {
+        "clip": "klip",
+        "errorNoSource": "Ora ana sumber video",
+        "SkipAfter": "Skip sawise",
+        "Skip": "Skip"
+    },
+    "pdf": {
+        "clip": "klip",
+        "errorNoSource": "Ora sumber pdf"
+    },
+    "clip": {
+        "SetClipStart": "Setel Clip Start",
+        "ClipStart": "Klip Mulai",
+        "SetClipEnd": "Setel Clip End",
+        "ClipEnd": "Klip Pungkasan",
+        "StartMoreEnd": "Posisi wiwitan ora bisa luwih saka posisi pungkasan",
+        "EndLessStart": "Posisi pungkasan ora bisa kurang saka posisi wiwitan",
+        "WhichInvalid": "Argumen &#39;kang&#39; ora sah"
+    },
+    "alert": {
+        "title": "Tandha"
+    },
+    "confirm": {
+        "title": "Konfirmasi",
+        "ok": "ya wis",
+        "cancel": "Ora"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "lunga"
+    },
+    "tabs": {
+        "more": "liyane",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Kesalahan maca file",
+        "errorType": "Nuwun sewu, nanging jinis file iki ora didhukung",
+        "cameraCommands": {
+            "prompt": "Apa sing arep sampeyan lakoni?",
+            "photo": "Njupuk foto anyar",
+            "library": "Pilih saka perpustakaan"
+        },
+        "tooSmall": "Mangga pilih gambar sing luwih gedhe.",
+        "cropping": {
+            "title": "Nyetel ukuran lan posisi",
+            "touchscreen": "Gunakake driji kanggo nggedhekake lan nyeret",
+            "notTouchscreen": "Gunakake mouse &amp; wheel kanggo nggedhekake lan seret"
+        }
+    },
+    "timestamp": {
+        "lastNight": "wingi bengi",
+        "lastEvening": "wengi pungkasan",
+        "yesterday": "wingi",
+        "thisMorning": "esuk iki",
+        "today": "dina iki",
+        "tonight": "bengi iki",
+        "tomorrowMorning": "esuk esuk",
+        "tomorrow": "sesuk",
+        "hoursAgo": "{{h}} jam kepungkur",
+        "hourAgo": "{{h}} jam kepungkur",
+        "minuteAgo": "{{m}} menit kepungkur",
+        "minutesAgo": "{{m}} menit kepungkur",
+        "secondAgo": "{{s}} detik kepungkur",
+        "secondsAgo": "{{s}} detik kepungkur",
+        "fewSecondsAgo": "detik kepungkur",
+        "rightNow": "sapunika",
+        "inSecond": "ing {{s}} detik",
+        "inSeconds": "ing {{s}} detik",
+        "inMinute": "ing {{m}} menit",
+        "inMinutes": "ing {{m}} menit",
+        "inHour": "ing {{h}} jam",
+        "inHours": "ing {{h}} jam",
+        "inUnderMinute": "ing ngisor 1 menit"
+    },
+    "browser": {
+        "insecureContext": "Sampeyan kudu browsing ing konteks aman kanggo iki bisa"
+    },
+    "scan": {
+        "QR": "Pindai kode QR"
+    },
+    "input": {
+        "Placeholder": "Mulai ngetik..."
+    }
+}

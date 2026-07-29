@@ -1,0 +1,122 @@
+{
+    "request": {
+        "error": "Feil {{status}} under forespørsel",
+        "canceled": "Forespørsel avbrutt",
+        "500": "Intern server feil",
+        "404": "Ikke funnet: {{url}}",
+        "501": "Forespørsel avbrutt"
+    },
+    "nonce": {
+        "sameDomain": "Sesjon utløpt. Oppdater siden og prøv igjen.",
+        "otherDomain": "Blokkert kryssdomener forespørsel til utenlandsk domene på {{baseUrl}}"
+    },
+    "words": {
+        "tap": "springen",
+        "click": "klikk",
+        "yes": "ja",
+        "no": "Nei",
+        "Tap": "Tap",
+        "Click": "Klikk",
+        "Yes": "Ja",
+        "No": "Nei"
+    },
+    "months": {
+        "1": "januar",
+        "2": "februar",
+        "3": "mars",
+        "4": "april",
+        "5": "Kan",
+        "6": "juni",
+        "7": "juli",
+        "8": "august",
+        "9": "september",
+        "10": "oktober",
+        "11": "november",
+        "12": "desember"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Vennligst gi tilgang til mikrofonen din",
+        "record": "Ta opp",
+        "recording": "Innspilling",
+        "remains": "rester",
+        "maximum": "maksimum",
+        "playing": "spille",
+        "recorded": "Innspilt",
+        "clip": "klemme",
+        "orupload": "Eller last opp",
+        "usethis": "Bruk denne",
+        "discard": "kast",
+        "encoding": "koding"
+    },
+    "alert": {
+        "title": "Varsling"
+    },
+    "confirm": {
+        "title": "Bekrefte",
+        "ok": "Ja",
+        "cancel": "Nei"
+    },
+    "prompt": {
+        "title": "prompt",
+        "ok": "Gå"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Feil ved å lese filen",
+        "cameraCommands": {
+            "prompt": "Hva har du lyst til å gjøre?",
+            "photo": "Ta nytt bilde",
+            "library": "Velg fra bibliotek"
+        },
+        "tooSmall": "Vennligst velg et større bilde.",
+        "cropping": {
+            "title": "Juster størrelse og posisjon",
+            "touchscreen": "Bruk fingrene til å zoome og dra",
+            "notTouchscreen": "Bruk musen og hjulet til å zoome og dra"
+        }
+    },
+    "timestamp": {
+        "lastNight": "i går kveld",
+        "lastEvening": "siste kvelden",
+        "yesterday": "i går",
+        "thisMorning": "denne mornen",
+        "today": "i dag",
+        "tonight": "i kveld",
+        "tomorrowMorning": "Tom morn",
+        "tomorrow": "i morgen",
+        "hoursAgo": "For {{h}} timer siden",
+        "hourAgo": "For {{h}} time siden",
+        "minuteAgo": "For {{m}} minutt siden",
+        "minutesAgo": "{{m}} minutter siden",
+        "secondAgo": "For {{s}} sekund siden",
+        "secondsAgo": "For {{s}} sekunder siden",
+        "fewSecondsAgo": "sekunder siden",
+        "rightNow": "akkurat nå",
+        "inSecond": "om {{s}} sekund",
+        "inSeconds": "om {{s}} sekunder",
+        "inMinute": "om {{m}} minutt",
+        "inMinutes": "om {{m}} minutter",
+        "inHour": "om {{h}} time",
+        "inHours": "om {{h}} timer",
+        "inUnderMinute": "på under 1 minutt"
+    },
+    "tabs": {
+        "more": "mer",
+        "Menu": "Meny"
+    },
+    "video": {
+        "clip": "klipp",
+        "errorNoSource": "Ingen videokilde",
+        "SkipAfter": "Hopp etter",
+        "Skip": "Hopp over"
+    },
+    "pdf": {
+        "clip": "klipp",
+        "errorNoSource": "Ingen pdf-kilde"
+    },
+    "clip": {
+        "SetClipStart": "Sett Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Sett Clip End",
+        "ClipEnd": "Clip End"
+    }
+}

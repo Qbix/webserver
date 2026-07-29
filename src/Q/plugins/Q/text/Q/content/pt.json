@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Erro {{status}} durante a solicita\u00e7\u00e3o",
+		"canceled": "Solicita\u00e7\u00e3o cancelada",
+		"500": "Erro do Servidor Interno",
+		"404": "N\u00e3o encontrado: {{url}}",
+		"501": "Solicita\u00e7\u00e3o interrompida",
+		"401": "N\u00e3o autorizado",
+		"403": "Proibido"
+	},
+	"nonce": {
+		"sameDomain": "Sess\u00e3o expirada. Atualize a p\u00e1gina e tente novamente.",
+		"otherDomain": "Solicita\u00e7\u00e3o entre dom\u00ednios bloqueada (c\u00f3digo {{method}} proveniente de um dom\u00ednio estrangeiro na porta {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tocar",
+		"click": "clique",
+		"yes": "sim",
+		"no": "n\u00e3o",
+		"Tap": "Tocar",
+		"Click": "Clique",
+		"Yes": "sim",
+		"No": "N\u00e3o",
+		"OK": "OK",
+		"Alert": "Alerta",
+		"Confirm": "Confirma\u00e7\u00e3o",
+		"Prompt": "Digite o texto"
+	},
+	"months": {
+		"1": "Janeiro",
+		"2": "fevereiro",
+		"3": "marchar",
+		"4": "abril",
+		"5": "Poderia",
+		"6": "junho",
+		"7": "Julho",
+		"8": "agosto",
+		"9": "setembro",
+		"10": "Outubro",
+		"11": "novembro",
+		"12": "dezembro"
+	},
+	"durations": {
+		"second": "segundo",
+		"seconds": "segundos",
+		"minute": "minuto",
+		"minutes": "minutos",
+		"hour": "horas",
+		"day": "dia",
+		"days": "dias",
+		"week": "semana",
+		"weeks": "semanas",
+		"month": "m\u00eas",
+		"months": "meses",
+		"year": "ano",
+		"years": "anos",
+		"decade": "d\u00e9cada",
+		"decades": "d\u00e9cadas",
+		"century": "s\u00e9culo",
+		"centuries": "s\u00e9culos"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Por favor, permita o acesso ao seu microfone",
+		"record": "Registro",
+		"recording": "Grava\u00e7\u00e3o",
+		"remains": "restos",
+		"maximum": "m\u00e1ximo",
+		"playing": "Jogando",
+		"recorded": "Gravado",
+		"clip": "grampo",
+		"discard": "Descartar",
+		"encoding": "Codifica\u00e7\u00e3o"
+	},
+	"video": {
+		"clip": "grampo",
+		"errorNoSource": "Nenhuma fonte de v\u00eddeo",
+		"SkipAfter": "Pular depois",
+		"Skip": "Pular"
+	},
+	"pdf": {
+		"clip": "grampo",
+		"errorNoSource": "Sem fonte pdf"
+	},
+	"clip": {
+		"SetClipStart": "Definir in\u00edcio do clipe",
+		"ClipStart": "In\u00edcio do clipe",
+		"SetClipEnd": "Definir fim do clipe",
+		"ClipEnd": "Fim do clipe",
+		"StartMoreEnd": "A posi\u00e7\u00e3o inicial n\u00e3o pode ser maior que a posi\u00e7\u00e3o final",
+		"EndLessStart": "A posi\u00e7\u00e3o final n\u00e3o pode ser menor que a posi\u00e7\u00e3o inicial",
+		"WhichInvalid": "Argumento &#39;qual&#39; inv\u00e1lido"
+	},
+	"alert": {
+		"title": "Perceber"
+	},
+	"confirm": {
+		"title": "confirme",
+		"ok": "sim",
+		"cancel": "N\u00e3o"
+	},
+	"prompt": {
+		"title": "Digite o texto",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "mais",
+		"Menu": "Card\u00e1pio"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Erro ao ler o arquivo",
+		"errorType": "Desculpe, mas este tipo de arquivo n\u00e3o \u00e9 suportado",
+		"cameraCommands": {
+			"prompt": "O que voc\u00ea gostaria de fazer?",
+			"photo": "Tirar nova foto",
+			"library": "Selecionar da biblioteca"
+		},
+		"tooSmall": "Por favor, escolha uma imagem maior.",
+		"cropping": {
+			"title": "Ajuste o tamanho e a posi\u00e7\u00e3o",
+			"touchscreen": "Use os dedos para ampliar e arrastar",
+			"notTouchscreen": "Use o mouse e a roda para ampliar e arrastar"
+		}
+	},
+	"timestamp": {
+		"lastNight": "noite passada",
+		"lastEvening": "\u00faltima v\u00e9spera",
+		"yesterday": "ontem",
+		"thisMorning": "esta manh\u00e3",
+		"today": "hoje",
+		"tonight": "esta noite",
+		"tomorrowMorning": "tom de manh\u00e3",
+		"tomorrow": "amanh\u00e3",
+		"hoursAgo": "{{h}} horas atr\u00e1s",
+		"hourAgo": "{{h}} hora atr\u00e1s",
+		"minuteAgo": "{{m}} minuto atr\u00e1s",
+		"minutesAgo": "{{m}} minutos atr\u00e1s",
+		"secondAgo": "{{s}} segundo atr\u00e1s",
+		"secondsAgo": "{{s}} segundos atr\u00e1s",
+		"fewSecondsAgo": "segundos atr\u00e1s",
+		"rightNow": "agora mesmo",
+		"inSecond": "em {{s}} segundo",
+		"inSeconds": "em {{s}} segundos",
+		"inMinute": "em {{m}} minuto",
+		"inMinutes": "em {{m}} minutos",
+		"inHour": "em {{h}} hora",
+		"inHours": "em {{h}} horas",
+		"inUnderMinute": "em menos de 1 minuto"
+	},
+	"browser": {
+		"insecureContext": "Voc\u00ea precisa navegar em um contexto seguro para que isso funcione"
+	},
+	"scan": {
+		"QR": "Escanear c\u00f3digos QR"
+	},
+	"input": {
+		"Placeholder": "Come\u00e7e a digitar..."
+	}
+}

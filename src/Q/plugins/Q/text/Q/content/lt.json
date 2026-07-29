@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Klaida {{status}} teikiant u\u017eklaus\u0105",
+		"canceled": "U\u017eklausa at\u0161aukta",
+		"500": "Vidin\u0117 serverio klaida",
+		"404": "Nerasta: {{url}}",
+		"501": "Pra\u0161ymas nutrauktas",
+		"401": "Neleistina",
+		"403": "Draud\u017eiama"
+	},
+	"nonce": {
+		"sameDomain": "Sesija pasibaig\u0117. Atnaujinkite puslap\u012f ir bandykite dar kart\u0105.",
+		"otherDomain": "U\u017eblokuota tarpdomen\u0173 {{method}} u\u017eklausa i\u0161 svetimo domeno ties {{baseUrl}}"
+	},
+	"words": {
+		"tap": "bakstel\u0117kite",
+		"click": "spustel\u0117kite",
+		"yes": "taip",
+		"no": "ne",
+		"Tap": "Palieskite",
+		"Click": "Spustel\u0117kite",
+		"Yes": "Taip",
+		"No": "Nr",
+		"OK": "Gerai",
+		"Alert": "Budrus",
+		"Confirm": "Patvirtinimas",
+		"Prompt": "\u012eveskite tekst\u0105"
+	},
+	"months": {
+		"1": "sausio m\u0117n",
+		"2": "vasario m\u0117n",
+		"3": "Kovas",
+		"4": "Balandis",
+		"5": "Gegu\u017e\u0117",
+		"6": "bir\u017eelio m\u0117n",
+		"7": "liepos m\u0117n",
+		"8": "Rugpj\u016btis",
+		"9": "rugs\u0117jis",
+		"10": "Spalio m\u0117n",
+		"11": "lapkritis",
+		"12": "gruod\u012f"
+	},
+	"durations": {
+		"second": "antra",
+		"seconds": "sekund\u017ei\u0173",
+		"minute": "minut\u0117",
+		"minutes": "minu\u010di\u0173",
+		"hour": "valand\u0173",
+		"day": "dien\u0105",
+		"days": "dien\u0173",
+		"week": "savait\u0119",
+		"weeks": "savaites",
+		"month": "m\u0117nuo",
+		"months": "m\u0117nesi\u0173",
+		"year": "met\u0173",
+		"years": "met\u0173",
+		"decade": "de\u0161imtmetis",
+		"decades": "de\u0161imtme\u010dius",
+		"century": "am\u017eiaus",
+		"centuries": "\u0161imtme\u010dius"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Leiskite pasiekti mikrofon\u0105",
+		"record": "\u012era\u0161as",
+		"recording": "\u012era\u0161ymas",
+		"remains": "lieka",
+		"maximum": "maksimalus",
+		"playing": "\u017daid\u017eia",
+		"recorded": "\u012era\u0161yta",
+		"clip": "klipas",
+		"discard": "I\u0161mesti",
+		"encoding": "Kodavimas"
+	},
+	"video": {
+		"clip": "klipas",
+		"errorNoSource": "N\u0117ra vaizdo \u0161altinio",
+		"SkipAfter": "Praleisti po",
+		"Skip": "Praleisti"
+	},
+	"pdf": {
+		"clip": "klipas",
+		"errorNoSource": "N\u0117ra pdf \u0161altinio"
+	},
+	"clip": {
+		"SetClipStart": "Nustatyti Clip Start",
+		"ClipStart": "Klipo prad\u017eia",
+		"SetClipEnd": "Nustatyti klipo pabaig\u0105",
+		"ClipEnd": "Klipo pabaiga",
+		"StartMoreEnd": "Pradin\u0117 pad\u0117tis negali b\u016bti didesn\u0117 u\u017e galutin\u0119 pad\u0117t\u012f",
+		"EndLessStart": "Galutin\u0117 pad\u0117tis negali b\u016bti ma\u017eesn\u0117 u\u017e pradin\u0119 pad\u0117t\u012f",
+		"WhichInvalid": "Argumentas \u201ekuris\u201c negalioja"
+	},
+	"alert": {
+		"title": "Pasteb\u0117ti"
+	},
+	"confirm": {
+		"title": "Patvirtinti",
+		"ok": "Taip",
+		"cancel": "Nr"
+	},
+	"prompt": {
+		"title": "\u012eveskite tekst\u0105",
+		"ok": "Gerai"
+	},
+	"tabs": {
+		"more": "daugiau",
+		"Menu": "Meniu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Klaida skaitant fail\u0105",
+		"errorType": "Atsipra\u0161ome, bet \u0161is failo tipas nepalaikomas",
+		"cameraCommands": {
+			"prompt": "K\u0105 tu nor\u0117tum veikti?",
+			"photo": "Padaryti nauj\u0105 nuotrauk\u0105",
+			"library": "Pasirinkite i\u0161 bibliotekos"
+		},
+		"tooSmall": "Pasirinkite didesn\u012f vaizd\u0105.",
+		"cropping": {
+			"title": "Sureguliuokite dyd\u012f ir pad\u0117t\u012f",
+			"touchscreen": "Pir\u0161tais priartinkite ir vilkite",
+			"notTouchscreen": "Naudokite pel\u0119 ir ratuk\u0105, kad padidintum\u0117te mastel\u012f ir vilkite"
+		}
+	},
+	"timestamp": {
+		"lastNight": "praeita naktis",
+		"lastEvening": "pra\u0117jusi\u0105 i\u0161vakar\u0119",
+		"yesterday": "vakar",
+		"thisMorning": "\u0161\u012f ryt\u0105",
+		"today": "\u0161iandien",
+		"tonight": "\u0161\u012f vakar\u0105",
+		"tomorrowMorning": "tomas rytas",
+		"tomorrow": "rytoj",
+		"hoursAgo": "Prie\u0161 {{h}} val",
+		"hourAgo": "Prie\u0161 {{h}} valand\u0105",
+		"minuteAgo": "Prie\u0161 {{m}} minut\u0119",
+		"minutesAgo": "Prie\u0161 {{m}} min",
+		"secondAgo": "Prie\u0161 {{s}} sekund\u0119",
+		"secondsAgo": "prie\u0161 {{s}} sek",
+		"fewSecondsAgo": "prie\u0161 sekundes",
+		"rightNow": "dabar",
+		"inSecond": "per {{s}} sekund\u0119",
+		"inSeconds": "per {{s}} sek",
+		"inMinute": "per {{m}} minut\u0119",
+		"inMinutes": "per {{m}} min",
+		"inHour": "per {{h}} val",
+		"inHours": "per {{h}} val",
+		"inUnderMinute": "ma\u017eiau nei per 1 minut\u0119"
+	},
+	"browser": {
+		"insecureContext": "Kad tai veikt\u0173, turite nar\u0161yti saugiame kontekste"
+	},
+	"scan": {
+		"QR": "Nuskaitykite QR kodus"
+	},
+	"input": {
+		"Placeholder": "Prad\u0117ti ra\u0161yti..."
+	}
+}

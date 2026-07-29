@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Ralat {{status}} semasa permintaan",
+		"canceled": "Permintaan dibatalkan",
+		"500": "Ralat pelayan dalaman",
+		"404": "Tidak ditemui: {{url}}",
+		"501": "Permintaan terganggu",
+		"401": "tanpa kebenaran",
+		"403": "Dilarang"
+	},
+	"nonce": {
+		"sameDomain": "Sesi tamat tempoh. Muat semula halaman dan cuba lagi.",
+		"otherDomain": "Permintaan merentas domain {{method}} yang disekat daripada domain asing pada {{baseUrl}}"
+	},
+	"words": {
+		"tap": "sentuh",
+		"click": "klik",
+		"yes": "ya",
+		"no": "tidak",
+		"Tap": "Sentuh",
+		"Click": "klik",
+		"Yes": "ya",
+		"No": "Tidak",
+		"OK": "okey",
+		"Alert": "Amaran",
+		"Confirm": "Pengesahan",
+		"Prompt": "Masukkan Teks"
+	},
+	"months": {
+		"1": "Januari",
+		"2": "Februari",
+		"3": "Mac",
+		"4": "April",
+		"5": "Mungkin",
+		"6": "Jun",
+		"7": "Julai",
+		"8": "Ogos",
+		"9": "September",
+		"10": "Oktober",
+		"11": "November",
+		"12": "Disember"
+	},
+	"durations": {
+		"second": "kedua",
+		"seconds": "detik",
+		"minute": "minit",
+		"minutes": "minit",
+		"hour": "Jam",
+		"day": "hari",
+		"days": "hari",
+		"week": "minggu",
+		"weeks": "minggu",
+		"month": "bulan",
+		"months": "bulan",
+		"year": "tahun",
+		"years": "tahun",
+		"decade": "dekad",
+		"decades": "berdekad-dekad",
+		"century": "abad",
+		"centuries": "berabad-abad"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Sila benarkan akses kepada mikrofon anda",
+		"record": "Rekod",
+		"recording": "Rakaman",
+		"remains": "tinggal",
+		"maximum": "maksimum",
+		"playing": "bermain",
+		"recorded": "Dirakam",
+		"clip": "klip",
+		"discard": "Buang",
+		"encoding": "Pengekodan"
+	},
+	"video": {
+		"clip": "klip",
+		"errorNoSource": "Tiada sumber video",
+		"SkipAfter": "Langkau selepas",
+		"Skip": "Langkau"
+	},
+	"pdf": {
+		"clip": "klip",
+		"errorNoSource": "Tiada sumber pdf"
+	},
+	"clip": {
+		"SetClipStart": "Tetapkan Mula Klip",
+		"ClipStart": "Mula Klip",
+		"SetClipEnd": "Tetapkan Klip Tamat",
+		"ClipEnd": "Klip Tamat",
+		"StartMoreEnd": "Kedudukan mula tidak boleh lebih daripada kedudukan akhir",
+		"EndLessStart": "Kedudukan tamat tidak boleh kurang daripada kedudukan mula",
+		"WhichInvalid": "Hujah &#39;yang&#39; tidak sah"
+	},
+	"alert": {
+		"title": "Notis"
+	},
+	"confirm": {
+		"title": "sahkan",
+		"ok": "ya",
+		"cancel": "Tidak"
+	},
+	"prompt": {
+		"title": "Masukkan Teks",
+		"ok": "okey"
+	},
+	"tabs": {
+		"more": "lebih",
+		"Menu": "Menu"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Ralat membaca fail",
+		"errorType": "Maaf, tetapi jenis fail ini tidak disokong",
+		"cameraCommands": {
+			"prompt": "Apa yang anda ingin lakukan?",
+			"photo": "Ambil foto baharu",
+			"library": "Pilih daripada perpustakaan"
+		},
+		"tooSmall": "Sila pilih imej yang lebih besar.",
+		"cropping": {
+			"title": "Laraskan saiz dan kedudukan",
+			"touchscreen": "Gunakan jari anda untuk mengezum dan menyeret",
+			"notTouchscreen": "Gunakan tetikus &amp; roda anda untuk mengezum dan menyeret"
+		}
+	},
+	"timestamp": {
+		"lastNight": "malam semalam",
+		"lastEvening": "malam lepas",
+		"yesterday": "semalam",
+		"thisMorning": "pagi ini",
+		"today": "hari ini",
+		"tonight": "malam ini",
+		"tomorrowMorning": "pagi esok",
+		"tomorrow": "esok",
+		"hoursAgo": "{{h}} jam yang lalu",
+		"hourAgo": "{{h}} jam yang lalu",
+		"minuteAgo": "{{m}} minit yang lalu",
+		"minutesAgo": "{{m}} minit yang lalu",
+		"secondAgo": "{{s}} saat yang lalu",
+		"secondsAgo": "{{s}} saat yang lalu",
+		"fewSecondsAgo": "beberapa saat lalu",
+		"rightNow": "sekarang",
+		"inSecond": "dalam {{s}} saat",
+		"inSeconds": "dalam {{s}} saat",
+		"inMinute": "dalam {{m}} minit",
+		"inMinutes": "dalam {{m}} minit",
+		"inHour": "dalam {{h}} jam",
+		"inHours": "dalam {{h}} jam",
+		"inUnderMinute": "dalam masa kurang 1 minit"
+	},
+	"browser": {
+		"insecureContext": "Anda perlu menyemak imbas dalam konteks yang selamat untuk ini berfungsi"
+	},
+	"scan": {
+		"QR": "Imbas kod QR"
+	},
+	"input": {
+		"Placeholder": "Mula menaip..."
+	}
+}

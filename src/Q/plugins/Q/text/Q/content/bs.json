@@ -1,0 +1,160 @@
+{
+    "request": {
+        "error": "Greška {{status}} tokom zahtjeva",
+        "canceled": "Zahtjev je otkazan",
+        "500": "Interna greška servera",
+        "404": "Nije pronađeno: {{url}}",
+        "501": "Zahtjev je prekinut",
+        "401": "Neovlašteno",
+        "403": "Zabranjeno"
+    },
+    "nonce": {
+        "sameDomain": "Sesija je istekla. Osvježite stranicu i pokušajte ponovo.",
+        "otherDomain": "Blokiran zahtjev za više domena za stranu domenu na {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "kliknite",
+        "yes": "da",
+        "no": "br",
+        "Tap": "Dodirnite",
+        "Click": "Kliknite",
+        "Yes": "Da",
+        "No": "br",
+        "OK": "OK",
+        "Alert": "Alert",
+        "Confirm": "Potvrdi",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Januar",
+        "2": "februar",
+        "3": "mart",
+        "4": "april",
+        "5": "maja",
+        "6": "juna",
+        "7": "jula",
+        "8": "avgust",
+        "9": "septembra",
+        "10": "oktobar",
+        "11": "novembar",
+        "12": "decembar"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Dozvolite pristup vašem mikrofonu",
+        "record": "Zapis",
+        "recording": "Snimanje",
+        "remains": "ostaci",
+        "maximum": "maksimum",
+        "playing": "Igranje",
+        "recorded": "Snimljeno",
+        "clip": "isječak",
+        "orupload": "Ili otpremi",
+        "usethis": "Koristi ovo",
+        "discard": "Odbaci",
+        "encoding": "Kodiranje"
+    },
+    "alert": {
+        "title": "Alert"
+    },
+    "confirm": {
+        "title": "Potvrdi",
+        "ok": "Da",
+        "cancel": "br"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Idi"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Greška pri čitanju datoteke",
+        "cameraCommands": {
+            "prompt": "šta biste željeli raditi?",
+            "photo": "Snimite novu fotografiju",
+            "library": "Odaberite iz biblioteke"
+        },
+        "tooSmall": "Molimo odaberite veću sliku.",
+        "cropping": {
+            "title": "Podesite veličinu i položaj",
+            "touchscreen": "Koristite prste za zumiranje i prevlačenje",
+            "notTouchscreen": "Koristite miš i kotačić za zumiranje i prevlačenje"
+        },
+        "errorType": "Žao nam je, ali ova vrsta datoteke nije podržana"
+    },
+    "timestamp": {
+        "lastNight": "prošle noći",
+        "lastEvening": "poslednje veče",
+        "yesterday": "juče",
+        "thisMorning": "jutros",
+        "today": "danas",
+        "tonight": "večeras",
+        "tomorrowMorning": "tom jutro",
+        "tomorrow": "sutra",
+        "hoursAgo": "{{h}} sati",
+        "hourAgo": "{{h}} prije sat",
+        "minuteAgo": "{{m}} minuta prije",
+        "minutesAgo": "{{m}} minuta prije",
+        "secondAgo": "{{s}} prije sekunde",
+        "secondsAgo": "{{s}} sekundi",
+        "fewSecondsAgo": "prije nekoliko sekundi",
+        "rightNow": "upravo sada",
+        "inSecond": "za {{s}} sekundu",
+        "inSeconds": "za {{s}} sekundi",
+        "inMinute": "za {{m}} minuta",
+        "inMinutes": "za {{m}} minuta",
+        "inHour": "za {{h}} sat",
+        "inHours": "za {{h}} sati",
+        "inUnderMinute": "za manje od 1 minute"
+    },
+    "video": {
+        "clip": "isječak",
+        "errorNoSource": "Nema video izvora",
+        "SkipAfter": "Skip after",
+        "Skip": "Skip"
+    },
+    "pdf": {
+        "clip": "isječak",
+        "errorNoSource": "Nema pdf izvora"
+    },
+    "clip": {
+        "SetClipStart": "Postavite Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Postavite Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Početna pozicija ne može biti više od krajnje pozicije",
+        "EndLessStart": "Krajnja pozicija ne može biti manja od početne pozicije",
+        "WhichInvalid": "Argument &#39;koji&#39; je nevažeći"
+    },
+    "tabs": {
+        "more": "više",
+        "Menu": "Meni"
+    },
+    "durations": {
+        "second": "sekunda",
+        "seconds": "sekundi",
+        "minute": "minuta",
+        "minutes": "minuta",
+        "hour": "sati",
+        "day": "dan",
+        "days": "dana",
+        "week": "sedmica",
+        "weeks": "sedmice",
+        "month": "mjesec",
+        "months": "mjeseci",
+        "year": "godine",
+        "years": "godine",
+        "decade": "decenija",
+        "decades": "decenijama",
+        "century": "veka",
+        "centuries": "stoljeća"
+    },
+    "browser": {
+        "insecureContext": "Morate pretraživati u sigurnom kontekstu da bi ovo funkcioniralo"
+    },
+    "scan": {
+        "QR": "Skenirajte QR kodove"
+    },
+    "input": {
+        "Placeholder": "Počnite kucati..."
+    }
+}

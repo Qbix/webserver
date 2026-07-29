@@ -1,0 +1,5 @@
+{
+    "MissingFile": "ورک شوی فایل {{filename}}",
+    "InvalidLanguage": "ناسمه ژبه {{language}}",
+    "RequiredField": "{{field}} ته اړتیا ده"
+}

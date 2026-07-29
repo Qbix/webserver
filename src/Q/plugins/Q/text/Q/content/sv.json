@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Fel {{status}} under beg\u00e4ran",
+		"canceled": "Beg\u00e4ran avbr\u00f6ts",
+		"500": "Internt serverfel",
+		"404": "Hittade inte: {{url}}",
+		"501": "Beg\u00e4ran avbr\u00f6ts",
+		"401": "Obeh\u00f6rig",
+		"403": "F\u00f6rbjuden"
+	},
+	"nonce": {
+		"sameDomain": "Sessionen l\u00f6pte. Uppdatera sidan och f\u00f6rs\u00f6k igen.",
+		"otherDomain": "Blockerad {{method}} -f\u00f6rfr\u00e5gan \u00f6ver flera dom\u00e4ner fr\u00e5n en utl\u00e4ndsk dom\u00e4n vid {{baseUrl}}"
+	},
+	"words": {
+		"tap": "knacka",
+		"click": "klick",
+		"yes": "ja",
+		"no": "Nej",
+		"Tap": "R\u00f6r",
+		"Click": "Klick",
+		"Yes": "Ja",
+		"No": "Nej",
+		"OK": "OK",
+		"Alert": "Varna",
+		"Confirm": "Bekr\u00e4ftelse",
+		"Prompt": "Skriv text"
+	},
+	"months": {
+		"1": "januari",
+		"2": "februari",
+		"3": "Mars",
+		"4": "april",
+		"5": "Maj",
+		"6": "juni",
+		"7": "juli",
+		"8": "augusti",
+		"9": "september",
+		"10": "oktober",
+		"11": "november",
+		"12": "december"
+	},
+	"durations": {
+		"second": "andra",
+		"seconds": "sekunder",
+		"minute": "minut",
+		"minutes": "minuter",
+		"hour": "timmar",
+		"day": "dag",
+		"days": "dagar",
+		"week": "vecka",
+		"weeks": "Veckor",
+		"month": "m\u00e5nad",
+		"months": "m\u00e5nader",
+		"year": "\u00e5r",
+		"years": "\u00e5r",
+		"decade": "\u00e5rtionde",
+		"decades": "decennier",
+		"century": "\u00e5rhundrade",
+		"centuries": "\u00e5rhundraden"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Till\u00e5t \u00e5tkomst till din mikrofon",
+		"record": "Spela in",
+		"recording": "Inspelning",
+		"remains": "resterna",
+		"maximum": "maximal",
+		"playing": "Spelar",
+		"recorded": "Spelade in",
+		"clip": "kl\u00e4mma",
+		"discard": "Kassera",
+		"encoding": "Kodning"
+	},
+	"video": {
+		"clip": "kl\u00e4mma",
+		"errorNoSource": "Ingen videok\u00e4lla",
+		"SkipAfter": "Hoppa \u00f6ver efter",
+		"Skip": "Hoppa"
+	},
+	"pdf": {
+		"clip": "kl\u00e4mma",
+		"errorNoSource": "Ingen pdf-k\u00e4lla"
+	},
+	"clip": {
+		"SetClipStart": "St\u00e4ll in Clip Start",
+		"ClipStart": "Klippstart",
+		"SetClipEnd": "St\u00e4ll in Clip End",
+		"ClipEnd": "Klipp slut",
+		"StartMoreEnd": "Startposition kan inte vara mer \u00e4n slutposition",
+		"EndLessStart": "Slutpositionen f\u00e5r inte vara mindre \u00e4n startpositionen",
+		"WhichInvalid": "Argumentet &quot;vilket&quot; \u00e4r ogiltigt"
+	},
+	"alert": {
+		"title": "L\u00e4gga m\u00e4rke till"
+	},
+	"confirm": {
+		"title": "Bekr\u00e4fta",
+		"ok": "Ja",
+		"cancel": "Nej"
+	},
+	"prompt": {
+		"title": "Skriv text",
+		"ok": "OK"
+	},
+	"tabs": {
+		"more": "Mer",
+		"Menu": "Meny"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Det gick inte att l\u00e4sa filen",
+		"errorType": "Tyv\u00e4rr, men den h\u00e4r filtypen st\u00f6ds inte",
+		"cameraCommands": {
+			"prompt": "Vad skulle du vilja g\u00f6ra?",
+			"photo": "Ta ett nytt foto",
+			"library": "V\u00e4lj fr\u00e5n biblioteket"
+		},
+		"tooSmall": "V\u00e4lj en st\u00f6rre bild.",
+		"cropping": {
+			"title": "Justera storlek och position",
+			"touchscreen": "Anv\u00e4nd fingrarna f\u00f6r att zooma och dra",
+			"notTouchscreen": "Anv\u00e4nd musen och hjulet f\u00f6r att zooma och dra"
+		}
+	},
+	"timestamp": {
+		"lastNight": "ig\u00e5r kv\u00e4ll",
+		"lastEvening": "f\u00f6rra kv\u00e4llen",
+		"yesterday": "i g\u00e5r",
+		"thisMorning": "i morse",
+		"today": "i dag",
+		"tonight": "i kv\u00e4ll",
+		"tomorrowMorning": "imorgon",
+		"tomorrow": "i morgon",
+		"hoursAgo": "{{h}} timmar sedan",
+		"hourAgo": "{{h}} timme sedan",
+		"minuteAgo": "{{m}} minut sedan",
+		"minutesAgo": "f\u00f6r {{m}} minuter sedan",
+		"secondAgo": "{{s}} sekund sedan",
+		"secondsAgo": "{{s}} sekunder sedan",
+		"fewSecondsAgo": "f\u00f6r n\u00e5gra sekunder sedan",
+		"rightNow": "just nu",
+		"inSecond": "p\u00e5 {{s}} sekund",
+		"inSeconds": "om {{s}} sekunder",
+		"inMinute": "om {{m}} minut",
+		"inMinutes": "om {{m}} minuter",
+		"inHour": "om {{h}} timme",
+		"inHours": "om {{h}} timmar",
+		"inUnderMinute": "p\u00e5 under 1 minut"
+	},
+	"browser": {
+		"insecureContext": "Du m\u00e5ste surfa i ett s\u00e4kert sammanhang f\u00f6r att detta ska fungera"
+	},
+	"scan": {
+		"QR": "Skanna QR-koder"
+	},
+	"input": {
+		"Placeholder": "B\u00f6rja skriva..."
+	}
+}

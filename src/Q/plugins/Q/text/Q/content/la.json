@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Error {{status}} in petitione",
+        "canceled": "Request cancellatam",
+        "500": "Internus servo errore",
+        "404": "Non inveni: {{url}}",
+        "501": "Petitio interrumpitur",
+        "401": "cu",
+        "403": "vetitum"
+    },
+    "nonce": {
+        "sameDomain": "Periodus finit. Renova pagina et iterum conare.",
+        "otherDomain": "Obstructio crucis-domain petitio ad dominium alienum at {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "click",
+        "yes": "sic",
+        "no": "no",
+        "Tap": "Tap",
+        "Click": "Click",
+        "Yes": "Ita",
+        "No": "No",
+        "OK": "OK",
+        "Alert": "Alert",
+        "Confirm": "Confirm",
+        "Prompt": "promptus"
+    },
+    "months": {
+        "1": "Ianuarii",
+        "2": "Februarius",
+        "3": "Martii",
+        "4": "Aprilis",
+        "5": "May",
+        "6": "mensis Iunii",
+        "7": "Iulii",
+        "8": "Aug",
+        "9": "Septembris",
+        "10": "Octobris",
+        "11": "Novembris",
+        "12": "Decembris"
+    },
+    "durations": {
+        "second": "secundo",
+        "seconds": "seconds",
+        "minute": "minute",
+        "minutes": "minuta",
+        "hour": "horae",
+        "day": "dies",
+        "days": "diebus",
+        "week": "hebdomadis",
+        "weeks": "hebdomades",
+        "month": "mensis",
+        "months": "menses",
+        "year": "annus",
+        "years": "annos",
+        "decade": "decennium",
+        "decades": "decennia",
+        "century": "saeculum",
+        "centuries": "saecula"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Quaeso, ut aditus ad tortor ligula",
+        "record": "Record",
+        "recording": "Recordatio",
+        "remains": "reliquiae",
+        "maximum": "maximum",
+        "playing": "Ludens",
+        "recorded": "Exposita",
+        "clip": "clip",
+        "discard": "Relinquere",
+        "encoding": "modum translitterandi"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Non video fontem",
+        "SkipAfter": "Skip post",
+        "Skip": "Skip"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Nulla pdf fons"
+    },
+    "clip": {
+        "SetClipStart": "Set Clip Committitur",
+        "ClipStart": "Satus clip",
+        "SetClipEnd": "Set Tondeo finem",
+        "ClipEnd": "Finis clip",
+        "StartMoreEnd": "Initium loci non plus quam finis positionis",
+        "EndLessStart": "Finis positio non minus quam principium positio",
+        "WhichInvalid": "Argumentum quod irritum"
+    },
+    "alert": {
+        "title": "Alert"
+    },
+    "confirm": {
+        "title": "Confirm",
+        "ok": "Ita",
+        "cancel": "No"
+    },
+    "prompt": {
+        "title": "promptus",
+        "ok": "Go"
+    },
+    "tabs": {
+        "more": "plus",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Error legere file",
+        "errorType": "Dolemus, sed hoc genus fasciculi non praebetur",
+        "cameraCommands": {
+            "prompt": "Quid velis agere?",
+            "photo": "Accipere novam photo",
+            "library": "Lego ex bibliotheca"
+        },
+        "tooSmall": "Maiorem imaginem elige.",
+        "cropping": {
+            "title": "Adjust magnitudine ac dignitate",
+            "touchscreen": "Digitis tuis utere to zoom and drag",
+            "notTouchscreen": "Utere tuo muris &amp; rota to zoom and drag"
+        }
+    },
+    "timestamp": {
+        "lastNight": "heri",
+        "lastEvening": "novissime eve",
+        "yesterday": "heri",
+        "thisMorning": "hoc mane",
+        "today": "hodie",
+        "tonight": "hac nocte",
+        "tomorrowMorning": "tom mane",
+        "tomorrow": "cras",
+        "hoursAgo": "{{h}} hours ago",
+        "hourAgo": "{{h}} hour ago?",
+        "minuteAgo": "{{m}} minute ago",
+        "minutesAgo": "{{m}} minutes ago",
+        "secondAgo": "{{s}} secundo abhinc",
+        "secondsAgo": "{{s}} seconds ago",
+        "fewSecondsAgo": "seconds ago",
+        "rightNow": "nunc",
+        "inSecond": "in {999}} secundo",
+        "inSeconds": "in {{s}} seconds",
+        "inMinute": "in {{m}} minute",
+        "inMinutes": "in {{m}} minuta",
+        "inHour": "in {{h}} hora",
+        "inHours": "in {{h}} horas",
+        "inUnderMinute": "in sub I momento"
+    },
+    "browser": {
+        "insecureContext": "Opus est ut in contextu securo percurrere hoc ad opus"
+    },
+    "scan": {
+        "QR": "QR code Scan"
+    },
+    "input": {
+        "Placeholder": "Satus typing..."
+    }
+}

@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Error {{status}} durante la solicitud",
+		"canceled": "Solicitud cancelada",
+		"500": "Error de servidor interno",
+		"404": "No encontrado: {{url}}",
+		"501": "Solicitud interrumpida",
+		"401": "No autorizado",
+		"403": "Prohibido"
+	},
+	"nonce": {
+		"sameDomain": "Sesi\u00f3n expirada. Actualice la p\u00e1gina y vuelva a intentarlo.",
+		"otherDomain": "Solicitud {{method}} bloqueada entre dominios desde un dominio extranjero en {{baseUrl}}"
+	},
+	"words": {
+		"tap": "tocar",
+		"click": "hacer clic",
+		"yes": "s\u00ed",
+		"no": "No",
+		"Tap": "Tocar",
+		"Click": "Hacer clic",
+		"Yes": "s\u00ed",
+		"No": "No",
+		"OK": "DE ACUERDO",
+		"Alert": "Alerta",
+		"Confirm": "Confirmaci\u00f3n",
+		"Prompt": "Ingrese texto"
+	},
+	"months": {
+		"1": "enero",
+		"2": "febrero",
+		"3": "marcha",
+		"4": "abril",
+		"5": "Mayo",
+		"6": "junio",
+		"7": "mes de julio",
+		"8": "agosto",
+		"9": "septiembre",
+		"10": "octubre",
+		"11": "noviembre",
+		"12": "diciembre"
+	},
+	"durations": {
+		"second": "segundo",
+		"seconds": "segundos",
+		"minute": "minuto",
+		"minutes": "minutos",
+		"hour": "horas",
+		"day": "d\u00eda",
+		"days": "d\u00edas",
+		"week": "semana",
+		"weeks": "semanas",
+		"month": "mes",
+		"months": "meses",
+		"year": "a\u00f1o",
+		"years": "a\u00f1os",
+		"decade": "d\u00e9cada",
+		"decades": "d\u00e9cadas",
+		"century": "siglo",
+		"centuries": "siglos"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Permita el acceso a su micr\u00f3fono",
+		"record": "Registro",
+		"recording": "Grabaci\u00f3n",
+		"remains": "restos",
+		"maximum": "m\u00e1ximo",
+		"playing": "Jugando",
+		"recorded": "Grabado",
+		"clip": "acortar",
+		"discard": "Descarte",
+		"encoding": "Codificaci\u00f3n"
+	},
+	"video": {
+		"clip": "acortar",
+		"errorNoSource": "Sin fuente de video",
+		"SkipAfter": "Saltar despu\u00e9s",
+		"Skip": "Saltar"
+	},
+	"pdf": {
+		"clip": "acortar",
+		"errorNoSource": "Sin fuente en pdf"
+	},
+	"clip": {
+		"SetClipStart": "Establecer inicio de clip",
+		"ClipStart": "Comienzo del clip",
+		"SetClipEnd": "Establecer final de clip",
+		"ClipEnd": "Final del clip",
+		"StartMoreEnd": "La posici\u00f3n inicial no puede ser m\u00e1s que la posici\u00f3n final",
+		"EndLessStart": "La posici\u00f3n final no puede ser inferior a la posici\u00f3n inicial",
+		"WhichInvalid": "Argumento &#39;cu\u00e1l&#39; inv\u00e1lido"
+	},
+	"alert": {
+		"title": "Aviso"
+	},
+	"confirm": {
+		"title": "Confirmar",
+		"ok": "s\u00ed",
+		"cancel": "No"
+	},
+	"prompt": {
+		"title": "Ingrese texto",
+		"ok": "DE ACUERDO"
+	},
+	"tabs": {
+		"more": "m\u00e1s",
+		"Menu": "Men\u00fa"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Error al leer el archivo",
+		"errorType": "Lo sentimos, pero este tipo de archivo no es compatible",
+		"cameraCommands": {
+			"prompt": "Que te gustar\u00eda hacer?",
+			"photo": "Tomar nueva foto",
+			"library": "Seleccionar de la biblioteca"
+		},
+		"tooSmall": "Por favor elige una imagen m\u00e1s grande.",
+		"cropping": {
+			"title": "Ajustar tama\u00f1o y posici\u00f3n",
+			"touchscreen": "Usa tus dedos para hacer zoom y arrastrar",
+			"notTouchscreen": "Use su mouse y rueda para hacer zoom y arrastrar"
+		}
+	},
+	"timestamp": {
+		"lastNight": "anoche",
+		"lastEvening": "\u00faltima v\u00edspera",
+		"yesterday": "ayer",
+		"thisMorning": "esta ma\u00f1ana",
+		"today": "hoy dia",
+		"tonight": "esta noche",
+		"tomorrowMorning": "Tom ma\u00f1ana",
+		"tomorrow": "ma\u00f1ana",
+		"hoursAgo": "Hace {{h}} horas",
+		"hourAgo": "Hace {{h}} hora",
+		"minuteAgo": "Hace {{m}} minutos",
+		"minutesAgo": "Hace {{m}} minutos",
+		"secondAgo": "Hace {{s}} segundos",
+		"secondsAgo": "Hace {{s}} segundos",
+		"fewSecondsAgo": "hace segundos",
+		"rightNow": "ahora",
+		"inSecond": "en {{s}} segundo",
+		"inSeconds": "en {{s}} segundos",
+		"inMinute": "en {{m}} minuto",
+		"inMinutes": "en {{m}} minutos",
+		"inHour": "en {{h}} hora",
+		"inHours": "en {{h}} horas",
+		"inUnderMinute": "en menos de 1 minuto"
+	},
+	"browser": {
+		"insecureContext": "Debe navegar en un contexto seguro para que esto funcione"
+	},
+	"scan": {
+		"QR": "Escanear c\u00f3digos QR"
+	},
+	"input": {
+		"Placeholder": "Empieza a escribir..."
+	}
+}

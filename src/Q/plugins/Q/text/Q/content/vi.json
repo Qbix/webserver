@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "L\u1ed7i {{status}} trong khi y\u00eau c\u1ea7u",
+		"canceled": "Y\u00eau c\u1ea7u \u0111\u00e3 b\u1ecb h\u1ee7y",
+		"500": "L\u1ed7i m\u00e1y ch\u1ee7 n\u1ed9i b\u1ed9",
+		"404": "Kh\u00f4ng t\u00ecm th\u1ea5y: {{url}}",
+		"501": "Y\u00eau c\u1ea7u b\u1ecb gi\u00e1n \u0111o\u1ea1n",
+		"401": "Kh\u00f4ng \u0111\u01b0\u1ee3c ph\u00e9p",
+		"403": "C\u1ea5m"
+	},
+	"nonce": {
+		"sameDomain": "Phi\u00ean h\u1ebft h\u1ea1n. L\u00e0m m\u1edbi trang v\u00e0 th\u1eed l\u1ea1i.",
+		"otherDomain": "\u0110\u00e3 ch\u1eb7n y\u00eau c\u1ea7u {{method}} li\u00ean mi\u1ec1n t\u1eeb mi\u1ec1n n\u01b0\u1edbc ngo\u00e0i \u1edf {{baseUrl}}"
+	},
+	"words": {
+		"tap": "v\u00f4\u0303 nhe\u0323",
+		"click": "nh\u1ea5p chu\u1ed9t",
+		"yes": "\u0110\u00fang",
+		"no": "kh\u00f4ng",
+		"Tap": "Ch\u1ea1m",
+		"Click": "Nh\u1ea5p chu\u1ed9t",
+		"Yes": "\u0110\u00fang",
+		"No": "Kh\u00f4ng",
+		"OK": "\u0110\u01af\u1ee2C R\u1ed2I",
+		"Alert": "B\u00e1o \u0111\u1ed9ng",
+		"Confirm": "x\u00e1c nh\u1eadn",
+		"Prompt": "Nh\u1eadp v\u0103n b\u1ea3n"
+	},
+	"months": {
+		"1": "Th\u00e1ng m\u1ed9t",
+		"2": "th\u00e1ng 2",
+		"3": "h\u00e0nh kh\u00fac",
+		"4": "th\u00e1ng t\u01b0",
+		"5": "C\u00f3 th\u1ec3",
+		"6": "th\u00e1ng S\u00e1u",
+		"7": "th\u00e1ng B\u1ea3y",
+		"8": "th\u00e1ng T\u00e1m",
+		"9": "Th\u00e1ng Ch\u00edn",
+		"10": "Th\u00e1ng M\u01b0\u1eddi",
+		"11": "th\u00e1ng M\u01b0\u1eddi M\u1ed9t",
+		"12": "th\u00e1ng 12"
+	},
+	"durations": {
+		"second": "th\u1ee9 hai",
+		"seconds": "gi\u00e2y",
+		"minute": "ph\u00fat",
+		"minutes": "ph\u00fat",
+		"hour": "gi\u1edd",
+		"day": "ng\u00e0y",
+		"days": "ng\u00e0y",
+		"week": "tu\u1ea7n",
+		"weeks": "tu\u1ea7n",
+		"month": "th\u00e1ng",
+		"months": "th\u00e1ng",
+		"year": "n\u0103m",
+		"years": "n\u0103m",
+		"decade": "th\u1eadp k\u1ef7",
+		"decades": "th\u1eadp k\u1ef7",
+		"century": "th\u1ebf k\u1ef7",
+		"centuries": "th\u1ebf k\u1ec9"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Vui l\u00f2ng cho ph\u00e9p truy c\u1eadp v\u00e0o micr\u00f4 c\u1ee7a b\u1ea1n",
+		"record": "Ghi l\u1ea1i",
+		"recording": "ghi \u00e2m",
+		"remains": "c\u00f2n l\u1ea1i",
+		"maximum": "t\u1ed1i \u0111a",
+		"playing": "\u0110ang ch\u01a1i",
+		"recorded": "\u0110\u00e3 ghi l\u1ea1i",
+		"clip": "k\u1eb9p",
+		"discard": "B\u1ecf \u0111i",
+		"encoding": "M\u00e3 h\u00f3a"
+	},
+	"video": {
+		"clip": "k\u1eb9p",
+		"errorNoSource": "Kh\u00f4ng c\u00f3 ngu\u1ed3n video",
+		"SkipAfter": "B\u1ecf qua sau",
+		"Skip": "Nh\u1ea3y"
+	},
+	"pdf": {
+		"clip": "k\u1eb9p",
+		"errorNoSource": "Kh\u00f4ng c\u00f3 ngu\u1ed3n pdf"
+	},
+	"clip": {
+		"SetClipStart": "\u0110\u1eb7t b\u1eaft \u0111\u1ea7u clip",
+		"ClipStart": "B\u1eaft \u0111\u1ea7u clip",
+		"SetClipEnd": "\u0110\u1eb7t k\u1ebft th\u00fac clip",
+		"ClipEnd": "Clip k\u1ebft th\u00fac",
+		"StartMoreEnd": "V\u1ecb tr\u00ed b\u1eaft \u0111\u1ea7u kh\u00f4ng \u0111\u01b0\u1ee3c nhi\u1ec1u h\u01a1n v\u1ecb tr\u00ed k\u1ebft th\u00fac",
+		"EndLessStart": "V\u1ecb tr\u00ed k\u1ebft th\u00fac kh\u00f4ng \u0111\u01b0\u1ee3c nh\u1ecf h\u01a1n v\u1ecb tr\u00ed b\u1eaft \u0111\u1ea7u",
+		"WhichInvalid": "\u0110\u1ed1i s\u1ed1 &#39;m\u00e0&#39; kh\u00f4ng h\u1ee3p l\u1ec7"
+	},
+	"alert": {
+		"title": "\u0110\u1ec3 \u00fd"
+	},
+	"confirm": {
+		"title": "X\u00e1c nh\u1eadn",
+		"ok": "\u0110\u00fang",
+		"cancel": "Kh\u00f4ng"
+	},
+	"prompt": {
+		"title": "Nh\u1eadp v\u0103n b\u1ea3n",
+		"ok": "\u0110\u01af\u1ee2C R\u1ed2I"
+	},
+	"tabs": {
+		"more": "h\u01a1n",
+		"Menu": "Th\u1ef1c \u0111\u01a1n"
+	},
+	"imagepicker": {
+		"errorReadingFile": "L\u1ed7i khi \u0111\u1ecdc t\u1ec7p",
+		"errorType": "Xin l\u1ed7i, nh\u01b0ng lo\u1ea1i t\u1ec7p n\u00e0y kh\u00f4ng \u0111\u01b0\u1ee3c h\u1ed7 tr\u1ee3",
+		"cameraCommands": {
+			"prompt": "B\u1ea1n th\u00edch l\u00e0m g\u00ec?",
+			"photo": "Ch\u1ee5p \u1ea3nh m\u1edbi",
+			"library": "Ch\u1ecdn t\u1eeb th\u01b0 vi\u1ec7n"
+		},
+		"tooSmall": "Vui l\u00f2ng ch\u1ecdn m\u1ed9t h\u00ecnh \u1ea3nh l\u1edbn h\u01a1n.",
+		"cropping": {
+			"title": "\u0110i\u1ec1u ch\u1ec9nh k\u00edch th\u01b0\u1edbc v\u00e0 v\u1ecb tr\u00ed",
+			"touchscreen": "S\u1eed d\u1ee5ng ng\u00f3n tay c\u1ee7a b\u1ea1n \u0111\u1ec3 thu ph\u00f3ng v\u00e0 k\u00e9o",
+			"notTouchscreen": "S\u1eed d\u1ee5ng chu\u1ed9t v\u00e0 b\u00e1nh xe c\u1ee7a b\u1ea1n \u0111\u1ec3 thu ph\u00f3ng v\u00e0 k\u00e9o"
+		}
+	},
+	"timestamp": {
+		"lastNight": "t\u1ed1i h\u00f4m qua",
+		"lastEvening": "\u0111\u00eam tr\u01b0\u1edbc",
+		"yesterday": "h\u00f4m qua",
+		"thisMorning": "b\u00e0 gi\u00e0 n\u00e0y",
+		"today": "h\u00f4m nay",
+		"tonight": "\u0111\u00eam nay",
+		"tomorrowMorning": "tom morn",
+		"tomorrow": "ng\u00e0y mai",
+		"hoursAgo": "{{h}} gi\u1edd tr\u01b0\u1edbc",
+		"hourAgo": "{{h}} gi\u1edd tr\u01b0\u1edbc",
+		"minuteAgo": "{{m}} ph\u00fat tr\u01b0\u1edbc",
+		"minutesAgo": "{{m}} ph\u00fat tr\u01b0\u1edbc",
+		"secondAgo": "{{s}} gi\u00e2y tr\u01b0\u1edbc",
+		"secondsAgo": "{{s}} gi\u00e2y tr\u01b0\u1edbc",
+		"fewSecondsAgo": "C\u00e1ch \u0111\u00e2y v\u00e0i gi\u00e2y",
+		"rightNow": "ngay l\u1eadp t\u1ee9c",
+		"inSecond": "sau {{s}} gi\u00e2y",
+		"inSeconds": "sau {{s}} gi\u00e2y",
+		"inMinute": "sau {{m}} ph\u00fat n\u1eefa",
+		"inMinutes": "sau {{m}} ph\u00fat n\u1eefa",
+		"inHour": "sau {{h}} gi\u1edd n\u1eefa",
+		"inHours": "sau {{h}} gi\u1edd",
+		"inUnderMinute": "trong d\u01b0\u1edbi 1 ph\u00fat"
+	},
+	"browser": {
+		"insecureContext": "B\u1ea1n c\u1ea7n duy\u1ec7t trong ng\u1eef c\u1ea3nh an to\u00e0n \u0111\u1ec3 t\u00ednh n\u0103ng n\u00e0y ho\u1ea1t \u0111\u1ed9ng"
+	},
+	"scan": {
+		"QR": "Qu\u00e9t m\u00e3 QR"
+	},
+	"input": {
+		"Placeholder": "B\u1eaft \u0111\u1ea7u g\u00f5..."
+	}
+}

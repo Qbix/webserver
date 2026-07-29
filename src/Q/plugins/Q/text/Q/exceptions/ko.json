@@ -1,0 +1,5 @@
+{
+	"MissingFile": "\ub204\ub77d\ub41c \ud30c\uc77c {{filename}}",
+	"InvalidLanguage": "\uc798\ubabb\ub41c \uc5b8\uc5b4 {{language}}",
+	"RequiredField": "{{field}} \uac00 \ud544\uc694\ud569\ub2c8\ub2e4"
+}

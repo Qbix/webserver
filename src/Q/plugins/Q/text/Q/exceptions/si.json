@@ -1,0 +1,5 @@
+{
+    "MissingFile": "{{filename}} ගොනුව අතුරුදහන්",
+    "InvalidLanguage": "වලංගු නොවන භාෂාව {{language}}",
+    "RequiredField": "{{field}} අවශ්ය වේ"
+}

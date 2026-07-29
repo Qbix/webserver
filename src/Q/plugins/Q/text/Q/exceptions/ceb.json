@@ -1,0 +1,5 @@
+{
+    "MissingFile": "nawala nga file {{filename}}",
+    "InvalidLanguage": "dili balido nga pinulongan {{language}}",
+    "RequiredField": "{{field}} ang gikinahanglan"
+}

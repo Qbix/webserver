@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "Error {{status}} durant la sol\u00b7licitud",
+		"canceled": "Sol\u00b7licitud cancel\u00b7lada",
+		"500": "Error del servidor intern",
+		"404": "No s&#39;ha trobat: {{url}}",
+		"501": "La sol\u00b7licitud s&#39;ha interromput",
+		"401": "No autoritzat",
+		"403": "Prohibit"
+	},
+	"nonce": {
+		"sameDomain": "Sessi\u00f3 expirada. Actualitza la p\u00e0gina i torna-ho a provar.",
+		"otherDomain": "Sol\u00b7licitud {{method}} entre dominis bloquejada des d&#39;un domini estranger a {{baseUrl}}"
+	},
+	"words": {
+		"tap": "aixeta",
+		"click": "feu clic",
+		"yes": "s\u00ed",
+		"no": "no",
+		"Tap": "Toca",
+		"Click": "Feu clic",
+		"Yes": "S\u00ed",
+		"No": "No",
+		"OK": "D&#39;acord",
+		"Alert": "Alerta",
+		"Confirm": "Confirmaci\u00f3",
+		"Prompt": "Introdu\u00efu text"
+	},
+	"months": {
+		"1": "gener",
+		"2": "febrer",
+		"3": "mar\u00e7",
+		"4": "Abril",
+		"5": "maig",
+		"6": "juny",
+		"7": "juliol",
+		"8": "Agost",
+		"9": "setembre",
+		"10": "Octubre",
+		"11": "de novembre",
+		"12": "desembre"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Permet l&#39;acc\u00e9s al micr\u00f2fon",
+		"record": "Registre",
+		"recording": "Gravaci\u00f3",
+		"remains": "restes",
+		"maximum": "m\u00e0xim",
+		"playing": "Jugant",
+		"recorded": "Gravat",
+		"clip": "clip",
+		"orupload": "O penja",
+		"usethis": "Usa aix\u00f3",
+		"discard": "Descartar",
+		"encoding": "Codificaci\u00f3"
+	},
+	"alert": {
+		"title": "Av\u00eds"
+	},
+	"confirm": {
+		"title": "Confirmeu",
+		"ok": "S\u00ed",
+		"cancel": "No"
+	},
+	"prompt": {
+		"title": "Introdu\u00efu text",
+		"ok": "D&#39;acord"
+	},
+	"imagepicker": {
+		"errorReadingFile": "S&#39;ha produ\u00eft un error en llegir el fitxer",
+		"cameraCommands": {
+			"prompt": "Qu\u00e8 t&#39;agradaria fer?",
+			"photo": "Fes una nova foto",
+			"library": "Seleccioneu de la biblioteca"
+		},
+		"tooSmall": "Si us plau, trieu una imatge m\u00e9s gran.",
+		"cropping": {
+			"title": "Ajusteu la mida i la posici\u00f3",
+			"touchscreen": "Utilitzeu els dits per fer zoom i arrossegar",
+			"notTouchscreen": "Utilitzeu el ratol\u00ed i la roda per fer zoom i arrossegar"
+		},
+		"errorType": "Ho sentim, per\u00f2 aquest tipus de fitxer no \u00e9s compatible"
+	},
+	"timestamp": {
+		"lastNight": "La nit passada",
+		"lastEvening": "darrera vig\u00edlia",
+		"yesterday": "ahir",
+		"thisMorning": "aquest mat\u00ed",
+		"today": "avui",
+		"tonight": "aquesta nit",
+		"tomorrowMorning": "dem\u00e0 al mat\u00ed",
+		"tomorrow": "dem\u00e0",
+		"hoursAgo": "Fa {{h}} hores",
+		"hourAgo": "Fa {{h}} hora",
+		"minuteAgo": "Fa {{m}} minut",
+		"minutesAgo": "Fa {{m}} minuts",
+		"secondAgo": "Fa {{s}} segon",
+		"secondsAgo": "Fa {{s}} segons",
+		"fewSecondsAgo": "fa segons",
+		"rightNow": "ara mateix",
+		"inSecond": "en {{s}} segons",
+		"inSeconds": "en {{s}} segons",
+		"inMinute": "en {{m}} minut",
+		"inMinutes": "en {{m}} minuts",
+		"inHour": "en {{h}} hora",
+		"inHours": "en {{h}} hores",
+		"inUnderMinute": "en menys d&#39;1 minut"
+	},
+	"tabs": {
+		"more": "m\u00e9s",
+		"Menu": "Men\u00fa"
+	},
+	"video": {
+		"clip": "clip",
+		"errorNoSource": "Sense font de v\u00eddeo",
+		"SkipAfter": "Saltar despr\u00e9s",
+		"Skip": "Omet"
+	},
+	"pdf": {
+		"clip": "clip",
+		"errorNoSource": "Sense font en pdf"
+	},
+	"clip": {
+		"SetClipStart": "Estableix l&#39;inici del clip",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Estableix el final del clip",
+		"ClipEnd": "Clip final",
+		"StartMoreEnd": "La posici\u00f3 inicial no pot ser m\u00e9s que la posici\u00f3 final",
+		"EndLessStart": "La posici\u00f3 final no pot ser inferior a la posici\u00f3 inicial",
+		"WhichInvalid": "L&#39;argument &quot;qui&quot; no \u00e9s v\u00e0lid"
+	},
+	"durations": {
+		"second": "segon",
+		"seconds": "segons",
+		"minute": "minut",
+		"minutes": "minuts",
+		"hour": "hores",
+		"day": "dia",
+		"days": "dies",
+		"week": "setmana",
+		"weeks": "setmanes",
+		"month": "mes",
+		"months": "mesos",
+		"year": "curs",
+		"years": "anys",
+		"decade": "d\u00e8cada",
+		"decades": "d\u00e8cades",
+		"century": "segle",
+		"centuries": "segles"
+	},
+	"browser": {
+		"insecureContext": "Heu de navegar en un context segur perqu\u00e8 aix\u00f2 funcioni"
+	},
+	"scan": {
+		"QR": "Escaneja codis QR"
+	},
+	"input": {
+		"Placeholder": "Comen\u00e7a a escriure..."
+	}
+}

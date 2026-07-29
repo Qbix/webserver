@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Viga {{status}} p\u00e4ringu ajal",
+		"canceled": "Taotlus t\u00fchistati",
+		"500": "Siseserveri viga",
+		"404": "Ei leitud: {{url}}",
+		"501": "Taotlus katkestati",
+		"401": "Volitamata",
+		"403": "Keelatud"
+	},
+	"nonce": {
+		"sameDomain": "Seanss aegus. V\u00e4rskendage lehte ja proovige uuesti.",
+		"otherDomain": "Blokeeritud domeenidevaheline {{method}} p\u00e4ring v\u00f5\u00f5ralt domeenilt kell {{baseUrl}}"
+	},
+	"words": {
+		"tap": "puudutada",
+		"click": "kl\u00f5psa",
+		"yes": "jah",
+		"no": "ei",
+		"Tap": "Puudutage",
+		"Click": "Kl\u00f5psake",
+		"Yes": "Jah",
+		"No": "Ei",
+		"OK": "Okei",
+		"Alert": "Hoiatus",
+		"Confirm": "Kinnitamine",
+		"Prompt": "Sisesta tekst"
+	},
+	"months": {
+		"1": "jaanuaril",
+		"2": "veebruaril",
+		"3": "m\u00e4rtsil",
+		"4": "aprill",
+		"5": "mai",
+		"6": "juunini",
+		"7": "juulil",
+		"8": "august",
+		"9": "septembril",
+		"10": "oktoober",
+		"11": "novembril",
+		"12": "detsember"
+	},
+	"durations": {
+		"second": "teiseks",
+		"seconds": "sekundit",
+		"minute": "minut",
+		"minutes": "minutit",
+		"hour": "tundi",
+		"day": "p\u00e4eval",
+		"days": "p\u00e4evadel",
+		"week": "n\u00e4dal",
+		"weeks": "n\u00e4dalaid",
+		"month": "kuu",
+		"months": "kuud",
+		"year": "aastal",
+		"years": "aastat",
+		"decade": "k\u00fcmnendil",
+		"decades": "aastak\u00fcmneid",
+		"century": "sajandil",
+		"centuries": "sajandite jooksul"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "Lubage juurdep\u00e4\u00e4s oma mikrofonile",
+		"record": "Salvestus",
+		"recording": "Salvestamine",
+		"remains": "j\u00e4\u00e4nused",
+		"maximum": "maksimaalselt",
+		"playing": "M\u00e4ngib",
+		"recorded": "Salvestatud",
+		"clip": "klipp",
+		"discard": "Visake \u00e4ra",
+		"encoding": "Kodeerimine"
+	},
+	"video": {
+		"clip": "klipp",
+		"errorNoSource": "Videoallikat pole",
+		"SkipAfter": "J\u00e4ta vahele",
+		"Skip": "Vahele j\u00e4tma"
+	},
+	"pdf": {
+		"clip": "klipp",
+		"errorNoSource": "Pdf-allikat pole"
+	},
+	"clip": {
+		"SetClipStart": "M\u00e4\u00e4ra klipi algus",
+		"ClipStart": "Klipi algus",
+		"SetClipEnd": "M\u00e4\u00e4rake klipi l\u00f5pp",
+		"ClipEnd": "Klipi l\u00f5pp",
+		"StartMoreEnd": "Algasend ei tohi olla suurem kui l\u00f5ppasend",
+		"EndLessStart": "L\u00f5pppositsioon ei tohi olla v\u00e4iksem kui alguspositsioon",
+		"WhichInvalid": "Argument &quot;mis&quot; on kehtetu"
+	},
+	"alert": {
+		"title": "M\u00e4rka"
+	},
+	"confirm": {
+		"title": "Kinnita",
+		"ok": "Jah",
+		"cancel": "Ei"
+	},
+	"prompt": {
+		"title": "Sisesta tekst",
+		"ok": "Okei"
+	},
+	"tabs": {
+		"more": "rohkem",
+		"Menu": "Men\u00fc\u00fc"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Viga faili lugemisel",
+		"errorType": "Kahjuks seda failit\u00fc\u00fcpi ei toetata",
+		"cameraCommands": {
+			"prompt": "Mida sa teha tahaksid?",
+			"photo": "Tehke uus foto",
+			"library": "Valige raamatukogust"
+		},
+		"tooSmall": "Palun valige suurem pilt.",
+		"cropping": {
+			"title": "Reguleerige suurust ja asukohta",
+			"touchscreen": "Kasutage suumimiseks ja lohistamiseks s\u00f5rmi",
+			"notTouchscreen": "Kasutage suumimiseks ja lohistamiseks hiirt ja ratast"
+		}
+	},
+	"timestamp": {
+		"lastNight": "eile \u00f5htul",
+		"lastEvening": "eelmisel \u00f5htul",
+		"yesterday": "eile",
+		"thisMorning": "t\u00e4na hommikul",
+		"today": "t\u00e4na",
+		"tonight": "t\u00e4na \u00f5htul",
+		"tomorrowMorning": "hommik",
+		"tomorrow": "homme",
+		"hoursAgo": "{{h}} tundi tagasi",
+		"hourAgo": "{{h}} tund tagasi",
+		"minuteAgo": "{{m}} minut tagasi",
+		"minutesAgo": "{{m}} minutit tagasi",
+		"secondAgo": "{{s}} sekund tagasi",
+		"secondsAgo": "{{s}} sekundit tagasi",
+		"fewSecondsAgo": "sekundit tagasi",
+		"rightNow": "praegu",
+		"inSecond": "{{s}} sekundi p\u00e4rast",
+		"inSeconds": "{{s}} sekundi p\u00e4rast",
+		"inMinute": "{{m}} minuti p\u00e4rast",
+		"inMinutes": "{{m}} minuti p\u00e4rast",
+		"inHour": "{{h}} tunni p\u00e4rast",
+		"inHours": "{{h}} tunni p\u00e4rast",
+		"inUnderMinute": "alla 1 minuti jooksul"
+	},
+	"browser": {
+		"insecureContext": "Selle toimimiseks peate sirvima turvalises kontekstis"
+	},
+	"scan": {
+		"QR": "QR-koodide skannimine"
+	},
+	"input": {
+		"Placeholder": "Alusta kirjutamist..."
+	}
+}

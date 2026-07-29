@@ -1,0 +1,5 @@
+{
+	"MissingFile": "manglende fil {{filename}}",
+	"InvalidLanguage": "ugyldigt sprog {{language}}",
+	"RequiredField": "{{field}} er p\u00e5kr\u00e6vet"
+}

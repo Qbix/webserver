@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Kasalahan {{status}} salila pamundut",
+        "canceled": "Paménta dibolaykeun",
+        "500": "Kasalahan Sérver Internal",
+        "404": "Teu kapanggih: {{url}}",
+        "501": "Paménta diganggu",
+        "401": "Teu sah",
+        "403": "Dilarang"
+    },
+    "nonce": {
+        "sameDomain": "Sési kadaluwarsa. Refresh kaca sareng cobian deui.",
+        "otherDomain": "Diblokir pamundut cross-domain ka domain asing di {{baseUrl}}"
+    },
+    "words": {
+        "tap": "ketok",
+        "click": "klik",
+        "yes": "enya",
+        "no": "henteu",
+        "Tap": "Ketok",
+        "Click": "Pencét",
+        "Yes": "Sumuhun",
+        "No": "No",
+        "OK": "OKÉ",
+        "Alert": "Waspada",
+        "Confirm": "Konfirmasi",
+        "Prompt": "Ajakan"
+    },
+    "months": {
+        "1": "Januari",
+        "2": "Pébruari",
+        "3": "Maret",
+        "4": "April",
+        "5": "Méi",
+        "6": "Juni",
+        "7": "Juli",
+        "8": "Agustusan",
+        "9": "Séptémber",
+        "10": "Oktober",
+        "11": "Nopémber",
+        "12": "Désémber"
+    },
+    "durations": {
+        "second": "kadua",
+        "seconds": "detik",
+        "minute": "menit",
+        "minutes": "menit",
+        "hour": "jam",
+        "day": "dinten",
+        "days": "poé",
+        "week": "minggu",
+        "weeks": "minggu",
+        "month": "sasih",
+        "months": "bulan",
+        "year": "taun",
+        "years": "taun",
+        "decade": "dasawarsa",
+        "decades": "puluhan taun",
+        "century": "abad",
+        "centuries": "abad"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Mangga idinan aksés ka mikropon Anjeun",
+        "record": "Rékam",
+        "recording": "Ngarékam",
+        "remains": "tetep",
+        "maximum": "maksimal",
+        "playing": "Maén",
+        "recorded": "Dirékam",
+        "clip": "klip",
+        "discard": "Piceun",
+        "encoding": "Encoding"
+    },
+    "video": {
+        "clip": "klip",
+        "errorNoSource": "Taya sumber video",
+        "SkipAfter": "Skip sanggeus",
+        "Skip": "Skip"
+    },
+    "pdf": {
+        "clip": "klip",
+        "errorNoSource": "Taya sumber pdf"
+    },
+    "clip": {
+        "SetClipStart": "Atur Klip Mimitian",
+        "ClipStart": "Klip Mimitian",
+        "SetClipEnd": "Atur Clip End",
+        "ClipEnd": "Klip Tungtung",
+        "StartMoreEnd": "Posisi mimiti teu bisa leuwih ti posisi tungtung",
+        "EndLessStart": "Posisi tungtung teu tiasa kirang ti posisi mimiti",
+        "WhichInvalid": "Argumen &#39;anu&#39; teu valid"
+    },
+    "alert": {
+        "title": "Waspada"
+    },
+    "confirm": {
+        "title": "Konpirmasi",
+        "ok": "Sumuhun",
+        "cancel": "No"
+    },
+    "prompt": {
+        "title": "Gancang",
+        "ok": "indit"
+    },
+    "tabs": {
+        "more": "Tambih deui",
+        "Menu": "ménu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Kasalahan maca file",
+        "errorType": "Punten, tapi jinis file ieu henteu dirojong",
+        "cameraCommands": {
+            "prompt": "Naon anu anjeun hoyong laksanakeun?",
+            "photo": "Candak poto anyar",
+            "library": "Pilih ti perpustakaan"
+        },
+        "tooSmall": "Mangga pilih gambar nu leuwih gede.",
+        "cropping": {
+            "title": "Saluyukeun ukuran jeung posisi",
+            "touchscreen": "Anggo ramo pikeun ngazum sareng nyéred",
+            "notTouchscreen": "Anggo mouse &amp; roda anjeun pikeun ngazum sareng nyéred"
+        }
+    },
+    "timestamp": {
+        "lastNight": "tadi wengi",
+        "lastEvening": "wengi panungtungan",
+        "yesterday": "kamari",
+        "thisMorning": "isuk ieu",
+        "today": "kiwari",
+        "tonight": "peuting ieu",
+        "tomorrowMorning": "enjing enjing",
+        "tomorrow": "isukan",
+        "hoursAgo": "{{h}} jam katukang",
+        "hourAgo": "{{h}} jam katukang",
+        "minuteAgo": "{{m}} menit ka tukang",
+        "minutesAgo": "{{m}} menit ka tukang",
+        "secondAgo": "{{s}} detik katukang",
+        "secondsAgo": "{{s}} detik katukang",
+        "fewSecondsAgo": "detik katukang",
+        "rightNow": "ayeuna",
+        "inSecond": "dina {{s}} detik",
+        "inSeconds": "dina {{s}} detik",
+        "inMinute": "dina {{m}} menit",
+        "inMinutes": "dina {{m}} menit",
+        "inHour": "dina {{h}} jam",
+        "inHours": "dina {{h}} jam",
+        "inUnderMinute": "dina sahandapeun 1 menit"
+    },
+    "browser": {
+        "insecureContext": "Anjeun kedah ngotéktak dina kontéks anu aman pikeun ieu jalan"
+    },
+    "scan": {
+        "QR": "Nyeken kodeu QR"
+    },
+    "input": {
+        "Placeholder": "Mimitian ngetik..."
+    }
+}

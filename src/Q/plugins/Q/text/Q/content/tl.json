@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Error {{status}} habang hinihiling",
+        "canceled": "Kinansela ang kahilingan",
+        "500": "Error sa panloob na server",
+        "404": "Hindi nahanap: {{url}}",
+        "501": "Naputol ang kahilingan",
+        "401": "Hindi awtorisado",
+        "403": "Bawal"
+    },
+    "nonce": {
+        "sameDomain": "Nag-expire na ang session. I-refresh ang page at subukang muli.",
+        "otherDomain": "Naka-block na kahilingan sa cross-domain sa dayuhang domain sa {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tapikin",
+        "click": "i-click",
+        "yes": "oo",
+        "no": "hindi",
+        "Tap": "I-tap",
+        "Click": "I-click",
+        "Yes": "Oo",
+        "No": "Hindi",
+        "OK": "OK",
+        "Alert": "Alerto",
+        "Confirm": "Kumpirmahin",
+        "Prompt": "Prompt"
+    },
+    "months": {
+        "1": "Enero",
+        "2": "Pebrero",
+        "3": "Marso",
+        "4": "Abril",
+        "5": "May",
+        "6": "Hunyo",
+        "7": "Hulyo",
+        "8": "Agosto",
+        "9": "Setyembre",
+        "10": "Oktubre",
+        "11": "Nobyembre",
+        "12": "Disyembre"
+    },
+    "durations": {
+        "second": "pangalawa",
+        "seconds": "segundo",
+        "minute": "minuto",
+        "minutes": "minuto",
+        "hour": "oras",
+        "day": "araw",
+        "days": "araw",
+        "week": "linggo",
+        "weeks": "linggo",
+        "month": "buwan",
+        "months": "buwan",
+        "year": "taon",
+        "years": "taon",
+        "decade": "dekada",
+        "decades": "mga dekada",
+        "century": "siglo",
+        "centuries": "mga siglo"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Mangyaring payagan ang pag-access sa iyong mikropono",
+        "record": "Itala",
+        "recording": "Pagre-record",
+        "remains": "labi",
+        "maximum": "maximum",
+        "playing": "Naglalaro",
+        "recorded": "Naitala",
+        "clip": "clip",
+        "discard": "Itapon",
+        "encoding": "Pag-encode"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Walang pinagmumulan ng video",
+        "SkipAfter": "Laktawan pagkatapos",
+        "Skip": "Laktawan"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Walang pdf source"
+    },
+    "clip": {
+        "SetClipStart": "Itakda ang Clip Start",
+        "ClipStart": "Clip Start",
+        "SetClipEnd": "Itakda ang Clip End",
+        "ClipEnd": "Clip End",
+        "StartMoreEnd": "Ang panimulang posisyon ay hindi maaaring higit sa dulong posisyon",
+        "EndLessStart": "Ang posisyon ng pagtatapos ay hindi maaaring mas mababa sa panimulang posisyon",
+        "WhichInvalid": "Hindi wasto ang argumentong &#39;alin&#39;"
+    },
+    "alert": {
+        "title": "Alerto"
+    },
+    "confirm": {
+        "title": "Kumpirmahin",
+        "ok": "Oo",
+        "cancel": "Hindi"
+    },
+    "prompt": {
+        "title": "Prompt",
+        "ok": "Pumunta ka"
+    },
+    "tabs": {
+        "more": "higit pa",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Error sa pagbabasa ng file",
+        "errorType": "Paumanhin, ngunit ang uri ng file na ito ay hindi suportado",
+        "cameraCommands": {
+            "prompt": "Anong gusto mong gawin?",
+            "photo": "Kumuha ng bagong larawan",
+            "library": "Pumili mula sa library"
+        },
+        "tooSmall": "Mangyaring pumili ng mas malaking larawan.",
+        "cropping": {
+            "title": "Ayusin ang laki at posisyon",
+            "touchscreen": "Gamitin ang iyong mga daliri para mag-zoom at mag-drag",
+            "notTouchscreen": "Gamitin ang iyong mouse at gulong para mag-zoom at mag-drag"
+        }
+    },
+    "timestamp": {
+        "lastNight": "kagabi",
+        "lastEvening": "huling bisperas",
+        "yesterday": "kahapon",
+        "thisMorning": "ngayong umaga",
+        "today": "ngayon",
+        "tonight": "ngayong gabi",
+        "tomorrowMorning": "bukas ng umaga",
+        "tomorrow": "bukas",
+        "hoursAgo": "{{h}} oras ang nakalipas",
+        "hourAgo": "{{h}} oras ang nakalipas",
+        "minuteAgo": "{{m}} minuto ang nakalipas",
+        "minutesAgo": "{{m}} minuto ang nakalipas",
+        "secondAgo": "{{s}} segundo ang nakalipas",
+        "secondsAgo": "{{s}} segundo ang nakalipas",
+        "fewSecondsAgo": "ilang segundo ang nakalipas",
+        "rightNow": "ngayon na",
+        "inSecond": "sa {{s}} segundo",
+        "inSeconds": "sa {{s}} segundo",
+        "inMinute": "sa {{m}} minuto",
+        "inMinutes": "sa {{m}} minuto",
+        "inHour": "sa {{h}} oras",
+        "inHours": "sa {{h}} na oras",
+        "inUnderMinute": "sa ilalim ng 1 minuto"
+    },
+    "browser": {
+        "insecureContext": "Kailangan mong mag-browse sa isang secure na konteksto para gumana ito"
+    },
+    "scan": {
+        "QR": "I-scan ang mga QR code"
+    },
+    "input": {
+        "Placeholder": "Magsimulang mag-type..."
+    }
+}

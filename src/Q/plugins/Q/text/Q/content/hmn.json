@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "yuam kev {{status}} thaum thov",
+        "canceled": "Thov tso tseg",
+        "500": "Internal server yuam kev",
+        "404": "Tsis pom: {{url}}",
+        "501": "Thov cuam tshuam",
+        "401": "Tsis tso cai",
+        "403": "Txwv tsis pub"
+    },
+    "nonce": {
+        "sameDomain": "Session tas sij hawm. Refresh nplooj ntawv thiab sim dua.",
+        "otherDomain": "Blocked cross-domain thov rau txawv teb chaws ntawm {{baseUrl}}"
+    },
+    "words": {
+        "tap": "tap",
+        "click": "nias",
+        "yes": "yog",
+        "no": "tsis muaj",
+        "Tap": "Coj mus rhaub",
+        "Click": "Nyem",
+        "Yes": "Yog lawm",
+        "No": "Tsis muaj",
+        "OK": "OK",
+        "Alert": "Ceeb toom",
+        "Confirm": "Paub meej",
+        "Prompt": "Ceev"
+    },
+    "months": {
+        "1": "Lub Ib Hlis",
+        "2": "Lub Ob Hlis",
+        "3": "Lub Peb Hlis",
+        "4": "Plaub Hlis Ntuj",
+        "5": "Tsib",
+        "6": "Lub Rau Hli",
+        "7": "Lub Xya Hli",
+        "8": "Lub yim hli ntuj",
+        "9": "Cuaj hlis",
+        "10": "Kaum Hli",
+        "11": "Kaum ib hlis",
+        "12": "Kaum Ob Hlis"
+    },
+    "durations": {
+        "second": "thib ob",
+        "seconds": "vib nas this",
+        "minute": "feeb",
+        "minutes": "feeb",
+        "hour": "teev",
+        "day": "hnub",
+        "days": "hnub",
+        "week": "lub lim tiam",
+        "weeks": "lub lis piam",
+        "month": "hli",
+        "months": "hli",
+        "year": "xyoo",
+        "years": "xyoo",
+        "decade": "xyoo caum",
+        "decades": "xyoo lawm",
+        "century": "xyoo pua",
+        "centuries": "ib puas xyoo"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Thov tso cai nkag mus rau koj lub microphone",
+        "record": "Cov ntaub ntawv",
+        "recording": "Kev kaw cia",
+        "remains": "seem",
+        "maximum": "siab kawg",
+        "playing": "Ua si",
+        "recorded": "Sau tseg",
+        "clip": "clip",
+        "discard": "pov tseg",
+        "encoding": "Encoding"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Tsis muaj qhov video",
+        "SkipAfter": "Hla tom qab",
+        "Skip": "Hla"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Tsis muaj pdf qhov chaw"
+    },
+    "clip": {
+        "SetClipStart": "Teem Clip Start",
+        "ClipStart": "Clip Pib",
+        "SetClipEnd": "Teem Clip End",
+        "ClipEnd": "Clip Xaus",
+        "StartMoreEnd": "Pib txoj hauj lwm tsis tuaj yeem ua ntau tshaj qhov kawg",
+        "EndLessStart": "Txoj hauj lwm kawg tsis tuaj yeem tsawg dua qhov pib",
+        "WhichInvalid": "Sib cav &#39;uas&#39; invalid"
+    },
+    "alert": {
+        "title": "Ceeb toom"
+    },
+    "confirm": {
+        "title": "Paub meej",
+        "ok": "Yog lawm",
+        "cancel": "Tsis muaj"
+    },
+    "prompt": {
+        "title": "Ceev faj",
+        "ok": "Mus"
+    },
+    "tabs": {
+        "more": "ntau",
+        "Menu": "Ntawv qhia zaub mov"
+    },
+    "imagepicker": {
+        "errorReadingFile": "yuam kev nyeem ntawv",
+        "errorType": "Thov txim, tab sis hom ntaub ntawv no tsis txaus siab",
+        "cameraCommands": {
+            "prompt": "Koj xav ua dab tsi?",
+            "photo": "thaij duab tshiab",
+            "library": "Xaiv los ntawm lub tsev qiv ntawv"
+        },
+        "tooSmall": "Thov xaiv ib daim duab loj dua.",
+        "cropping": {
+            "title": "Kho qhov loj thiab qhov chaw",
+            "touchscreen": "Siv koj tus ntiv tes kom zoom thiab luag",
+            "notTouchscreen": "Siv koj tus nas &amp; lub log kom zoom thiab luag"
+        }
+    },
+    "timestamp": {
+        "lastNight": "nag hmo",
+        "lastEvening": "hnub kawg",
+        "yesterday": "nag hmo",
+        "thisMorning": "tag kis no",
+        "today": "hnub no",
+        "tonight": "hmo no",
+        "tomorrowMorning": "ua mor",
+        "tomorrow": "tag kis",
+        "hoursAgo": "{{h}} teev dhau los",
+        "hourAgo": "{{h}} teev dhau los",
+        "minuteAgo": "{{m}} feeb dhau los",
+        "minutesAgo": "{{m}} feeb dhau los",
+        "secondAgo": "{{s}} thib ob dhau los",
+        "secondsAgo": "{{s}} vib nas this dhau los",
+        "fewSecondsAgo": "vib nas this dhau los",
+        "rightNow": "tam sim no",
+        "inSecond": "hauv {{s}} thib ob",
+        "inSeconds": "hauv {{s}} vib nas this",
+        "inMinute": "hauv {{m}} feeb",
+        "inMinutes": "hauv {{m}} feeb",
+        "inHour": "hauv {{h}} teev",
+        "inHours": "hauv {{h}} teev",
+        "inUnderMinute": "hauv qab 1 feeb"
+    },
+    "browser": {
+        "insecureContext": "Koj yuav tsum tau mus saib hauv cov ntsiab lus ruaj ntseg rau qhov no ua haujlwm"
+    },
+    "scan": {
+        "QR": "Luam theej duab QR cov lej"
+    },
+    "input": {
+        "Placeholder": "Pib ntaus ntawv..."
+    }
+}

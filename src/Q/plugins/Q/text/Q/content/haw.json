@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Ua hewa {{status}} i ka wā e noi ana",
+        "canceled": "Ua kāpae ʻia ke noi",
+        "500": "Kuʻia kikowaena kikowaena",
+        "404": "ʻAʻole i loaʻa: {{url}}",
+        "501": "Hoʻopau ʻia ke noi",
+        "401": "ʻAʻole ʻae ʻia",
+        "403": "Papa ʻia"
+    },
+    "nonce": {
+        "sameDomain": "Ua pau ke kau. Hoʻohou i ka ʻaoʻao a hoʻāʻo hou.",
+        "otherDomain": "Kākoʻo ʻia ke noi kaʻina kapu i ka ʻāina ʻē ma {{baseUrl}}"
+    },
+    "words": {
+        "tap": "paʻi",
+        "click": "kaomi",
+        "yes": "ae",
+        "no": "aʻole",
+        "Tap": "Piʻi",
+        "Click": "Kaomi",
+        "Yes": "ae",
+        "No": "Aʻole",
+        "OK": "OK",
+        "Alert": "Makaʻala",
+        "Confirm": "E hōʻoia",
+        "Prompt": "Hoʻomaka"
+    },
+    "months": {
+        "1": "Ianuali",
+        "2": "Pepeluali",
+        "3": "Malaki",
+        "4": "Apelila",
+        "5": "Mei",
+        "6": "Iune",
+        "7": "Iulai",
+        "8": "Aukake",
+        "9": "Kepakemapa",
+        "10": "Okakopa",
+        "11": "Nowemapa",
+        "12": "Kekemapa"
+    },
+    "durations": {
+        "second": "ka lua",
+        "seconds": "kekona",
+        "minute": "minuke",
+        "minutes": "minuke",
+        "hour": "hola",
+        "day": "lā",
+        "days": "lā",
+        "week": "pule",
+        "weeks": "pule",
+        "month": "mahina",
+        "months": "mahina",
+        "year": "makahiki",
+        "years": "makahiki",
+        "decade": "ʻumi makahiki",
+        "decades": "mau makahiki",
+        "century": "kenekulia",
+        "centuries": "mau kenekulia"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "E ʻoluʻolu e ʻae i ke komo ʻana i kāu microphone",
+        "record": "Hoʻopaʻa",
+        "recording": "Hoʻopaʻa ʻana",
+        "remains": "koe",
+        "maximum": "kiʻekiʻe",
+        "playing": "Pāʻani",
+        "recorded": "Hoʻopaʻa ʻia",
+        "clip": "kipi",
+        "discard": "E hoolei",
+        "encoding": "Hoʻopili"
+    },
+    "video": {
+        "clip": "kipi",
+        "errorNoSource": "ʻAʻohe kumu wikiō",
+        "SkipAfter": "Holo ma hope",
+        "Skip": "Holoi"
+    },
+    "pdf": {
+        "clip": "kipi",
+        "errorNoSource": "ʻAʻohe kumu pdf"
+    },
+    "clip": {
+        "SetClipStart": "E hoʻonohonoho i ka hoʻomaka Clip",
+        "ClipStart": "Hoʻomaka Clip",
+        "SetClipEnd": "E hoʻopaʻa i ka Hopena Clip",
+        "ClipEnd": "Hoʻopau Clip",
+        "StartMoreEnd": "ʻAʻole hiki ke ʻoi aku ke kūlana hoʻomaka ma mua o ke kūlana hope",
+        "EndLessStart": "ʻAʻole hiki ke emi ke kūlana hope ma mua o ke kūlana hoʻomaka",
+        "WhichInvalid": "He kūpono &#39;ole ka ho&#39;opa&#39;apa&#39;a"
+    },
+    "alert": {
+        "title": "Makaʻala"
+    },
+    "confirm": {
+        "title": "E hōʻoia",
+        "ok": "ae",
+        "cancel": "Aʻole"
+    },
+    "prompt": {
+        "title": "Hoʻomaka",
+        "ok": "Hele"
+    },
+    "tabs": {
+        "more": "hou aku",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Ua hewa ka heluhelu ʻana i ka faila",
+        "errorType": "E kala mai, ʻaʻole i kākoʻo ʻia kēia ʻano faila",
+        "cameraCommands": {
+            "prompt": "He aha kau i makemake ai e hana?",
+            "photo": "Lawe kiʻi hou",
+            "library": "E koho mai ka waihona"
+        },
+        "tooSmall": "E ʻoluʻolu e koho i kahi kiʻi nui aʻe.",
+        "cropping": {
+            "title": "Hoʻoponopono i ka nui a me ke kūlana",
+            "touchscreen": "E hoʻohana i kou manamana lima e hoʻonui a kauo",
+            "notTouchscreen": "E hoʻohana i kāu ʻiole a me ka huila e hoʻonui a kauo"
+        }
+    },
+    "timestamp": {
+        "lastNight": "i ka pō nei",
+        "lastEvening": "ka pō hope loa",
+        "yesterday": "i nehinei",
+        "thisMorning": "keia kakahiaka",
+        "today": "i kēia lā",
+        "tonight": "kēia pō",
+        "tomorrowMorning": "kakahiaka kakahiaka",
+        "tomorrow": "āpōpō",
+        "hoursAgo": "{{h}} hola aku nei",
+        "hourAgo": "{{h}} hola aku nei",
+        "minuteAgo": "{{m}} minuke aku nei",
+        "minutesAgo": "{{m}} minuke aku nei",
+        "secondAgo": "{{s}} kekona aku nei",
+        "secondsAgo": "{{s}} kekona aku nei",
+        "fewSecondsAgo": "kekona aku nei",
+        "rightNow": "i kēia manawa",
+        "inSecond": "i {{s}} kekona",
+        "inSeconds": "i loko o {{s}} kekona",
+        "inMinute": "i {{m}} minuke",
+        "inMinutes": "i loko o {{m}} minuke",
+        "inHour": "i ka hola {{h}}.",
+        "inHours": "i loko o {{h}} hola",
+        "inUnderMinute": "ma lalo o 1 minuke"
+    },
+    "browser": {
+        "insecureContext": "Pono ʻoe e mākaʻikaʻi ma kahi pōʻaiapili paʻa no kēia hana"
+    },
+    "scan": {
+        "QR": "E ʻimi i nā code QR"
+    },
+    "input": {
+        "Placeholder": "E hoʻomaka e paʻi..."
+    }
+}

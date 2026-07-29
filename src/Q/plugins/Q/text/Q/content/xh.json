@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Impazamo {{status}} ngexesha lesicelo",
+        "canceled": "Isicelo sirhoxisiwe",
+        "500": "Impazamo yeSeva yangaphakathi",
+        "404": "Ayifunyenwanga: {{url}}",
+        "501": "Isicelo siphazamisekile",
+        "401": "Ukungagunyaziswanga",
+        "403": "Akuvumelekanga"
+    },
+    "nonce": {
+        "sameDomain": "Iseshoni iphelelwe lixesha. Hlaziya eli phepha uze uzame kwakhona.",
+        "otherDomain": "Isicelo esivaliweyo sedomeyini yangaphandle kwi-domain yangaphandle apha {{baseUrl}}"
+    },
+    "words": {
+        "tap": "itephu",
+        "click": "cofa",
+        "yes": "Ewe",
+        "no": "hayi",
+        "Tap": "Thepha",
+        "Click": "Cofa",
+        "Yes": "Ewe",
+        "No": "Hayi",
+        "OK": "KULUNGILE",
+        "Alert": "Isilumkiso",
+        "Confirm": "Qinisekisa",
+        "Prompt": "Ngokukhawuleza"
+    },
+    "months": {
+        "1": "EyoMqungu",
+        "2": "EyoMdumba",
+        "3": "EyoKwindla",
+        "4": "UTshazimpuzi",
+        "5": "UCanzibe",
+        "6": "Isilimela",
+        "7": "EyeKhala",
+        "8": "EyeThupha",
+        "9": "EyoMsintsi",
+        "10": "EyeDwarha",
+        "11": "EyeNkanga",
+        "12": "EtiMnga"
+    },
+    "durations": {
+        "second": "Isibini",
+        "seconds": "imizuzwana",
+        "minute": "mzuzu",
+        "minutes": "imizuzu",
+        "hour": "iiyure",
+        "day": "usuku",
+        "days": "iintsuku",
+        "week": "iveki",
+        "weeks": "iiveki",
+        "month": "inyanga",
+        "months": "iinyanga",
+        "year": "unyaka",
+        "years": "iminyaka",
+        "decade": "ishumi leminyaka",
+        "decades": "amashumi eminyaka",
+        "century": "kwinkulungwane",
+        "centuries": "iinkulungwane"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Nceda vumela ufikelelo kumbhobho wakho",
+        "record": "Rekhoda",
+        "recording": "Ukurekhoda",
+        "remains": "uhlala",
+        "maximum": "ubuninzi",
+        "playing": "Ukudlala",
+        "recorded": "Irekhodwe",
+        "clip": "ikliphu",
+        "discard": "Lahla",
+        "encoding": "Ufakelo lweekhowudi"
+    },
+    "video": {
+        "clip": "ikliphu",
+        "errorNoSource": "Akukho mthombo wevidiyo",
+        "SkipAfter": "Tsiba emva",
+        "Skip": "Tsiba"
+    },
+    "pdf": {
+        "clip": "ikliphu",
+        "errorNoSource": "Akukho mthombo wepdf"
+    },
+    "clip": {
+        "SetClipStart": "Cwangcisa ukuQalisa iKliphu",
+        "ClipStart": "Ikliphu Qala",
+        "SetClipEnd": "Seta Isiphelo seClip",
+        "ClipEnd": "Ukuphela kweClip",
+        "StartMoreEnd": "Indawo yokuqala ayikwazi ukuba ngaphezu kwendawo yokugqibela",
+        "EndLessStart": "Indawo yesiphelo ayinakuba ngaphantsi kwendawo yokuqala",
+        "WhichInvalid": "Ingxoxo &#39;eyiyo&#39; ayisebenzi"
+    },
+    "alert": {
+        "title": "Isilumkiso"
+    },
+    "confirm": {
+        "title": "Qinisekisa",
+        "ok": "Ewe",
+        "cancel": "Hayi"
+    },
+    "prompt": {
+        "title": "Ngokukhawuleza",
+        "ok": "Hamba"
+    },
+    "tabs": {
+        "more": "Kaninzi",
+        "Menu": "Imenyu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Ifayile yempazamo yokufunda",
+        "errorType": "Uxolo, kodwa olu hlobo lwefayile aluxhaswanga",
+        "cameraCommands": {
+            "prompt": "Ingaba ungathanda ukwenza ntoni?",
+            "photo": "Thatha ifoto entsha",
+            "library": "Khetha kwithala leencwadi"
+        },
+        "tooSmall": "Nceda ukhethe umfanekiso omkhulu.",
+        "cropping": {
+            "title": "Lungisa ubungakanani kunye nendawo",
+            "touchscreen": "Sebenzisa iminwe yakho ukusondeza kunye nokutsala",
+            "notTouchscreen": "Sebenzisa imawusi yakho kunye nevili ukusondeza kunye nokutsala"
+        }
+    },
+    "timestamp": {
+        "lastNight": "izolo ebusuku",
+        "lastEvening": "ngobusuku bokugqibela",
+        "yesterday": "izolo",
+        "thisMorning": "ngale ntsasa",
+        "today": "namhlanje",
+        "tonight": "ngobu busuku",
+        "tomorrowMorning": "kusasa kusasa",
+        "tomorrow": "ngomso",
+        "hoursAgo": "{{h}} iiyure ezidlulileyo",
+        "hourAgo": "{{h}} iyure edluleyo",
+        "minuteAgo": "{{m}} umzuzu odluleyo",
+        "minutesAgo": "{{m}} imizuzu edluleyo",
+        "secondAgo": "{{s}} umzuzwana odlule",
+        "secondsAgo": "{{s}} imizuzwana edlule",
+        "fewSecondsAgo": "kwimizuzwana edlulileyo",
+        "rightNow": "ngoku",
+        "inSecond": "ku {{s}} umzuzwana",
+        "inSeconds": "kwi {{s}} imizuzwana",
+        "inMinute": "kumzuzu {{m}}",
+        "inMinutes": "kwi{999}} imizuzu",
+        "inHour": "kwi {{h}} iyure",
+        "inHours": "kwii {{h}} iiyure",
+        "inUnderMinute": "ngaphantsi komzuzu omnye"
+    },
+    "browser": {
+        "insecureContext": "Kufuneka ukhangele kumxholo okhuselekileyo ukuze oku kusebenze"
+    },
+    "scan": {
+        "QR": "Skena iikhowudi zeQR"
+    },
+    "input": {
+        "Placeholder": "Qalisa ukuchwetheza..."
+    }
+}

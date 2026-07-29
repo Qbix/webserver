@@ -1,0 +1,5 @@
+{
+	"MissingFile": "eksik dosya {{filename}}",
+	"InvalidLanguage": "ge\u00e7ersiz dil {{language}}",
+	"RequiredField": "{{field}} gerekli"
+}

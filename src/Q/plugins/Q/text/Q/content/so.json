@@ -1,0 +1,158 @@
+{
+    "request": {
+        "error": "Khalad {{status}} marka la codsado",
+        "canceled": "Codsiga waa la joojiyay",
+        "500": "Cilad gudaha server-ka",
+        "404": "Lama helin: {{url}}",
+        "501": "Codsiga waa la joojiyay",
+        "401": "Aan la fasaxin",
+        "403": "mamnuuc"
+    },
+    "nonce": {
+        "sameDomain": "Fadhigu wuu dhacay Dib u cusboonaysii bogga oo isku day mar kale.",
+        "otherDomain": "Codsiga interneedka ee la xidhay {{baseUrl}}"
+    },
+    "words": {
+        "tap": "taabo",
+        "click": "guji",
+        "yes": "haa",
+        "no": "maya",
+        "Tap": "Taabo",
+        "Click": "Guji",
+        "Yes": "Haa",
+        "No": "Maya",
+        "OK": "OK",
+        "Alert": "Digniin",
+        "Confirm": "Xaqiiji",
+        "Prompt": "degdeg"
+    },
+    "months": {
+        "1": "Janaayo",
+        "2": "Febraayo",
+        "3": "Maarso",
+        "4": "Abriil",
+        "5": "Laga yaabaa",
+        "6": "Juun",
+        "7": "Julaay",
+        "8": "Ogosto",
+        "9": "Sebtembar",
+        "10": "Oktoobar",
+        "11": "Nofeembar",
+        "12": "December"
+    },
+    "durations": {
+        "second": "labaad",
+        "seconds": "ilbiriqsi",
+        "minute": "daqiiqo",
+        "minutes": "daqiiqado",
+        "hour": "saacadood",
+        "day": "maalin",
+        "days": "maalmo",
+        "week": "usbuuca",
+        "weeks": "toddobaadyo",
+        "month": "bil",
+        "months": "bilo",
+        "year": "sanad",
+        "years": "sanado",
+        "decade": "toban sano",
+        "decades": "tobanaan sano",
+        "century": "qarniga",
+        "centuries": "qarniyo"
+    },
+    "audio": {
+        "allowMicrophoneAccess": "Fadlan u oggolow gelitaanka makarafoonkaaga",
+        "record": "Diiwaangeli",
+        "recording": "Duubista",
+        "remains": "haray",
+        "maximum": "ugu badnaan",
+        "playing": "Ciyaarta",
+        "recorded": "La duubay",
+        "clip": "clip",
+        "discard": "Tuur",
+        "encoding": "Codaynta"
+    },
+    "video": {
+        "clip": "clip",
+        "errorNoSource": "Ma jiro il muuqaal ah",
+        "SkipAfter": "Ka dib ka bood",
+        "Skip": "Ka bood"
+    },
+    "pdf": {
+        "clip": "clip",
+        "errorNoSource": "Ma jiro il pdf"
+    },
+    "clip": {
+        "SetClipStart": "Deji Bilawga Clip-ka",
+        "ClipStart": "Bilow Bilow",
+        "SetClipEnd": "Deji Dhamaadka Clip",
+        "ClipEnd": "Clip Dhamaad",
+        "StartMoreEnd": "Booska bilowgu kama badnaan karo booska dhamaadka",
+        "EndLessStart": "Booska dhamaadka kama yaraan karo booska bilowga",
+        "WhichInvalid": "Doodda &#39;oo&#39; aan sax ahayn"
+    },
+    "alert": {
+        "title": "Digniin"
+    },
+    "confirm": {
+        "title": "Xaqiiji",
+        "ok": "Haa",
+        "cancel": "Maya"
+    },
+    "prompt": {
+        "title": "degdeg",
+        "ok": "Tag"
+    },
+    "tabs": {
+        "more": "dheeraad ah",
+        "Menu": "Menu"
+    },
+    "imagepicker": {
+        "errorReadingFile": "Khalad akhriska faylka",
+        "errorType": "Waan ka xunahay, laakiin nooca faylkan lama taageero",
+        "cameraCommands": {
+            "prompt": "Maxaad jeclaan lahayd inaad sameyso?",
+            "photo": "Sawir cusub qaado",
+            "library": "Ka dooro maktabadda"
+        },
+        "tooSmall": "Fadlan door sawir ka weyn",
+        "cropping": {
+            "title": "Hagaajin cabbirka iyo booska",
+            "touchscreen": "Isticmaal farahaaga si aad u dhawaajiso oo u jiido",
+            "notTouchscreen": "Isticmaal jiirkaaga &amp; giraangirahaaga si aad u dhawaajiso oo aad u jiiddo"
+        }
+    },
+    "timestamp": {
+        "lastNight": "xalay",
+        "lastEvening": "habeen hore",
+        "yesterday": "shalay",
+        "thisMorning": "subaxan",
+        "today": "maanta",
+        "tonight": "caawa",
+        "tomorrowMorning": "tom subax",
+        "tomorrow": "berrito",
+        "hoursAgo": "{{h}} saac kahor",
+        "hourAgo": "{{h}} saac kahor",
+        "minuteAgo": "{{m}} daqiiqo kahor",
+        "minutesAgo": "{{m}} daqiiqo kahor",
+        "secondAgo": "{{s}} ilbiriqsi kahor",
+        "secondsAgo": "{{s}} ilbiriqsi kahor",
+        "fewSecondsAgo": "ilbiriqsi ka hor",
+        "rightNow": "haddadaan",
+        "inSecond": "gudaha {{s}} ilbiriqsi",
+        "inSeconds": "gudaha {{s}} sekan",
+        "inMinute": "gudaha {{m}} daqiiqo",
+        "inMinutes": "gudaha {{m}} daqiiqo",
+        "inHour": "gudaha {{h}} saac",
+        "inHours": "gudaha {{h}} saacadood",
+        "inUnderMinute": "in ka yar 1 daqiiqo"
+    },
+    "browser": {
+        "insecureContext": "Waxaad u baahan tahay inaad ku dhex baadho xaalad sugan si ay tani u shaqeyso"
+    },
+    "scan": {
+        "QR": "Sawir koodka QR"
+    },
+    "input": {
+        "Placeholder": "Bilow teeb..."
+    }
+}

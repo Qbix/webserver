@@ -1,0 +1,5 @@
+{
+    "MissingFile": "ifayela elingekho {{filename}}",
+    "InvalidLanguage": "ulimi olungavumelekile {{language}}",
+    "RequiredField": "{{field}} iyadingeka"
+}

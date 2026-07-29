@@ -1,0 +1,5 @@
+{
+    "MissingFile": "ifayile elahlekileyo {{filename}}",
+    "InvalidLanguage": "ulwimi olungasebenziyo {{language}}",
+    "RequiredField": "{{field}} iyafuneka"
+}

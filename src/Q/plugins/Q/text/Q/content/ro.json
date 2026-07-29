@@ -1,0 +1,158 @@
+{
+	"request": {
+		"error": "Eroare {{status}} \u00een timpul solicit\u0103rii",
+		"canceled": "Solicitare anulat\u0103",
+		"500": "Internal Server Error",
+		"404": "Nu a fost g\u0103sit: {{url}}",
+		"501": "Solicitarea a fost \u00eentrerupt\u0103",
+		"401": "Neautorizat",
+		"403": "Interzis"
+	},
+	"nonce": {
+		"sameDomain": "Sesiunea a expirat. Actualiza\u021bi pagina \u0219i \u00eencerca\u021bi din nou.",
+		"otherDomain": "Cerere {{method}} \u00eentre domenii blocat\u0103 de la un domeniu str\u0103in la adresa {{baseUrl}}"
+	},
+	"words": {
+		"tap": "Atinge\u021bi",
+		"click": "clic",
+		"yes": "da",
+		"no": "Nu",
+		"Tap": "Atingere",
+		"Click": "Clic",
+		"Yes": "da",
+		"No": "Nu",
+		"OK": "Bine",
+		"Alert": "Alerta",
+		"Confirm": "Confirmare",
+		"Prompt": "Introduce\u021bi text"
+	},
+	"months": {
+		"1": "ianuarie",
+		"2": "februarie",
+		"3": "Martie",
+		"4": "Aprilie",
+		"5": "Mai",
+		"6": "iunie",
+		"7": "iulie",
+		"8": "August",
+		"9": "Septembrie",
+		"10": "octombrie",
+		"11": "noiembrie",
+		"12": "decembrie"
+	},
+	"durations": {
+		"second": "al doilea",
+		"seconds": "secunde",
+		"minute": "minut",
+		"minutes": "minute",
+		"hour": "ore",
+		"day": "zi",
+		"days": "zile",
+		"week": "s\u0103pt\u0103m\u00e2n\u0103",
+		"weeks": "s\u0103pt\u0103m\u00e2ni",
+		"month": "lun\u0103",
+		"months": "luni",
+		"year": "an",
+		"years": "ani",
+		"decade": "deceniu",
+		"decades": "decenii",
+		"century": "secol",
+		"centuries": "secole"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "V\u0103 rug\u0103m s\u0103 permite\u021bi accesul la microfon",
+		"record": "Record",
+		"recording": "\u00cenregistrare",
+		"remains": "ramane",
+		"maximum": "maxim",
+		"playing": "Joc",
+		"recorded": "\u00cenregistrate",
+		"clip": "clam\u0103",
+		"discard": "Arunc\u0103",
+		"encoding": "Codificare"
+	},
+	"video": {
+		"clip": "clam\u0103",
+		"errorNoSource": "F\u0103r\u0103 surs\u0103 video",
+		"SkipAfter": "Sari peste",
+		"Skip": "Ocolire"
+	},
+	"pdf": {
+		"clip": "clam\u0103",
+		"errorNoSource": "F\u0103r\u0103 surs\u0103 pdf"
+	},
+	"clip": {
+		"SetClipStart": "Seta\u021bi Clip Start",
+		"ClipStart": "Clip Start",
+		"SetClipEnd": "Seta\u021bi sf\u00e2r\u0219itul clipului",
+		"ClipEnd": "Clip End",
+		"StartMoreEnd": "Pozi\u021bia de \u00eenceput nu poate fi mai mult dec\u00e2t pozi\u021bia final\u0103",
+		"EndLessStart": "Pozi\u021bia final\u0103 nu poate fi mai mic\u0103 dec\u00e2t pozi\u021bia de \u00eenceput",
+		"WhichInvalid": "Argumentul \u201ecare\u201d este invalid"
+	},
+	"alert": {
+		"title": "\u00cen\u0219tiin\u021bare"
+	},
+	"confirm": {
+		"title": "A confirma",
+		"ok": "da",
+		"cancel": "Nu"
+	},
+	"prompt": {
+		"title": "Introduce\u021bi text",
+		"ok": "Bine"
+	},
+	"tabs": {
+		"more": "Mai mult",
+		"Menu": "Meniul"
+	},
+	"imagepicker": {
+		"errorReadingFile": "Eroare la citirea fi\u0219ierului",
+		"errorType": "Ne pare r\u0103u, dar acest tip de fi\u0219ier nu este acceptat",
+		"cameraCommands": {
+			"prompt": "Ce ai vrea sa faci?",
+			"photo": "Face\u021bi o nou\u0103 fotografie",
+			"library": "Selecta\u021bi din bibliotec\u0103"
+		},
+		"tooSmall": "V\u0103 rug\u0103m s\u0103 alege\u021bi o imagine mai mare.",
+		"cropping": {
+			"title": "Regla\u021bi dimensiunea \u0219i pozi\u021bia",
+			"touchscreen": "Folosi\u021bi degetele pentru a m\u0103ri \u0219i trage",
+			"notTouchscreen": "Folose\u0219te mouse-ul \u0219i roata pentru a m\u0103ri \u0219i trage"
+		}
+	},
+	"timestamp": {
+		"lastNight": "asear\u0103",
+		"lastEvening": "ultima ajun",
+		"yesterday": "ieri",
+		"thisMorning": "\u00een aceast\u0103 diminea\u021b\u0103",
+		"today": "ast\u0103zi",
+		"tonight": "ast\u0103 sear\u0103",
+		"tomorrowMorning": "maine dimineata",
+		"tomorrow": "M\u00e2ine",
+		"hoursAgo": "acum {{h}} ore",
+		"hourAgo": "acum {{h}} or\u0103",
+		"minuteAgo": "acum {{m}} minut",
+		"minutesAgo": "{{m}} minute \u00een urm\u0103",
+		"secondAgo": "acum {{s}} secund\u0103",
+		"secondsAgo": "acum {{s}} secunde",
+		"fewSecondsAgo": "secunde \u00een urm\u0103",
+		"rightNow": "chiar acum",
+		"inSecond": "\u00een {{s}} secund\u0103",
+		"inSeconds": "\u00een {{s}} secunde",
+		"inMinute": "\u00een {{m}} minut",
+		"inMinutes": "\u00een {{m}} minute",
+		"inHour": "\u00een {{h}} or\u0103",
+		"inHours": "\u00een {{h}} ore",
+		"inUnderMinute": "\u00een mai pu\u021bin de 1 minut"
+	},
+	"browser": {
+		"insecureContext": "Pentru ca acest lucru s\u0103 func\u021bioneze, trebuie s\u0103 naviga\u021bi \u00eentr-un context securizat"
+	},
+	"scan": {
+		"QR": "Scana\u021bi coduri QR"
+	},
+	"input": {
+		"Placeholder": "\u00cencepe s\u0103 tastezi..."
+	}
+}

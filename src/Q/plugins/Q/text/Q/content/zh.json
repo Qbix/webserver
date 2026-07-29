@@ -1,0 +1,160 @@
+{
+	"request": {
+		"error": "\u8bf7\u6c42\u671f\u95f4\u51fa\u73b0\u9519\u8bef {{status}}",
+		"canceled": "\u8bf7\u6c42\u5df2\u53d6\u6d88",
+		"500": "\u5185\u90e8\u670d\u52a1\u5668\u9519\u8bef",
+		"404": "\u672a\u627e\u5230\uff1a{{url}}",
+		"501": "\u8bf7\u6c42\u4e2d\u65ad",
+		"401": "\u672a\u7ecf\u6388\u6743",
+		"403": "\u7981\u6b62\u7684"
+	},
+	"nonce": {
+		"sameDomain": "\u4f1a\u8bdd\u5df2\u8fc7\u671f\u3002\u5237\u65b0\u9875\u9762\u5e76\u91cd\u8bd5\u3002",
+		"otherDomain": "\u963b\u6b62\u4e86\u6765\u81ea\u5883\u5916\u57df\u7684\u8de8\u57df{{method}}\u8bf7\u6c42\uff08\u5730\u5740{{baseUrl}}"
+	},
+	"words": {
+		"tap": "\u89e6\u78b0",
+		"click": "\u70b9\u51fb",
+		"yes": "\u662f\u7684",
+		"no": "\u4e0d",
+		"Tap": "\u89e6\u78b0",
+		"Click": "\u70b9\u51fb",
+		"Yes": "\u662f\u7684",
+		"No": "\u4e0d",
+		"OK": "\u597d\u7684",
+		"Alert": "\u8b66\u62a5",
+		"Confirm": "\u786e\u8ba4",
+		"Prompt": "\u8f93\u5165\u6587\u5b57"
+	},
+	"months": {
+		"1": "\u4e00\u6708",
+		"2": "\u4e8c\u6708",
+		"3": "\u884c\u8fdb",
+		"4": "\u56db\u6708",
+		"5": "\u53ef\u80fd",
+		"6": "\u516d\u6708",
+		"7": "\u4e03\u6708",
+		"8": "\u516b\u6708",
+		"9": "\u4e5d\u6708",
+		"10": "\u5341\u6708",
+		"11": "\u5341\u4e00\u6708",
+		"12": "\u5341\u4e8c\u6708"
+	},
+	"audio": {
+		"allowMicrophoneAccess": "\u8bf7\u5141\u8bb8\u8bbf\u95ee\u60a8\u7684\u9ea6\u514b\u98ce",
+		"record": "\u8bb0\u5f55",
+		"recording": "\u8bb0\u5f55",
+		"remains": "\u9057\u8ff9",
+		"maximum": "\u6700\u5927\u9650\u5ea6",
+		"playing": "\u64ad\u653e",
+		"recorded": "\u5f55\u5236\u7684",
+		"clip": "\u5939\u5b50",
+		"orupload": "\u6216\u4e0a\u4f20",
+		"usethis": "\u7528\u8fd9\u4e2a",
+		"discard": "\u4e22\u5f03",
+		"encoding": "\u7f16\u7801"
+	},
+	"alert": {
+		"title": "\u6ce8\u610f"
+	},
+	"confirm": {
+		"title": "\u786e\u8ba4",
+		"ok": "\u662f\u7684",
+		"cancel": "\u4e0d"
+	},
+	"prompt": {
+		"title": "\u8f93\u5165\u6587\u5b57",
+		"ok": "\u597d\u7684"
+	},
+	"imagepicker": {
+		"errorReadingFile": "\u8bfb\u53d6\u6587\u4ef6\u65f6\u51fa\u9519",
+		"cameraCommands": {
+			"prompt": "\u4f60\u60f3\u5e72\u4ec0\u4e48\uff1f",
+			"photo": "\u62cd\u6444\u65b0\u7167\u7247",
+			"library": "\u4ece\u5e93\u4e2d\u9009\u62e9"
+		},
+		"tooSmall": "\u8bf7\u9009\u62e9\u66f4\u5927\u7684\u56fe\u50cf\u3002",
+		"cropping": {
+			"title": "\u8c03\u6574\u5927\u5c0f\u548c\u4f4d\u7f6e",
+			"touchscreen": "\u7528\u624b\u6307\u7f29\u653e\u548c\u62d6\u52a8",
+			"notTouchscreen": "\u4f7f\u7528\u9f20\u6807\u548c\u6eda\u8f6e\u8fdb\u884c\u7f29\u653e\u548c\u62d6\u52a8"
+		},
+		"errorType": "\u62b1\u6b49\uff0c\u4e0d\u652f\u6301\u6b64\u6587\u4ef6\u7c7b\u578b"
+	},
+	"timestamp": {
+		"lastNight": "\u6628\u591c",
+		"lastEvening": "\u524d\u591c",
+		"yesterday": "\u6628\u5929",
+		"thisMorning": "\u4eca\u5929\u65e9\u4e0a",
+		"today": "\u4eca\u5929",
+		"tonight": "\u4eca\u665a",
+		"tomorrowMorning": "\u6c64\u59c6\u00b7\u83ab\u6069",
+		"tomorrow": "\u660e\u5929",
+		"hoursAgo": "{{h}} \u5c0f\u65f6\u524d",
+		"hourAgo": "{{h}} \u5c0f\u65f6\u524d",
+		"minuteAgo": "{{m}} \u5206\u949f\u524d",
+		"minutesAgo": "{{m}} \u5206\u949f\u524d",
+		"secondAgo": "{{s}} \u79d2\u524d",
+		"secondsAgo": "{{s}} \u79d2\u524d",
+		"fewSecondsAgo": "\u51e0\u79d2\u949f\u524d",
+		"rightNow": "\u73b0\u5728",
+		"inSecond": "{{s}} \u79d2\u540e",
+		"inSeconds": "\u5728 {{s}} \u79d2\u5185",
+		"inMinute": "{{m}} \u5206\u949f\u5185",
+		"inMinutes": "{{m}} \u5206\u949f\u540e",
+		"inHour": "{{h}} \u5c0f\u65f6\u5185",
+		"inHours": "{{h}} \u5c0f\u65f6\u5185",
+		"inUnderMinute": "\u4e0d\u5230 1 \u5206\u949f"
+	},
+	"tabs": {
+		"more": "\u66f4\u591a\u7684",
+		"Menu": "\u83dc\u5355"
+	},
+	"video": {
+		"clip": "\u5939\u5b50",
+		"errorNoSource": "\u6ca1\u6709\u89c6\u9891\u6e90",
+		"SkipAfter": "\u4e4b\u540e\u8df3\u8fc7",
+		"Skip": "\u8df3\u8fc7"
+	},
+	"pdf": {
+		"clip": "\u5939\u5b50",
+		"errorNoSource": "\u6ca1\u6709pdf\u6e90"
+	},
+	"clip": {
+		"SetClipStart": "\u8bbe\u7f6e\u526a\u8f91\u5f00\u59cb",
+		"ClipStart": "\u526a\u8f91\u5f00\u59cb",
+		"SetClipEnd": "\u8bbe\u7f6e\u526a\u8f91\u7ed3\u675f",
+		"ClipEnd": "\u526a\u8f91\u7ed3\u675f",
+		"StartMoreEnd": "\u5f00\u59cb\u4f4d\u7f6e\u4e0d\u80fd\u8d85\u8fc7\u7ed3\u675f\u4f4d\u7f6e",
+		"EndLessStart": "\u7ed3\u675f\u4f4d\u7f6e\u4e0d\u80fd\u5c0f\u4e8e\u5f00\u59cb\u4f4d\u7f6e",
+		"WhichInvalid": "\u53c2\u6570\u201c\u54ea\u4e2a\u201d\u65e0\u6548"
+	},
+	"durations": {
+		"second": "\u7b2c\u4e8c",
+		"seconds": "\u79d2",
+		"minute": "\u5206\u949f",
+		"minutes": "\u5206\u949f",
+		"hour": "\u5c0f\u65f6",
+		"day": "\u65e5",
+		"days": "\u5929",
+		"week": "\u661f\u671f",
+		"weeks": "\u5468",
+		"month": "\u6708",
+		"months": "\u6708",
+		"year": "\u5e74",
+		"years": "\u5e74",
+		"decade": "\u5341\u5e74",
+		"decades": "\u51e0\u5341\u5e74",
+		"century": "\u4e16\u7eaa",
+		"centuries": "\u4e16\u7eaa"
+	},
+	"browser": {
+		"insecureContext": "\u60a8\u9700\u8981\u5728\u5b89\u5168\u7684\u4e0a\u4e0b\u6587\u4e2d\u6d4f\u89c8\u624d\u80fd\u6b63\u5e38\u5de5\u4f5c"
+	},
+	"scan": {
+		"QR": "\u626b\u63cf\u4e8c\u7ef4\u7801"
+	},
+	"input": {
+		"Placeholder": "\u5f00\u59cb\u8f93\u5165..."
+	}
+}
