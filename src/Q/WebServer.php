@@ -1974,13 +1974,15 @@ WORKER;
 	static function isIndexed($urlPath)
 	{
 		static $patterns = null;
-		if ($patterns === null) $patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(
-			'#^/img/#' => true
-		));
-		foreach ($patterns as $regex => $enabled) {
-			if ($enabled && preg_match(self::ensureRegex($regex), $urlPath)) return true;
+		if ($patterns === null) {
+			$patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(
+				'/img/' => true
+			));
 		}
-		return false; // not indexed by default
+		foreach ($patterns as $regex => $enabled) {
+			if (preg_match(self::ensureRegex($regex), $urlPath)) return (bool) $enabled;
+		}
+		return false;
 	}
 
 	// ── Directory listing ────────────────────────────────

@@ -88,25 +88,44 @@ class Q_WebServer_Image
 
 		// Check Accept header for format preference
 		$accept = $parsed['headers']['accept'] ?? '';
-		if (!$wantConvert && !$wantResize) {
-			// No explicit request — don't convert
-		} elseif ($wantResize && strpos($accept, 'image/webp') !== false
-			&& $outFormat !== 'webp' && $outFormat !== 'avif'
-		) {
-			// Browser supports webp and we're resizing anyway — use webp
-			$outFormat = 'webp';
+		$saveData = ($parsed['headers']['save-data'] ?? '') === 'on';
+
+		// Auto-select best format when resizing
+		if ($wantResize || $wantConvert) {
+			if (strpos($accept, 'image/avif') !== false
+				&& function_exists('imageavif')
+				&& $outFormat !== 'avif'
+			) {
+				$outFormat = 'avif'; // best compression
+			} elseif (strpos($accept, 'image/webp') !== false
+				&& $outFormat !== 'webp' && $outFormat !== 'avif'
+			) {
+				$outFormat = 'webp';
+			}
+		}
+
+		// Save-Data: reduce quality and prefer smaller format
+		$qualityOverride = null;
+		if ($saveData) {
+			$qualityOverride = 50; // lower quality for metered connections
+			if (!$w && !$h) {
+				// No resize requested but Save-Data is on — cap at 800px
+				$w = 800;
+			}
 		}
 
 		// Normalize jpeg
 		if ($outFormat === 'jpeg') $outFormat = 'jpg';
 
 		// Cache path: files/Q/cached/images/{basename}/{w}x{h}.{format}
+		// Include save-data in cache key to avoid serving low-quality to normal users
 		$basename = pathinfo($urlPath, PATHINFO_FILENAME);
 		$dirPart = dirname($urlPath);
 		$cacheKey = ltrim($dirPart . '/' . $basename, '/');
 		$sizeKey = ($w || $h)
 			? ($w ? $w : '') . 'x' . ($h ? $h : '')
 			: 'original';
+		if ($saveData) $sizeKey .= '_sd';
 		$cachePath = self::$cacheDir . str_replace('/', DS, $cacheKey)
 			. DS . $sizeKey . '.' . $outFormat;
 
@@ -122,7 +141,7 @@ class Q_WebServer_Image
 		}
 
 		// Generate in current process (forked child or event loop)
-		$result = self::generate($sourcePath, $cachePath, $w, $h, $outFormat);
+		$result = self::generate($sourcePath, $cachePath, $w, $h, $outFormat, $qualityOverride);
 		if (!$result) return null;
 
 		return self::imageResponse($cachePath, $outFormat, $parsed);
@@ -152,7 +171,7 @@ class Q_WebServer_Image
 	 * @method generate
 	 * @static
 	 */
-	static function generate($sourcePath, $cachePath, $w, $h, $outFormat)
+	static function generate($sourcePath, $cachePath, $w, $h, $outFormat, $qualityOverride = null)
 	{
 		if (!function_exists('imagecreatetruecolor')) return false;
 
@@ -254,7 +273,7 @@ class Q_WebServer_Image
 		if (!is_dir($dir)) @mkdir($dir, 0755, true);
 
 		// Save in target format
-		$quality = Q_Config::get('Q', 'images', 'quality', 82);
+		$quality = $qualityOverride ?? Q_Config::get('Q', 'images', 'quality', 82);
 		switch ($outFormat) {
 			case 'webp':
 				if (!function_exists('imagewebp')) { imagedestroy($src); return false; }
