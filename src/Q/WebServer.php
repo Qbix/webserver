@@ -2735,17 +2735,64 @@ HTML
 		// Block null bytes (directory traversal via null byte injection)
 		if (strpos($rel, "\0") !== false) return null;
 		$fsPath = realpath(self::$rootDir . $rel);
+
+		// If file not found, check for shortcuts/aliases:
+		// .lnk (Windows) or Mac alias with same name
 		if (!$fsPath) {
-			// Cache negative results too (404s won't re-stat)
-			if (count($pathCache) < 10000) $pathCache[$cacheKey] = null;
-			return null;
+			// Try .lnk extension
+			$lnkPath = self::$rootDir . $rel . '.lnk';
+			if (file_exists($lnkPath)) {
+				$target = Q_WebServer_Shortcut::resolve($lnkPath);
+				if ($target) $fsPath = $target;
+			}
+			// Try without extension — check if it's a Mac alias
+			if (!$fsPath && PHP_OS_FAMILY === 'Darwin') {
+				$rawPath = self::$rootDir . $rel;
+				if (file_exists($rawPath) && Q_WebServer_Shortcut::isShortcut($rawPath)) {
+					$target = Q_WebServer_Shortcut::resolve($rawPath);
+					if ($target) $fsPath = $target;
+				}
+			}
+			// Also check parent directories for shortcuts
+			// e.g. /plugins/Users/js/Users.js where /plugins/Users is an alias
+			if (!$fsPath) {
+				$parts = explode(DS, $rel);
+				$accumulated = self::$rootDir;
+				for ($i = 0; $i < count($parts) - 1; $i++) {
+					$accumulated .= $parts[$i];
+					if (!file_exists($accumulated) && !is_dir($accumulated)) {
+						// Check .lnk
+						if (file_exists($accumulated . '.lnk')) {
+							$target = Q_WebServer_Shortcut::resolve($accumulated . '.lnk');
+							if ($target && is_dir($target)) {
+								$remaining = implode(DS, array_slice($parts, $i + 1));
+								$resolved = realpath($target . DS . $remaining);
+								if ($resolved) { $fsPath = $resolved; break; }
+							}
+						}
+						// Check Mac alias
+						if (!$fsPath && PHP_OS_FAMILY === 'Darwin'
+							&& file_exists($accumulated)
+							&& Q_WebServer_Shortcut::isShortcut($accumulated)
+						) {
+							$target = Q_WebServer_Shortcut::resolve($accumulated);
+							if ($target && is_dir($target)) {
+								$remaining = implode(DS, array_slice($parts, $i + 1));
+								$resolved = realpath($target . DS . $remaining);
+								if ($resolved) { $fsPath = $resolved; break; }
+							}
+						}
+					}
+					$accumulated .= DS;
+				}
+			}
+			if (!$fsPath) {
+				if (count($pathCache) < 10000) $pathCache[$cacheKey] = null;
+				return null;
+			}
 		}
+
 		$fsPath = str_replace(array('/','\\'), DS, $fsPath);
-		$root = rtrim(self::$rootDir, DS);
-		if ($fsPath !== $root && strncmp($fsPath, self::$rootDir, strlen(self::$rootDir)) !== 0) {
-			$pathCache[$cacheKey] = null;
-			return null; // path traversal
-		}
 		$result = (is_dir($fsPath) || is_file($fsPath)) ? $fsPath : null;
 		if (count($pathCache) < 10000) $pathCache[$cacheKey] = $result;
 		return $result;
