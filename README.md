@@ -355,16 +355,28 @@ php qbixserver.php --port=8080  # done
 | **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
 | **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
 | **WebSocket** | Socket.IO v5 compatible + bare WebSocket. Server→client RPC. Client JS served at `/Q/socket.js` and `/socket.io/socket.io.js`. |
-| **Dashboard** | Live dashboard at `/Q/dashboard` — real-time request log, throughput sparkline, top paths, response times, memory, WebSocket connections, active rooms, status breakdown. Updates live via WebSocket. |
-| **Health check** | JSON at `/Q/health` — all stats for load balancers and monitoring. Also available at `/Q/stats` with full detail. |
-| **Control panel** | Password-protected at `/Q/panel` — manage apps and scripts |
+| **Rooms** | Process-per-room shared state, tick timers, broadcasting. Members join/leave, room state in PHP arrays. |
+| **Images** | On-the-fly resize (`?w=300`), auto format conversion (JPEG→WebP), `Save-Data` support, disk-cached with LRU eviction |
+| **Directory listing** | Grid/list toggle, lazy thumbnails, lightbox with download-at-size, multi-select, bulk ZIP download. Overridable with `listing.php` |
+| **Q.js frontend** | Bundled Q.min.js (187KB), jQuery shim (5.7KB), minimal Handlebars (6.1KB), 43 UI tools, 107 languages — served at `/Q/plugins/` |
+| **Dashboard** | Live at `/Q/dashboard` — request log, throughput, top paths, response times, memory, WebSocket connections, active rooms |
+| **Health check** | JSON at `/Q/health` — stats for load balancers and monitoring |
+| **Control panel** | Password-protected at `/Q/panel` — six tabs: Apps, Scripts, Plugins, Playground, System, Servers |
+| **Deploy** | `--deploy=production` CLI or one-click from Panel. rsync to remote servers via SSH. |
+| **Federation** | `Q::event()` forwarding between servers. HMAC-signed (Platform-compatible), per-message loop prevention, fingerprint pinning |
+| **API discovery** | `/.well-known/openapi.json` (Swagger/Postman), `/.well-known/mcp.json` (Claude/AI tools), `/.well-known/qbix.json` (server-to-server) |
+| **PHPDoc→API specs** | Handlers auto-documented from PHPDoc and YUIDoc blocks. `@private`/`@internal` to hide. |
+| **OpenClaiming** | Auto-generated ES256-signed server identity. Claims-in-folders: JSON templates auto-signed, PHP dynamic, pre-signed static. OCP wire format. |
+| **Shortcuts** | Windows `.lnk` files and Mac aliases resolved transparently. Platform plugin symlinks just work. |
+| **Self-signed certs** | Auto-generated P-256 key pair + TLS cert for server identity and inter-server trust |
 | **Rate limiting** | Per-IP with configurable windows and burst limits |
-| **Security** | Path traversal blocked, dotfiles blocked, 431 for oversized headers, 400 for malformed requests |
+| **Security** | Path traversal blocked, dotfiles blocked (except `.well-known/`), 431 for oversized headers, upload limits enforced |
 | **Graceful shutdown** | SIGTERM/SIGINT drain in-flight requests before closing |
 | **TLS** | Optional HTTPS with auto-certbot or manual certs |
 | **Logging** | Colored terminal output + file-based access logs |
 | **Access control** | X-Accel-Redirect support — PHP enforces access, server serves the file |
 | **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
+| **Platform compatible** | `Q_Utils::sign()`, `Q::event()`, handler conventions, config paths — all match Qbix Platform. Upgrade without code changes. |
 
 ---
 
