@@ -52,6 +52,7 @@ foreach ($argv as $i => $arg) {
 		echo "  -t               Test config and exit\n";
 		echo "  --stop           Graceful shutdown (via PID file)\n";
 		echo "  --reload         Re-exec server (via PID file)\n";
+		echo "  --deploy=TARGET  Deploy to remote server (from config/deploy.json)\n";
 		echo "  --version        Print version\n";
 		exit(0);
 	}
@@ -314,6 +315,72 @@ if ($opts['pid']) {
 	register_shutdown_function(function () use ($opts) {
 		@unlink($opts['pid']);
 	});
+}
+
+// ── Deploy ──────────────────────────────────────────
+
+foreach ($argv as $arg) {
+	if (strpos($arg, '--deploy') === 0) {
+		$target = (strpos($arg, '=') !== false) ? substr($arg, 9) : 'production';
+		$deployFile = (defined('APP_DIR') ? APP_DIR : $projectRoot) . DS . 'config' . DS . 'deploy.json';
+		if (!file_exists($deployFile)) {
+			fwrite(STDERR, "No config/deploy.json found. Create one:\n");
+			fwrite(STDERR, json_encode(array('targets' => array(
+				'production' => array(
+					'host' => 'myserver.com',
+					'user' => 'deploy',
+					'path' => '/var/www/myapp',
+					'key' => '~/.ssh/deploy_key',
+					'dirs' => array('web', 'handlers', 'classes', 'config')
+				)
+			)), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+			exit(1);
+		}
+		$deploy = json_decode(file_get_contents($deployFile), true);
+		$t = $deploy['targets'][$target] ?? null;
+		if (!$t) {
+			fwrite(STDERR, "Unknown target: $target. Available: " . implode(', ', array_keys($deploy['targets'] ?? array())) . "\n");
+			exit(1);
+		}
+		$baseDir = defined('APP_DIR') ? APP_DIR : $projectRoot;
+		$dirs = $t['dirs'] ?? array('web', 'handlers', 'classes', 'config', 'local');
+		$sshKey = !empty($t['key']) ? " -e 'ssh -i " . escapeshellarg($t['key']) . "'" : '';
+		$remote = $t['user'] . '@' . $t['host'] . ':' . rtrim($t['path'], '/') . '/';
+
+		echo "Deploying to {$target} ({$t['host']})...\n";
+		$total = 0;
+		foreach ($dirs as $dir) {
+			$localDir = $baseDir . DS . $dir;
+			if (!is_dir($localDir)) continue;
+			$cmd = "rsync -avz --delete{$sshKey} "
+				. escapeshellarg(rtrim($localDir, '/') . '/') . " "
+				. escapeshellarg($remote . $dir . '/') . " 2>&1";
+			echo "  rsync $dir/\n";
+			$output = shell_exec($cmd);
+			$lines = explode("\n", trim($output));
+			// Count transferred files (lines that don't start with . or end with /)
+			$transferred = count(array_filter($lines, function ($l) {
+				return $l && $l[0] !== '.' && substr($l, -1) !== '/' && strpos($l, 'sending') === false
+					&& strpos($l, 'total') === false && strpos($l, 'sent') === false;
+			}));
+			$total += $transferred;
+		}
+
+		// Hit remote reload endpoint if configured
+		if (!empty($t['reload_url'])) {
+			$secret = $t['reload_secret'] ?? '';
+			$ctx = stream_context_create(array('http' => array(
+				'method' => 'POST',
+				'header' => "Authorization: Bearer {$secret}\r\nContent-Length: 0\r\n",
+				'timeout' => 5,
+			)));
+			@file_get_contents($t['reload_url'], false, $ctx);
+			echo "  Reload signal sent\n";
+		}
+
+		echo "✨ Deployed $total files to $target\n";
+		exit(0);
+	}
 }
 
 // ── Request logging ─────────────────────────────────

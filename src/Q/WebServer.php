@@ -688,6 +688,27 @@ class Q_WebServer
 		$cached = Q_WebServer_Cache::get($parsed);
 		if ($cached) return $cached;
 
+		if ($path === '/Q/event' && $method === 'POST') {
+			return self::handleRemoteEvent($parsed);
+		}
+
+		// Server discovery — .well-known/qbix
+		if (strpos($path, '/.well-known/') === 0) {
+			$wellKnown = substr($path, 13);
+			if ($wellKnown === 'qbix' || $wellKnown === 'qbix.json') {
+				return self::wellKnownQbix($parsed);
+			}
+			if ($wellKnown === 'openapi.json' || $wellKnown === 'openapi') {
+				return self::wellKnownOpenAPI($parsed);
+			}
+			if ($wellKnown === 'mcp.json' || $wellKnown === 'mcp') {
+				return self::wellKnownMCP($parsed);
+			}
+			if (strpos($wellKnown, 'openclaiming/') === 0) {
+				return self::wellKnownOpenClaiming($parsed, $wellKnown);
+			}
+		}
+
 		if ($path === '/Q/health') {
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
 				return array('status' => 404, 'body' => 'Not found');
@@ -918,7 +939,39 @@ class Q_WebServer
 			}
 		}
 
-		// 2. Dashboard + Panel + WebSocket + Health (/Q/*)
+		// 2. Server discovery + federation endpoints
+		// RFC 8615 .well-known endpoints
+		if (strpos($path, '/.well-known/') === 0) {
+			$wellKnown = substr($path, 13);
+
+			$wkResponse = null;
+			if ($wellKnown === 'qbix' || $wellKnown === 'qbix.json') {
+				$wkResponse = self::wellKnownQbix($parsed);
+			} elseif ($wellKnown === 'openapi.json' || $wellKnown === 'openapi') {
+				$wkResponse = self::wellKnownOpenAPI($parsed);
+			} elseif ($wellKnown === 'mcp.json' || $wellKnown === 'mcp') {
+				$wkResponse = self::wellKnownMCP($parsed);
+			} elseif (strpos($wellKnown, 'openclaiming/') === 0) {
+				$wkResponse = self::wellKnownOpenClaiming($parsed, $wellKnown);
+			}
+
+			if ($wkResponse) {
+				self::sendResponse($client, $wkResponse['status'] ?? 200,
+					$wkResponse['body'] ?? '',
+					$wkResponse['headers']['Content-Type'] ?? 'application/json',
+					$wkResponse['headers'] ?? array());
+				return false;
+			}
+			// Fall through for other .well-known files (apple-app-site-association, acme, etc.)
+		}
+		if ($path === '/Q/event' && $method === 'POST') {
+			$response = self::handleRemoteEvent($parsed);
+			self::sendResponse($client, $response['status'] ?? 200, $response['body'] ?? '',
+				'application/json');
+			return false;
+		}
+
+		// 3. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
 			if ($path === '/Q/ws') {
 				if (Q_Config::get('Q', 'dashboard', null) === false) {
@@ -3223,6 +3276,350 @@ HTML;
 	 * Accepts POST with files[] JSON array of image URLs (with ?w= params).
 	 * Generates/caches each image, then streams a ZIP.
 	 */
+	// ── .well-known endpoints ────────────────────────────
+
+	/**
+	 * Qbix server manifest — server identity, fingerprint, capabilities.
+	 */
+	static function wellKnownQbix($parsed)
+	{
+		if (Q_Config::get('Q', 'federation', 'advertise', true) === false) {
+			return array('status' => 404, 'body' => 'Not found');
+		}
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$identity = Q_Utils::serverIdentity();
+		$info = array(
+			'server' => 'Qbix Server',
+			'version' => defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0.0',
+			'fingerprint' => $identity ? $identity['fingerprint'] : null,
+			'endpoints' => array(
+				'event' => '/Q/event',
+				'health' => '/Q/health',
+				'openapi' => '/.well-known/openapi.json',
+				'mcp' => '/.well-known/mcp.json',
+				'websocket' => '/Q/ws',
+			),
+			'links' => array(
+				'openapi' => 'https://' . $host . '/.well-known/openapi.json',
+				'mcp' => 'https://' . $host . '/.well-known/mcp.json',
+				'health' => 'https://' . $host . '/Q/health',
+				'openclaiming' => 'https://' . $host . '/.well-known/openclaiming/' . preg_replace('/:\d+$/', '', $host) . '/server.json',
+			),
+		);
+		if (Q_Config::get('Q', 'federation', 'advertiseApps', false)) {
+			$apps = Q_WebServer_Panel::apiListApps();
+			$info['apps'] = array_map(function ($a) {
+				return array('name' => $a['name'], 'plugins' => $a['plugins'] ?? array());
+			}, $apps['apps'] ?? array());
+		}
+		if (Q_Config::get('Q', 'federation', 'advertisePlugins', true)) {
+			$plugins = Q_WebServer_Panel::apiListPlugins();
+			$info['plugins'] = array_map(function ($p) {
+				return array('name' => $p['name'], 'version' => $p['version'] ?? null);
+			}, $plugins['plugins'] ?? array());
+		}
+		return array('status' => 200,
+			'body' => json_encode($info, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			'headers' => array('Content-Type' => 'application/json',
+				'Access-Control-Allow-Origin' => '*'));
+	}
+
+	/**
+	 * OpenAPI 3.1 spec — compatible with Swagger UI, Postman, Redoc.
+	 * Auto-generated from the server's actual endpoints.
+	 */
+	static function wellKnownOpenAPI($parsed)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$spec = array(
+			'openapi' => '3.1.0',
+			'info' => array(
+				'title' => 'Qbix Server API',
+				'version' => defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0.0',
+				'description' => 'Auto-generated API spec for this Qbix Server instance.',
+				'contact' => array('url' => 'https://github.com/Qbix/Server'),
+			),
+			'servers' => array(
+				array('url' => 'https://' . $host, 'description' => 'This server'),
+			),
+			'paths' => array(
+				'/Q/health' => array(
+					'get' => array(
+						'summary' => 'Server health check',
+						'operationId' => 'health',
+						'tags' => array('System'),
+						'responses' => array(
+							'200' => array('description' => 'Server status',
+								'content' => array('application/json' => array(
+									'schema' => array('type' => 'object',
+										'properties' => array(
+											'status' => array('type' => 'string', 'example' => 'ok'),
+											'uptimeSec' => array('type' => 'integer'),
+											'memory' => array('type' => 'number'),
+											'php' => array('type' => 'string'),
+										))))),
+						),
+					),
+				),
+				'/Q/event' => array(
+					'post' => array(
+						'summary' => 'Forward an event to this server',
+						'operationId' => 'event',
+						'tags' => array('Federation'),
+						'description' => 'Dispatches a Q::event() on this server. Requests must be signed with Q_Utils::sign().',
+						'requestBody' => array(
+							'required' => true,
+							'content' => array('application/json' => array(
+								'schema' => array('type' => 'object',
+									'required' => array('event'),
+									'properties' => array(
+										'event' => array('type' => 'string', 'example' => 'Users/login'),
+										'params' => array('type' => 'object'),
+										'_msgId' => array('type' => 'string', 'description' => 'Unique message ID for loop prevention'),
+										'Q.sig' => array('type' => 'string', 'description' => 'HMAC-SHA1 signature'),
+									)))),
+						),
+						'responses' => array(
+							'200' => array('description' => 'Event result'),
+							'401' => array('description' => 'Invalid signature'),
+							'403' => array('description' => 'Unknown peer'),
+						),
+					),
+				),
+				'/.well-known/qbix.json' => array(
+					'get' => array(
+						'summary' => 'Server discovery manifest',
+						'operationId' => 'discovery',
+						'tags' => array('Discovery'),
+						'responses' => array(
+							'200' => array('description' => 'Server identity, fingerprint, and capabilities'),
+						),
+					),
+				),
+			),
+			'tags' => array(
+				array('name' => 'System', 'description' => 'Server status and management'),
+				array('name' => 'Federation', 'description' => 'Inter-server event forwarding'),
+				array('name' => 'Discovery', 'description' => 'Server identity and API discovery'),
+			),
+		);
+
+		// Add app-defined routes from handlers/ directory
+		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
+		if (is_dir($handlersDir)) {
+			$it = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator($handlersDir, RecursiveDirectoryIterator::SKIP_DOTS)
+			);
+			foreach ($it as $file) {
+				if ($file->getExtension() !== 'php') continue;
+				$rel = str_replace(DS, '/', substr($file->getPathname(), strlen($handlersDir) + 1));
+				$eventName = str_replace('.php', '', $rel);
+				$path = '/Q/event'; // events are all dispatched through /Q/event
+				if (!isset($spec['paths']['/handler/' . $eventName])) {
+					$spec['paths']['/handler/' . $eventName] = array(
+						'post' => array(
+							'summary' => "Handler: $eventName",
+							'operationId' => str_replace('/', '_', $eventName),
+							'tags' => array('Handlers'),
+							'description' => "Forward via POST /Q/event with {\"event\": \"$eventName\", \"params\": {...}}",
+							'responses' => array('200' => array('description' => 'Handler result')),
+						),
+					);
+				}
+			}
+			if (count($spec['paths']) > 3) {
+				$spec['tags'][] = array('name' => 'Handlers', 'description' => 'App event handlers');
+			}
+		}
+
+		return array('status' => 200,
+			'body' => json_encode($spec, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			'headers' => array('Content-Type' => 'application/json',
+				'Access-Control-Allow-Origin' => '*'));
+	}
+
+	/**
+	 * MCP (Model Context Protocol) server manifest.
+	 * Allows AI tools (Claude, etc.) to discover and call this server's APIs.
+	 */
+	static function wellKnownMCP($parsed)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+
+		// Discover available tools from handlers
+		$tools = array();
+
+		// Built-in tools
+		$tools[] = array(
+			'name' => 'health',
+			'description' => 'Check server health and uptime',
+			'inputSchema' => array('type' => 'object', 'properties' => new \stdClass()),
+		);
+		$tools[] = array(
+			'name' => 'event',
+			'description' => 'Dispatch a Q::event() on this server',
+			'inputSchema' => array(
+				'type' => 'object',
+				'required' => array('event'),
+				'properties' => array(
+					'event' => array('type' => 'string', 'description' => 'Event name (e.g. Users/login)'),
+					'params' => array('type' => 'object', 'description' => 'Event parameters'),
+				),
+			),
+		);
+
+		// Add handler-based tools
+		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
+		if (is_dir($handlersDir)) {
+			$it = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator($handlersDir, RecursiveDirectoryIterator::SKIP_DOTS)
+			);
+			foreach ($it as $file) {
+				if ($file->getExtension() !== 'php') continue;
+				$rel = str_replace(DS, '/', substr($file->getPathname(), strlen($handlersDir) + 1));
+				$eventName = str_replace('.php', '', $rel);
+				$tools[] = array(
+					'name' => str_replace('/', '_', $eventName),
+					'description' => "Dispatch event: $eventName",
+					'inputSchema' => array(
+						'type' => 'object',
+						'properties' => array(
+							'params' => array('type' => 'object', 'description' => 'Event parameters'),
+						),
+					),
+				);
+			}
+		}
+
+		$manifest = array(
+			'schema_version' => '2025-01-01',
+			'name' => 'qbix-server',
+			'display_name' => 'Qbix Server on ' . $host,
+			'description' => 'Qbix Server instance — PHP web server with WebSocket, rooms, and federation.',
+			'url' => 'https://' . $host,
+			'provider' => array(
+				'name' => 'Qbix',
+				'url' => 'https://qbix.com',
+			),
+			'tools' => $tools,
+			'links' => array(
+				'openapi' => 'https://' . $host . '/.well-known/openapi.json',
+				'health' => 'https://' . $host . '/Q/health',
+			),
+		);
+
+		return array('status' => 200,
+			'body' => json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			'headers' => array('Content-Type' => 'application/json',
+				'Access-Control-Allow-Origin' => '*'));
+	}
+
+	/**
+	 * OpenClaiming endpoint. Serves signed claims from three sources:
+	 *
+	 * 1. claims/{domain}/{name}.php  → dynamic, auto-signed by server
+	 * 2. claims/{domain}/{name}.json → template, auto-signed by server
+	 * 3. web/.well-known/openclaiming/{domain}/{name}.json → pre-signed, as-is
+	 *
+	 * Server auto-generates its own claim at {hostname}/server.json.
+	 * Signed claims are cached in files/Q/cached/claims/ keyed by mtime.
+	 */
+	static function wellKnownOpenClaiming($parsed, $wellKnown)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$hostname = preg_replace('/:\d+$/', '', $host);
+
+		// Strip "openclaiming/" prefix
+		$claimPath = substr($wellKnown, strlen('openclaiming/'));
+		if (!$claimPath) return null;
+
+		// Security: block traversal
+		if (strpos($claimPath, '..') !== false) {
+			return array('status' => 400, 'body' => 'Invalid path');
+		}
+
+		// 1. Auto-generated server identity claim
+		if ($claimPath === $hostname . '/server.json' || $claimPath === 'server.json') {
+			$claim = Q_Utils::serverClaim($hostname);
+			if (!$claim) {
+				return array('status' => 500,
+					'body' => json_encode(array('error' => 'Could not generate claim')),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return self::claimResponse($claim);
+		}
+
+		// Find base directories
+		$base = defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir);
+		$claimsDir = $base . DS . 'claims';
+		$cacheDir = $base . DS . 'files' . DS . 'Q' . DS . 'cached' . DS . 'claims';
+
+		// Strip .json extension for lookup
+		$lookupPath = preg_replace('/\.json$/', '', $claimPath);
+		$safePath = str_replace('/', DS, $lookupPath);
+
+		// 2. PHP claim (dynamic, auto-signed)
+		$phpFile = $claimsDir . DS . $safePath . '.php';
+		if (file_exists($phpFile)) {
+			$params = $parsed['query'] ?? '';
+			$queryParams = array();
+			if ($params) parse_str($params, $queryParams);
+			$claim = self::loadClaimPhp($phpFile, $queryParams);
+			if ($claim) {
+				$claim = Q_Utils::signClaim($claim);
+				return self::claimResponse($claim);
+			}
+		}
+
+		// 3. JSON template (static, auto-signed with caching)
+		$jsonFile = $claimsDir . DS . $safePath . '.json';
+		if (file_exists($jsonFile)) {
+			$mtime = filemtime($jsonFile);
+			$cacheFile = $cacheDir . DS . $safePath . '.' . $mtime . '.json';
+
+			// Cache hit
+			if (file_exists($cacheFile)) {
+				$cached = json_decode(file_get_contents($cacheFile), true);
+				if ($cached) return self::claimResponse($cached);
+			}
+
+			// Sign and cache
+			$template = json_decode(file_get_contents($jsonFile), true);
+			if ($template) {
+				$signed = Q_Utils::signClaim($template);
+				$dir = dirname($cacheFile);
+				if (!is_dir($dir)) @mkdir($dir, 0755, true);
+				file_put_contents($cacheFile, json_encode($signed, JSON_UNESCAPED_SLASHES));
+				return self::claimResponse($signed);
+			}
+		}
+
+		// 4. Fall through to static file serving (pre-signed claims in web/)
+		return null;
+	}
+
+	private static function loadClaimPhp($file, $params = array())
+	{
+		try {
+			$claim = include $file;
+			if (is_array($claim)) return $claim;
+		} catch (\Exception $e) {
+			// Log but don't crash
+		}
+		return null;
+	}
+
+	private static function claimResponse($claim)
+	{
+		return array('status' => 200,
+			'body' => json_encode($claim, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			'headers' => array(
+				'Content-Type' => 'application/json',
+				'Access-Control-Allow-Origin' => '*',
+				'Cache-Control' => 'public, max-age=300',
+			));
+	}
+
 	static function handleBulkImageZip($client, $parsed)
 	{
 		if (!class_exists('ZipArchive')) {
@@ -3300,6 +3697,94 @@ HTML;
 			if ($f && file_exists($f)) @unlink($f);
 		}
 		self::$uploadTempFiles = array();
+	}
+
+	/**
+	 * Handle an incoming remote event forwarded from another Qbix server.
+	 * Verifies HMAC signature if internal secret is configured.
+	 * @method handleRemoteEvent
+	 * @static
+	 */
+	/** @var array Message IDs already processed — prevents loops in federation */
+	static $seenMessages = array();
+	/** @var integer TTL for seen messages in seconds */
+	static $seenMessageTTL = 3600; // 1 hour
+
+	static function handleRemoteEvent($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		if (!$body || empty($body['event'])) {
+			return array('status' => 400,
+				'body' => json_encode(array('error' => 'Missing event')),
+				'headers' => array('Content-Type' => 'application/json'));
+		}
+
+		// Per-message loop prevention
+		$msgId = $body['_msgId'] ?? '';
+		if ($msgId) {
+			// Evict expired entries
+			$now = time();
+			foreach (self::$seenMessages as $id => $ts) {
+				if ($now - $ts > self::$seenMessageTTL) unset(self::$seenMessages[$id]);
+			}
+			// Check if already seen
+			if (isset(self::$seenMessages[$msgId])) {
+				return array('status' => 200,
+					'body' => json_encode(array('_duplicate' => true, '_msgId' => $msgId)),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			// Mark as seen
+			self::$seenMessages[$msgId] = $now;
+		}
+
+		// Verify signature — check X-Q-HMAC header (Platform convention)
+		// or Q.sig in body (Q_Utils::sign convention). Either is valid.
+		$secret = Q_Config::get('Q', 'internal', 'secret', null);
+		if ($secret) {
+			$hmacHeader = $parsed['headers']['x-q-hmac'] ?? '';
+			$bodyValid = Q_Utils::verify($body, $secret);
+			$headerValid = $hmacHeader && hash_equals(
+				hash_hmac('sha1', $parsed['body'], $secret), $hmacHeader
+			);
+			if (!$bodyValid && !$headerValid) {
+				return array('status' => 401,
+					'body' => json_encode(array('error' => 'Invalid signature')),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+		}
+
+		// Check fingerprint against known peers
+		$fingerprint = $parsed['headers']['x-q-fingerprint'] ?? '';
+		$knownPeers = Q_Config::get('Q', 'federation', 'peers', array());
+		if ($knownPeers && $fingerprint) {
+			$trusted = false;
+			foreach ($knownPeers as $peer) {
+				if (($peer['fingerprint'] ?? '') === $fingerprint) {
+					$trusted = true; break;
+				}
+			}
+			if (!$trusted && Q_Config::get('Q', 'federation', 'requireKnownPeers', false)) {
+				return array('status' => 403,
+					'body' => json_encode(array('error' => 'Unknown peer')),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+		}
+
+		$eventName = $body['event'];
+		$params = $body['params'] ?? array();
+
+		// Dispatch locally — skip remote forwarding to avoid loops
+		$saved = Q_Config::get('Q', 'handlersRemote', $eventName, null);
+		if ($saved) Q_Config::set('Q', 'handlersRemote', $eventName, null);
+
+		$result = null;
+		Q::event($eventName, $params, false, false, $result);
+
+		if ($saved) Q_Config::set('Q', 'handlersRemote', $eventName, $saved);
+
+		return array('status' => 200,
+			'body' => json_encode($result),
+			'headers' => array('Content-Type' => 'application/json'));
 	}
 
 	/**

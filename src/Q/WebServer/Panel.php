@@ -248,6 +248,14 @@ class Q_WebServer_Panel
 				return self::apiListPlugins();
 			case 'plugins/add':
 				return self::apiAddPlugin($parsed);
+			case 'servers':
+				return self::apiListServers();
+			case 'servers/add':
+				return self::apiAddServer($parsed);
+			case 'servers/remove':
+				return self::apiRemoveServer($parsed);
+			case 'servers/deploy':
+				return self::apiDeploy($parsed);
 			case 'system':
 				return self::apiSystemInfo();
 			case 'auth/password':
@@ -599,6 +607,103 @@ class Q_WebServer_Panel
 	/**
 	 * Add a plugin by cloning from github.com/Qbix/{name}.
 	 * If the repo is private or doesn't exist, returns {private: true}.
+	 */
+	// ── Server management ─────────────────────────────
+
+	static function apiListServers()
+	{
+		$config = self::deployConfig();
+		$servers = array();
+		foreach (($config['targets'] ?? array()) as $name => $t) {
+			$servers[] = array_merge(array('name' => $name), $t);
+		}
+		return array('servers' => $servers);
+	}
+
+	static function apiAddServer($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$name = preg_replace('/[^a-zA-Z0-9_-]/', '', $body['name'] ?? '');
+		if (!$name) return array('status' => 400, 'error' => 'Name required');
+		if (empty($body['host'])) return array('status' => 400, 'error' => 'Host required');
+
+		$config = self::deployConfig();
+		$config['targets'][$name] = array(
+			'host' => $body['host'],
+			'user' => $body['user'] ?? 'deploy',
+			'path' => $body['path'] ?? '/var/www/' . $name,
+			'key' => $body['key'] ?? '',
+			'dirs' => array('web', 'handlers', 'classes', 'config'),
+		);
+		self::saveDeployConfig($config);
+		return array('ok' => true, 'name' => $name);
+	}
+
+	static function apiRemoveServer($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$name = $body['name'] ?? '';
+		$config = self::deployConfig();
+		unset($config['targets'][$name]);
+		self::saveDeployConfig($config);
+		return array('ok' => true);
+	}
+
+	static function apiDeploy($parsed)
+	{
+		$body = json_decode($parsed['body'], true);
+		$target = $body['target'] ?? '';
+		$config = self::deployConfig();
+		$t = $config['targets'][$target] ?? null;
+		if (!$t) return array('error' => "Unknown target: $target");
+
+		$baseDir = defined('APP_DIR') ? APP_DIR : Q_WebServer::$rootDir . '..';
+		$dirs = $t['dirs'] ?? array('web', 'handlers', 'classes', 'config');
+		$sshKey = !empty($t['key']) ? " -e 'ssh -i " . escapeshellarg($t['key']) . "'" : '';
+		$remote = $t['user'] . '@' . $t['host'] . ':' . rtrim($t['path'], '/') . '/';
+
+		$total = 0;
+		$log = '';
+		foreach ($dirs as $dir) {
+			$localDir = $baseDir . DS . $dir;
+			if (!is_dir($localDir)) continue;
+			$cmd = "rsync -avz --delete{$sshKey} "
+				. escapeshellarg(rtrim($localDir, '/') . '/') . " "
+				. escapeshellarg($remote . $dir . '/') . " 2>&1";
+			$output = shell_exec($cmd);
+			$log .= "rsync $dir/\n" . $output . "\n";
+			$lines = array_filter(explode("\n", trim($output)), function ($l) {
+				return $l && $l[0] !== '.' && substr($l, -1) !== '/'
+					&& strpos($l, 'sending') === false && strpos($l, 'total') === false;
+			});
+			$total += count($lines);
+		}
+
+		return array('ok' => true, 'files' => $total, 'output' => $log);
+	}
+
+	private static function deployConfigPath()
+	{
+		$base = defined('APP_DIR') ? APP_DIR : dirname(Q_WebServer::$rootDir);
+		return $base . DS . 'config' . DS . 'deploy.json';
+	}
+
+	private static function deployConfig()
+	{
+		$path = self::deployConfigPath();
+		return file_exists($path) ? json_decode(file_get_contents($path), true) : array('targets' => array());
+	}
+
+	private static function saveDeployConfig($config)
+	{
+		$path = self::deployConfigPath();
+		$dir = dirname($path);
+		if (!is_dir($dir)) @mkdir($dir, 0755, true);
+		file_put_contents($path, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+	}
+
+	/**
+	 * Add a plugin by cloning from github.com/Qbix/{name}.
 	 */
 	static function apiAddPlugin($parsed)
 	{
@@ -1165,6 +1270,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('plugins')">Plugins</div>
   <div class="tab" onclick="showTab('playground')">Playground</div>
   <div class="tab" onclick="showTab('system')">System</div>
+  <div class="tab" onclick="showTab('servers')">Servers</div>
 </div>
 
 <!-- APPS TAB -->
@@ -1292,6 +1398,30 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <h2 style="font-size:16px;margin-bottom:12px">Qbix Platform</h2>
     <div id="platform-status" class="card"></div>
   </div>
+</div>
+
+<!-- SERVERS TAB -->
+<div id="tab-servers" class="content hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:16px">Remote Servers</h2>
+    <button class="btn btn-primary" onclick="showAddServer()">+ Add Server</button>
+  </div>
+  <p style="font-size:12px;color:var(--dim);margin-bottom:14px">
+    Deploy your app to remote Qbix servers, or federate events across nodes.
+  </p>
+  <div id="add-server-form" class="card hidden" style="margin-bottom:14px">
+    <h3>Add Server</h3>
+    <div class="form-row"><label>Name</label><input id="srv-name" placeholder="e.g. production, staging"></div>
+    <div class="form-row"><label>Host</label><input id="srv-host" placeholder="myserver.com"></div>
+    <div class="form-row"><label>User</label><input id="srv-user" placeholder="deploy" value="deploy"></div>
+    <div class="form-row"><label>Path</label><input id="srv-path" placeholder="/var/www/myapp"></div>
+    <div class="form-row"><label>SSH Key</label><input id="srv-key" placeholder="~/.ssh/deploy_key (optional)"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveServer()">Save</button>
+      <button class="btn btn-ghost" onclick="hideAddServer()">Cancel</button>
+    </div>
+  </div>
+  <div id="servers-list"></div>
 </div>
 
 <script>
@@ -1528,6 +1658,7 @@ function showTab(name) {
   if (name==='apps') loadApps();
   if (name==='plugins') loadPlugins();
   if (name==='system') loadSystem();
+  if (name==='servers') loadServers();
   if (name==='scripts') loadAppSelect();
 }
 
@@ -1758,6 +1889,49 @@ async function loadPlugins() {
 }
 
 // System
+// Servers
+function showAddServer() { document.getElementById('add-server-form').classList.remove('hidden'); document.getElementById('srv-name').focus(); }
+function hideAddServer() { document.getElementById('add-server-form').classList.add('hidden'); }
+async function saveServer() {
+  var s = { name: document.getElementById('srv-name').value.trim(), host: document.getElementById('srv-host').value.trim(),
+    user: document.getElementById('srv-user').value.trim(), path: document.getElementById('srv-path').value.trim(),
+    key: document.getElementById('srv-key').value.trim() };
+  if (!s.name || !s.host) return alert('Name and host required');
+  var r = await api('servers/add', s);
+  if (r.error) return alert(r.error);
+  hideAddServer(); loadServers();
+}
+async function deployTo(name) {
+  var btn = event.target; btn.disabled = true; btn.textContent = '⏳ Deploying...';
+  var r = await api('servers/deploy', {target: name});
+  btn.disabled = false; btn.textContent = '⬆ Deploy';
+  if (r.error) alert(r.error);
+  else alert('✨ Deployed ' + (r.files||0) + ' files to ' + name);
+}
+async function removeServer(name) {
+  if (!confirm('Remove server "' + name + '"?')) return;
+  await api('servers/remove', {name: name});
+  loadServers();
+}
+async function loadServers() {
+  var d = await api('servers');
+  var el = document.getElementById('servers-list');
+  if (!d.servers || !d.servers.length) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No remote servers configured. Add one to deploy your app.</p></div>';
+    return;
+  }
+  el.innerHTML = d.servers.map(function(s) { return ''
+    + '<div class="app-row">'
+    + '<span class="dot on"></span>'
+    + '<span class="app-name">' + s.name + '</span>'
+    + '<span class="app-url">' + s.user + '@' + s.host + ':' + s.path + '</span>'
+    + '<div class="btn-row">'
+    + '<button class="btn btn-sm btn-primary" onclick="deployTo(\'' + s.name + '\')">⬆ Deploy</button>'
+    + '<button class="btn btn-sm btn-red" onclick="removeServer(\'' + s.name + '\')">✕</button>'
+    + '</div></div>';
+  }).join('');
+}
+
 async function loadSystem() {
   var d = await detectTools();
   var el = document.getElementById('system-info');

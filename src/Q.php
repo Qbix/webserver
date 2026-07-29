@@ -257,6 +257,12 @@ class Q
 		if (!is_string($eventName) || !$eventName) return null;
 		if (!is_array($params)) $params = array();
 
+		// Check if this event should be handled by a remote server
+		$remoteUrl = Q_Config::get('Q', 'handlersRemote', $eventName, null);
+		if ($remoteUrl) {
+			return self::handleRemote($remoteUrl, $eventName, $params, $result);
+		}
+
 		// Before hooks
 		if ($pure !== 'after') {
 			$handlers = Q_Config::get('Q', 'handlersBeforeEvent', $eventName, array());
@@ -286,6 +292,73 @@ class Q
 			}
 		}
 
+		return $result;
+	}
+
+	/**
+	 * Forward an event to a remote Qbix server via HTTP POST.
+	 * The remote server receives it as a normal Q::event() call.
+	 * @method handleRemote
+	 * @static
+	 * @param {string} $baseUrl Remote server URL
+	 * @param {string} $eventName Event name (e.g. "Users/login")
+	 * @param {array} $params Parameters to forward
+	 * @param {mixed} &$result Result from remote
+	 * @return {mixed}
+	 */
+	static function handleRemote($baseUrl, $eventName, $params = array(), &$result = null)
+	{
+		$url = rtrim($baseUrl, '/') . '/Q/event';
+
+		// Generate unique message ID for loop prevention
+		// Format: serverFingerprint.microtime.random — globally unique
+		$identity = Q_Utils::serverIdentity();
+		$msgId = substr($identity ? $identity['fingerprint'] : gethostname(), 0, 8)
+			. '.' . str_replace('.', '', (string) microtime(true))
+			. '.' . bin2hex(random_bytes(4));
+
+		$payload = array(
+			'event' => $eventName,
+			'params' => $params,
+			'_msgId' => $msgId,
+			'_timestamp' => time(),
+		);
+
+		// Sign using Platform-compatible Q_Utils::sign (body signature)
+		$payload = Q_Utils::sign($payload);
+		$json = json_encode($payload);
+
+		// Also send X-Q-HMAC header (Platform convention for quick verification)
+		$hmac = hash_hmac('sha1', $json, Q_Config::get('Q', 'internal', 'secret', '')
+			?: Q_Utils::generateLocalSecret());
+
+		$headers = "Content-Type: application/json\r\n"
+			. "Content-Length: " . strlen($json) . "\r\n"
+			. "X-Q-HMAC: " . $hmac . "\r\n"
+			. "User-Agent: QbixServer/1.0\r\n";
+
+		// Add server fingerprint for identification
+		$identity = Q_Utils::serverIdentity();
+		if ($identity) {
+			$headers .= "X-Q-Fingerprint: " . $identity['fingerprint'] . "\r\n";
+		}
+
+		$ctx = stream_context_create(array('http' => array(
+			'method' => 'POST',
+			'header' => $headers,
+			'content' => $json,
+			'timeout' => Q_Config::get('Q', 'handlersRemote', '_timeout', 10),
+			'ignore_errors' => true,
+		)));
+
+		$response = @file_get_contents($url, false, $ctx);
+		if ($response === false) {
+			$result = array('error' => 'Remote handler unreachable: ' . $url);
+			return $result;
+		}
+
+		$decoded = json_decode($response, true);
+		$result = $decoded ?? $response;
 		return $result;
 	}
 
@@ -380,38 +453,6 @@ class Q
 
 	/**
 	 * POST event params as JSON to a remote URL.
-	 * Used for webhook-style handlers configured in Q.handlersAfterEvent.
-	 * Non-blocking: uses a short timeout so it doesn't slow down the request.
-	 * @method handleRemote
-	 * @static
-	 * @param {string} $url
-	 * @param {array} &$params
-	 * @param {mixed} &$result
-	 * @return {mixed}
-	 */
-	protected static function handleRemote($url, &$params, &$result)
-	{
-		$json = json_encode($params, JSON_UNESCAPED_SLASHES);
-		$opts = array('http' => array(
-			'method'  => 'POST',
-			'header'  => "Content-Type: application/json\r\n"
-				. "Content-Length: " . strlen($json) . "\r\n"
-				. "User-Agent: QbixServer/1.0\r\n",
-			'content' => $json,
-			'timeout' => 5,
-			'ignore_errors' => true,
-		));
-		$ctx = stream_context_create($opts);
-		$response = @file_get_contents($url, false, $ctx);
-		if ($response !== false) {
-			$decoded = json_decode($response, true);
-			if ($decoded !== null) {
-				$result = $decoded;
-			}
-		}
-		return $result;
-	}
-
 	/**
 	 * Render a PHP view file. Searches views/ directories in $paths.
 	 *

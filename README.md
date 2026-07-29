@@ -2689,6 +2689,334 @@ in config to allow remote access.
 
 ---
 
+## 🚀 Deploy
+
+Push your app to a remote server with one command:
+
+```bash
+./qbixserver.php --deploy=production
+```
+
+Configure targets in `config/deploy.json`:
+
+```json
+{
+    "targets": {
+        "production": {
+            "host": "myserver.com",
+            "user": "deploy",
+            "path": "/var/www/myapp",
+            "key": "~/.ssh/deploy_key",
+            "dirs": ["web", "handlers", "classes", "config"]
+        }
+    }
+}
+```
+
+The command rsyncs each directory to the remote server. If the remote runs
+Qbix Server, it can be configured to hot-reload on deploy.
+
+Servers can also be managed from the Panel's **Servers** tab — add, deploy,
+and remove remote servers through the browser.
+
+---
+
+## 🔗 Federation
+
+Qbix servers can forward events to each other. Any `Q::event()` call can be
+handled locally or routed to a remote server — same dispatch path, same
+handler signature, transparent to the app code.
+
+### How it works
+
+**1. Server identity.** On first run, each server generates a self-signed
+certificate and stores it in `local/server.crt`. The SHA-256 fingerprint
+is the server's identity — like SSH `known_hosts`, no certificate authority
+needed.
+
+**2. Discovery.** Every server exposes `/.well-known/qbix.json`:
+
+```json
+{
+    "server": "Qbix Server",
+    "version": "1.0.0",
+    "fingerprint": "11cf953679b80d04...",
+    "endpoints": {"event": "/Q/event", "health": "/Q/health"},
+    "plugins": [{"name": "Users", "version": "1.0"}]
+}
+```
+
+**3. Event forwarding.** Configure which events route to which server:
+
+```json
+{
+    "Q": {
+        "handlersRemote": {
+            "Users/login": "https://auth.example.com",
+            "Streams/stream": "https://streams.example.com"
+        }
+    }
+}
+```
+
+When Server A receives a `Users/login` event, it forwards it to
+`auth.example.com/Q/event` via HMAC-signed POST. The receiving server
+verifies the signature, dispatches the event locally, and returns the result.
+Loop prevention is built in — a forwarded event is never re-forwarded.
+
+**4. Signing.** All inter-server requests are signed using `Q_Utils::sign()`,
+which is compatible with the Qbix Platform's signing. The signature uses
+HMAC-SHA1 over recursively key-sorted, URL-encoded data — the same format
+the Platform uses. Servers upgrading to the full Platform keep working
+without changes.
+
+### Trust levels
+
+Servers authenticate each other at three levels:
+
+- **Pinned peer** — fingerprint stored in config. Events accepted, signature
+  verified. For known partners.
+- **Owned server** — shared `Q.internal.secret`. Full trust, can forward
+  user sessions. For your own infrastructure.
+- **Public** — no fingerprint, just HTTPS. Read-only access via
+  `/.well-known/qbix.json`. For open APIs.
+
+### Configuration
+
+```json
+{
+    "Q": {
+        "internal": {
+            "secret": "your-shared-secret-here"
+        },
+        "federation": {
+            "advertise": true,
+            "advertiseApps": false,
+            "advertisePlugins": true,
+            "requireKnownPeers": false,
+            "peers": [
+                {
+                    "name": "auth-server",
+                    "url": "https://auth.example.com",
+                    "fingerprint": "11cf953679b80d04..."
+                }
+            ]
+        }
+    }
+}
+```
+
+### Full-stack microservices
+
+Each Qbix server is a complete, independent app server. Federation lets
+you split your app across multiple servers without changing your code:
+
+```
+Server A (auth.example.com)     Server B (app.example.com)
+├── Users plugin                ├── App handlers
+├── handlers/Users/*            ├── handlers/MyApp/*
+└── handles Users/ events       └── forwards Users/ → Server A
+```
+
+Server B's handlers call `Q::event('Users/login', $params)` as if Users
+were installed locally. The server transparently forwards it to Server A,
+gets the result, and returns it. The handler never knows the difference.
+
+### Loop prevention
+
+Every forwarded event carries a unique `_msgId`. Each server tracks seen
+IDs in memory (1-hour TTL). If a message ripples through A→B→C→A, server A
+recognizes the ID and drops it. This is per-message, not per-peer — works
+for any topology.
+
+### Signing
+
+Inter-server requests are signed two ways, both compatible with the
+Qbix Platform:
+
+- **Body signature** — `Q_Utils::sign()` adds a `Q.sig` field using
+  HMAC-SHA1 over recursively key-sorted data. Same format the Platform uses.
+- **Header signature** — `X-Q-HMAC` header over the raw JSON body. Same
+  as the Platform's curl-based `handleUsingRemote`.
+
+The receiving server accepts either. A Platform server and a standalone
+Qbix Server can forward events to each other without configuration changes.
+
+---
+
+## 🔍 API Discovery
+
+The server auto-generates three discovery endpoints from its actual
+handlers and configuration. No manual documentation needed — add a
+handler file, the specs update automatically.
+
+### `/.well-known/qbix.json` — Server manifest
+
+Qbix-native discovery. Returns the server's identity, fingerprint,
+installed plugins, and links to other specs.
+
+```json
+{
+    "server": "Qbix Server",
+    "version": "1.0.0",
+    "fingerprint": "4af468e461fc2022...",
+    "endpoints": {
+        "event": "/Q/event",
+        "health": "/Q/health",
+        "openapi": "/.well-known/openapi.json",
+        "mcp": "/.well-known/mcp.json",
+        "websocket": "/Q/ws"
+    },
+    "plugins": [
+        {"name": "Users", "version": "1.0"}
+    ]
+}
+```
+
+Other Qbix servers use this for federation — pin the fingerprint, discover
+endpoints, forward events.
+
+### `/.well-known/openapi.json` — OpenAPI 3.1
+
+Standard API spec compatible with Swagger UI, Postman, Redoc, Insomnia,
+and any OpenAPI-compatible tool.
+
+- Paste the URL into **Postman** → Import → complete API documentation
+- Point **Swagger UI** at it → interactive API explorer
+- Feed it to **Redoc** → polished reference docs
+
+The spec includes built-in endpoints (`/Q/health`, `/Q/event`) and
+auto-discovers handlers from the `handlers/` directory. Each handler
+becomes a documented path with its event name, tags, and schema.
+
+### `/.well-known/mcp.json` — MCP (Model Context Protocol)
+
+Lets AI tools (Claude, GPT, Cursor, etc.) discover and call this server's
+APIs as tools. Each handler becomes an MCP tool:
+
+```json
+{
+    "tools": [
+        {"name": "health", "description": "Check server health and uptime"},
+        {"name": "event", "description": "Dispatch a Q::event() on this server"},
+        {"name": "chat_join", "description": "Dispatch event: chat/join"},
+        {"name": "chat_message", "description": "Dispatch event: chat/message"}
+    ]
+}
+```
+
+An AI assistant connected to your Qbix server can call your handlers
+directly — no glue code, no adapters.
+
+### Compatibility matrix
+
+| Tool | Endpoint | How |
+|---|---|---|
+| Postman | `/.well-known/openapi.json` | Import → Collections |
+| Swagger UI | `/.well-known/openapi.json` | Point URL → interactive docs |
+| Redoc | `/.well-known/openapi.json` | Static reference docs |
+| Claude / AI | `/.well-known/mcp.json` | MCP server discovery |
+| Other Qbix | `/.well-known/qbix.json` | Federation + fingerprint pinning |
+| curl | `/Q/health` | `curl https://host/Q/health` |
+| Monitoring | `/Q/health` | Uptime checks, Prometheus, etc. |
+
+All three endpoints are configurable. Set `Q.federation.advertise: false`
+to disable, or selectively hide apps and plugins.
+
+### `/.well-known/openclaiming/{hostname}/server.json` — OpenClaiming
+
+Every Qbix server auto-generates a signed [OpenClaim](https://openclaiming.org)
+for its identity. The claim is signed with ES256 (P-256) and verifiable by
+anyone with the public key.
+
+```json
+{
+    "ocp": 1,
+    "iss": "myserver.com/server",
+    "stm": {
+        "type": "server",
+        "software": "Qbix Server",
+        "version": "1.0.0",
+        "fingerprint": "4af468e461fc2022...",
+        "endpoints": {
+            "event": "/Q/event",
+            "health": "/Q/health",
+            "openapi": "/.well-known/openapi.json",
+            "mcp": "/.well-known/mcp.json"
+        }
+    },
+    "key": ["data:key/es256;base64,MFkw..."],
+    "sig": ["MEQCIH7C..."]
+}
+```
+
+The key pair (P-256) is generated on first run and stored in `local/claim.pub`
+and `local/claim.key`. The server's TLS fingerprint is embedded in the claim's
+`stm.fingerprint` field, binding the two identity systems together.
+
+### Publishing claims — files in folders
+
+The same convention as handlers: drop a file in `claims/`, it becomes a
+signed OpenClaim. Three sources, checked in priority order:
+
+**1. PHP (dynamic, auto-signed)** — `claims/{domain}/{name}.php`
+
+```php
+<?php // claims/example.com/session.php
+return array(
+    'ocp' => 1,
+    'iss' => 'example.com/server',
+    'sub' => $params['userId'] ?? 'anonymous',
+    'stm' => array('role' => 'viewer'),
+    'exp' => time() + 3600,
+);
+```
+
+Evaluated per-request. The server adds `key[]` and `sig[]` automatically.
+Served at `/.well-known/openclaiming/example.com/session.json`.
+
+**2. JSON template (static, auto-signed, cached)** — `claims/{domain}/{name}.json`
+
+```json
+{
+    "ocp": 1,
+    "iss": "example.com/server",
+    "sub": "alice",
+    "stm": {"role": "editor", "scope": "blog"}
+}
+```
+
+Write the claim body without crypto fields. The server signs it with its
+P-256 key and caches the result in `files/Q/cached/claims/`. When you
+edit the template, the cache invalidates automatically (keyed by mtime).
+
+**3. Pre-signed (as-is)** — `web/.well-known/openclaiming/{domain}/{name}.json`
+
+For claims signed by someone else — a user's wallet, a partner server, a
+smart contract. The server serves them unchanged.
+
+### Signature format
+
+All server-signed claims use OCP wire format:
+
+- **Canonicalization:** RFC 8785 / JCS (sorted keys, `sig` stripped)
+- **Algorithm:** ES256 (P-256 + SHA-256)
+- **Signature encoding:** raw r||s (64 bytes, base64)
+- **Key URI:** `data:key/es256;base64,{SPKI-DER}`
+
+This is byte-compatible with the Qbix Platform's `Q_Crypto_OpenClaim::sign()`
+and the JavaScript reference implementation's `Q.Crypto.OpenClaim.sign()`.
+Claims signed by the server verify with either library, and vice versa.
+
+### Multisig
+
+If a template already has `key[]` and `sig[]` (partially signed by
+another party), the server appends its own key and signature. Keys are
+sorted lexicographically per OCP convention. This enables co-signed
+claims where multiple authorities attest to the same statement.
+
+---
+
 ## 🌐 HTTP/2 Support
 
 The built-in event loop uses `stream_select` — zero dependencies, works everywhere.
