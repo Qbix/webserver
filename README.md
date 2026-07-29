@@ -358,7 +358,7 @@ php qbixserver.php --port=8080  # done
 | **Rooms** | Process-per-room shared state, tick timers, broadcasting. Members join/leave, room state in PHP arrays. |
 | **Images** | On-the-fly resize (`?w=300`), auto format conversion (JPEG→WebP), `Save-Data` support, disk-cached with LRU eviction |
 | **Directory listing** | Grid/list toggle, lazy thumbnails, lightbox with download-at-size, multi-select, bulk ZIP download. Overridable with `listing.php` |
-| **Q.js frontend** | Bundled Q.min.js (187KB), jQuery shim (5.7KB), minimal Handlebars (6.1KB), 43 UI tools, 107 languages — served at `/Q/plugins/` |
+| **Q.js frontend** | Bundled Q.min.js (187KB), jQuery shim (5.7KB), minimal Handlebars (6.1KB), 43 UI tools, 107 languages + translations — served at `/Q/plugins/` |
 | **Dashboard** | Live at `/Q/dashboard` — request log, throughput, top paths, response times, memory, WebSocket connections, active rooms |
 | **Health check** | JSON at `/Q/health` — stats for load balancers and monitoring |
 | **Control panel** | Password-protected at `/Q/panel` — six tabs: Apps, Scripts, Plugins, Playground, System, Servers |
@@ -384,22 +384,22 @@ php qbixserver.php --port=8080  # done
 
 Qbix Server understands special response headers from your PHP scripts. These are
 the same headers nginx understands (like `X-Accel-Redirect`) plus new ones for
-component-level caching. Your PHP sends them with `Q::header()`, the server acts on them.
+component-level caching. Your PHP sends them with `Q_Response::header()`, the server acts on them.
 
 ### Quick reference
 
 | Header | What it does | Example |
 |---|---|---|
-| `Cache-Control` | Server caches the response, serves without running PHP | `Q::header('Cache-Control: public, max-age=300');` |
-| `X-Accel-Redirect` | Server streams a file after PHP checks access | `Q::header('X-Accel-Redirect: /uploads/private/doc.pdf');` |
-| `X-Cache-Tree` | Registers page components with content hashes | `Q::header('X-Cache-Tree: ' . json_encode([...]));` |
-| `X-Cache-Deps` | Maps components to data dependency keys | `Q::header('X-Cache-Deps: ' . json_encode([...]));` |
-| `X-Cache-Invalidate` | Marks dependency keys as stale | `Q::header('X-Cache-Invalidate: ' . json_encode([...]));` |
-| `X-Cache-Stale` | Marks specific components as needing re-render | `Q::header('X-Cache-Stale: feed,sidebar');` |
+| `Cache-Control` | Server caches the response, serves without running PHP | `Q_Response::header('Cache-Control: public, max-age=300');` |
+| `X-Accel-Redirect` | Server streams a file after PHP checks access | `Q_Response::header('X-Accel-Redirect: /uploads/private/doc.pdf');` |
+| `X-Cache-Tree` | Registers page components with content hashes | `Q_Response::header('X-Cache-Tree: ' . json_encode([...]));` |
+| `X-Cache-Deps` | Maps components to data dependency keys | `Q_Response::header('X-Cache-Deps: ' . json_encode([...]));` |
+| `X-Cache-Invalidate` | Marks dependency keys as stale | `Q_Response::header('X-Cache-Invalidate: ' . json_encode([...]));` |
+| `X-Cache-Stale` | Invalidates cached pages containing these components | `Q_Response::header('X-Cache-Stale: feed,sidebar');` |
 
-All of these use `Q::header()` instead of PHP's `header()`. This is because
+All of these use `Q_Response::header()` instead of PHP's `header()`. This is because
 the server runs in CLI SAPI where `header()` calls are silently discarded —
-same as FrankenPHP worker mode and Workerman. `Q::header()` has the same
+same as FrankenPHP worker mode and Workerman. `Q_Response::header()` has the same
 signature as `header()` but captures the values for the server to send.
 The server strips internal headers before sending the response to the client.
 
@@ -437,8 +437,8 @@ if (!$userId || !userCanAccess($userId, $fileId)) {
 
 // Tell the server to serve from files/ directory.
 // The client never sees the real path.
-Q::header("X-Accel-Redirect: /files/private/{$fileId}");
-Q::header("Content-Disposition: attachment; filename=\"document.pdf\"");
+Q_Response::header("X-Accel-Redirect: /files/private/{$fileId}");
+Q_Response::header("Content-Disposition: attachment; filename=\"document.pdf\"");
 ```
 
 No config needed — `files/` is resolved automatically. For custom mappings:
@@ -470,7 +470,7 @@ Control how the server caches your PHP responses:
 
 // The server caches this response and serves it without
 // running PHP again for the next 300 seconds.
-Q::header('Cache-Control: public, max-age=300');
+Q_Response::header('Cache-Control: public, max-age=300');
 
 echo renderFeed();
 ```
@@ -482,7 +482,7 @@ echo renderFeed();
 // The server generates an ETag from the response body.
 // Browsers send If-None-Match on next request.
 // Server returns 304 (no body) if nothing changed.
-Q::header('Cache-Control: public, max-age=0, must-revalidate');
+Q_Response::header('Cache-Control: public, max-age=0, must-revalidate');
 
 echo renderProfile($userId);
 ```
@@ -491,7 +491,7 @@ echo renderProfile($userId);
 <?php
 // web/admin.php — never cache
 
-Q::header('Cache-Control: no-store');
+Q_Response::header('Cache-Control: no-store');
 
 echo renderAdminPanel();
 ```
@@ -499,10 +499,15 @@ echo renderAdminPanel();
 ### Component-level cache invalidation
 
 Most caching systems cache whole pages. When anything changes, you throw away the
-entire page and re-render everything. Qbix Server can cache individual components
-and only re-render what changed.
+entire page and re-render everything. Qbix Server tracks which data each page
+depends on, so when data changes, only the affected pages are invalidated — not
+every page on the site.
 
 **Step 1: Register components when rendering a page**
+
+When PHP renders a page, it tells the server what data the page depends on.
+The server hashes each component and maps them to dependency keys. This lets
+the server know exactly which pages to invalidate when specific data changes.
 
 ```php
 <?php
@@ -513,7 +518,7 @@ $sidebarHtml = renderSidebar($communityId);
 $membersHtml = renderMembers($communityId);
 
 // Tell the server about the component tree and what data each depends on
-Q::header('X-Cache-Tree: ' . json_encode([
+Q_Response::header('X-Cache-Tree: ' . json_encode([
     'l' => [
         'feed'    => md5($feedHtml),
         'sidebar' => md5($sidebarHtml),
@@ -521,13 +526,13 @@ Q::header('X-Cache-Tree: ' . json_encode([
     ]
 ]));
 
-Q::header('X-Cache-Deps: ' . json_encode([
+Q_Response::header('X-Cache-Deps: ' . json_encode([
     'feed'    => ["community/{$communityId}/feed"],
     'sidebar' => ["community/{$communityId}/about"],
     'members' => ["community/{$communityId}/participants"],
 ]));
 
-Q::header('Cache-Control: public, max-age=300');
+Q_Response::header('Cache-Control: public, max-age=300');
 echo $feedHtml . $sidebarHtml . $membersHtml;
 ```
 
@@ -539,25 +544,27 @@ echo $feedHtml . $sidebarHtml . $membersHtml;
 saveNewPost($communityId, $content);
 
 // Tell the server which dependency key changed
-Q::header('X-Cache-Invalidate: ' . json_encode([
+Q_Response::header('X-Cache-Invalidate: ' . json_encode([
     "community/{$communityId}/feed"
 ]));
 
 // The server walks its dependency graph:
-//   community/123/feed → page /community/123 component 'feed'
-// Only 'feed' is stale. Sidebar, members = still cached.
-// Next request re-renders only the feed component.
+//   community/123/feed → component 'feed' → page /community/123
+// The FULL page cache for /community/123 is invalidated.
+// Other pages (e.g. /community/456) stay cached.
+// Next request to /community/123 → cache miss → PHP re-renders the full page.
 
 echo json_encode(['ok' => true]);
 ```
 
-The server maintains a Merkle tree of component hashes. When a dependency key is
-invalidated, it walks the tree to find exactly which components on which pages are
-affected. Everything else is served from the in-memory cache.
+The server tracks which pages depend on which data keys. When a dependency
+key is invalidated, it finds exactly which pages are affected and removes
+them from the cache. Pages with no stale dependencies continue serving from
+the in-memory cache without hitting PHP.
 
 ### Even more powerful with Qbix Platform
 
-These headers work with `Q::header()` calls as shown above. But with the
+These headers work with `Q_Response::header()` calls as shown above. But with the
 [Qbix Platform](https://github.com/Qbix/Platform), it becomes automatic:
 
 ```php
@@ -601,7 +608,7 @@ PHP files in `web/` execute as scripts — same as Apache or nginx + php-fpm:
 ```php
 <?php
 // web/api/users.php — GET /api/users.php
-Q::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 $users = MyApp\Users::recent(20);
 echo json_encode($users);
 ```
@@ -615,7 +622,7 @@ map to clean URLs:
 <?php
 // handlers/api/users/get.php — GET /api/users
 function api_users_get(&$params, &$result) {
-    Q::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode(MyApp\Users::recent(20));
 }
 ```
@@ -1648,7 +1655,7 @@ function api_users_validate(&$params, &$result) {
 <?php
 // handlers/api/users/get.php — handles GET /api/users
 function api_users_get(&$params, &$result) {
-    Q::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode(MyApp\Users::list($_GET));
 }
 ```
@@ -1659,7 +1666,7 @@ function api_users_get(&$params, &$result) {
 function api_users_post(&$params, &$result) {
     $user = MyApp\Users::create($_POST);
     http_response_code(201);
-    Q::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode($user);
 }
 ```
@@ -1701,7 +1708,7 @@ Three options:
 // handlers/app/notfound/get.php
 function app_notfound_get(&$params, &$result) {
     Q_Response::code(404);
-    Q::header('Content-Type: text/html');
+    Q_Response::header('Content-Type: text/html');
     echo Q::view('app/404.php', ['path' => $_SERVER['REQUEST_URI']]);
 }
 ```
@@ -1782,7 +1789,7 @@ use MyApp\User;
 $user = User::find($_GET['id']);
 $feed = Q::event('MyApp/feed/get', ['userId' => $user->id]);
 
-Q::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 echo json_encode($feed);
 ```
 
@@ -1795,7 +1802,7 @@ what you get:
 |---|---|
 | `Q::event($name, $params)` | Fire an event — runs the handler from `handlers/` |
 | `Q::canHandle($name)` | Check if a handler exists for an event |
-| `Q::header($str, $replace, $code)` | Set a response header (use instead of `header()`) |
+| `Q_Response::header($str, $replace, $code)` | Set a response header (use instead of `header()`) |
 | `Q::view($name, $params)` | Render a PHP template from `views/` |
 | `Q::ifset($arr, 'key1', 'key2', $default)` | Safe nested array/object access without isset chains |
 | `Q::getObject($data, ['path', 'to', 'key'], $default)` | Deep access into nested arrays/objects |
@@ -1842,15 +1849,16 @@ echo Q::view('MyApp/settings/page.php', [
 ]);
 ```
 
-### Why `Q::header()` instead of `header()`?
+### Why `Q_Response::header()` instead of `header()`?
 
 The server runs PHP in CLI SAPI (same as FrankenPHP worker mode and Workerman).
-PHP's built-in `header()` is silently discarded in CLI mode. `Q::header()` has
+PHP's built-in `header()` is silently discarded in CLI mode. `Q_Response::header()` has
 the exact same signature but captures headers so the server can send them:
 
 ```php
-Q::header('Content-Type: application/json');   // same as header() but works
-Q::header('HTTP/1.1 201 Created', true, 201);  // status code
+Q_Response::header('Content-Type: application/json');   // same as header() but works
+Q_Response::header('HTTP/1.1 201 Created');             // status line
+Q_Response::code(201);                                  // or set status directly
 
 Q_Response::setHeader('X-Custom', 'value');    // named method
 Q_Response::code(201);                         // status code
@@ -1970,7 +1978,7 @@ $result = Q::event('MyApp/feed/post', [
     'userId' => $_SESSION['user_id'],
 ]);
 
-Q::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 echo json_encode($result);
 ```
 
@@ -2348,7 +2356,7 @@ compatibility with WordPress, Laravel, or any PHP code that calls `header()` dir
 The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you
 don't get the preload speed benefit. Static files, caching, and everything else
 still work at full speed. Use this for third-party code you can't modify — your
-own code should use `Q::header()` and the fork path for 10x performance.
+own code should use `Q_Response::header()` and the fork path for 10x performance.
 
 The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
 
@@ -2488,7 +2496,7 @@ in CGI mode.
 
 In your PHP files, replace:
 ```
-header(       →  Q::header(
+header(       →  Q_Response::header(
 setcookie(    →  Q_Response::setCookie(
 ```
 

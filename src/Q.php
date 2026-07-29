@@ -151,40 +151,24 @@ class Q
 
 	/**
 	 * Set a response header. Wraps PHP's header() and captures it.
-	 * Scripts can call either header() directly or Q::header() — both work.
-	 * But Q::header() ensures capture in CLI SAPI mode.
+	 * Scripts should use Q_Response::header() to set response headers.
+	 * Q::header() is a backward-compatible alias that delegates to it.
+	 * Both ensure capture in CLI SAPI mode where native header() is discarded.
 	 * @method header
 	 * @static
 	 * @param {string} $header Full header string e.g. "Content-Type: text/html"
 	 * @param {boolean} $replace Replace existing header of same name
 	 * @param {integer} $code HTTP status code
 	 */
+	/**
+	 * Backward-compatible alias for Q_Response::header().
+	 * Use Q_Response::header() in new code.
+	 * @method header
+	 * @static
+	 */
 	static function header($header, $replace = true, $code = 0)
 	{
-		// Delegate to Q_Response for proper tracking
-		$colonPos = strpos($header, ':');
-		if ($colonPos !== false) {
-			$name = trim(substr($header, 0, $colonPos));
-			$value = trim(substr($header, $colonPos + 1));
-			if (class_exists('Q_Response', false)) {
-				Q_Response::setHeader($name, $value, $replace);
-			} else {
-				// Fallback: direct capture
-				if ($replace) {
-					self::$_responseHeaders[$name] = $value;
-				} elseif (!isset(self::$_responseHeaders[$name])) {
-					self::$_responseHeaders[$name] = $value;
-				}
-			}
-		}
-		if ($code > 0) {
-			self::$_responseCode = $code;
-			if (class_exists('Q_Response', false)) {
-				Q_Response::code($code);
-			}
-		}
-		// Also call native header() (works in non-CLI SAPIs)
-		@header($header, $replace, $code);
+		Q_Response::header($header, $replace, $code);
 	}
 
 	/**
@@ -827,7 +811,7 @@ class Q_Room
  * Manages response headers, status codes, and cookies in CLI SAPI mode
  * where PHP's header()/setcookie()/headers_list() don't work.
  *
- * Use Q::header() for simple cases, or Q_Response methods for full control.
+ * Use Q_Response::header() for setting response headers, or Q_Response methods for full control.
  *
  * @class Q_Response
  */
@@ -845,6 +829,37 @@ class Q_Response
 	protected static $cookiesToRemove = array();
 	/** @var string|null Redirect URL if set */
 	public static $redirected = null;
+
+	/**
+	 * Set a response header using the same signature as PHP's header().
+	 * Parses "Name: Value" format. The preferred API for setting response
+	 * headers in Qbix Server — works in CLI SAPI where native header() is
+	 * silently discarded.
+	 * @method header
+	 * @static
+	 * @param {string} $header Full header string (e.g. 'Content-Type: text/html')
+	 * @param {boolean} $replace Whether to replace existing header
+	 * @param {integer} $code HTTP status code (0 = don't change)
+	 */
+	static function header($header, $replace = true, $code = 0)
+	{
+		// Handle HTTP status line: "HTTP/1.1 201 Created"
+		if (strncasecmp($header, 'HTTP/', 5) === 0) {
+			if (preg_match('/HTTP\/\S+\s+(\d+)\s*(.*)/i', $header, $m)) {
+				self::code((int) $m[1], trim($m[2]) ?: null);
+			}
+			return;
+		}
+		$colonPos = strpos($header, ':');
+		if ($colonPos !== false) {
+			$name = trim(substr($header, 0, $colonPos));
+			$value = trim(substr($header, $colonPos + 1));
+			self::setHeader($name, $value, $replace);
+		}
+		if ($code > 0) {
+			self::code($code);
+		}
+	}
 
 	/**
 	 * Set a response header. Compatible with Q_Response::setHeader() from the Platform.
@@ -889,21 +904,23 @@ class Q_Response
 	}
 
 	/**
-	 * Set the HTTP response status code.
+	 * Set or get the HTTP response status code.
 	 * Compatible with Q_Response::code() from the Platform.
 	 * @method code
 	 * @static
-	 * @param {integer} $code HTTP status code
+	 * @param {integer} $code HTTP status code (omit to get current code)
 	 * @param {string} $message Optional status message
+	 * @return {integer} Current status code when called with no arguments
 	 */
-	static function code($code, $message = null)
+	static function code($code = null, $message = null)
 	{
+		if ($code === null) return self::$statusCode;
 		self::$statusCode = (int) $code;
 		if ($message !== null) {
 			self::$statusMessage = $message;
 		}
 		Q::$_responseCode = (int) $code;
-		http_response_code($code);
+		@http_response_code($code);
 	}
 
 	/**
