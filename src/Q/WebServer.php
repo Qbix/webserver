@@ -942,6 +942,10 @@ class Q_WebServer
 				return false;
 			}
 			// Panel (control panel + API)
+			if ($path === '/Q/api/images/zip' && $method === 'POST') {
+				self::handleBulkImageZip($client, $parsed);
+				return false;
+			}
 			$handled = Q_WebServer_Panel::handle($client, $parsed);
 			if ($handled) return false;
 			// Dashboard (live stats)
@@ -1998,22 +2002,22 @@ WORKER;
 		$items = scandir($dir);
 		$dirs = array();
 		$files = array();
-		$media = array();
+		$images = array();
 
-		$imageExts = array('png','jpg','jpeg','gif','webp','svg');
+		$imageExts = array('png','jpg','jpeg','gif','webp','svg','bmp');
 		$videoExts = array('mp4','webm','ogg');
 		$audioExts = array('mp3','wav','ogg');
 
 		foreach ($items as $name) {
 			if ($name === '.' || $name === '..') continue;
-			if ($name[0] === '.') continue; // dotfiles always hidden
+			if ($name[0] === '.') continue;
 
 			$full = $dir . DS . $name;
 			$href = htmlspecialchars($urlPath . $name, ENT_QUOTES);
 			$safe = htmlspecialchars($name, ENT_QUOTES);
 
 			if (is_dir($full)) {
-				$dirs[] = "<a href=\"{$href}/\" class=\"item dir\"><span class=\"icon\">📁</span><span class=\"name\">{$safe}/</span></a>";
+				$dirs[] = array('name' => $safe, 'href' => $href . '/');
 				continue;
 			}
 
@@ -2025,30 +2029,62 @@ WORKER;
 				: ($size < 1048576 ? round($size/1024,1).' KB'
 				: round($size/1048576,1).' MB');
 
-			$files[] = "<a href=\"{$href}\" class=\"item file\"><span class=\"icon\">📄</span><span class=\"name\">{$safe}</span><span class=\"size\">{$sizeStr}</span></a>";
+			$isImage = in_array($ext, $imageExts);
+			$isVideo = in_array($ext, $videoExts);
+			$isAudio = in_array($ext, $audioExts);
 
-			// Collect media for preview grid
-			if (count($media) < $maxImages) {
-				if (in_array($ext, $imageExts)) {
-					$media[] = "<div class=\"media-item\"><a href=\"{$href}\"><img src=\"{$href}\" loading=\"lazy\" alt=\"{$safe}\"></a><div class=\"caption\">{$safe}</div></div>";
-				} elseif (in_array($ext, $videoExts)) {
-					$media[] = "<div class=\"media-item\"><video src=\"{$href}\" controls preload=\"metadata\"></video><div class=\"caption\">{$safe}</div></div>";
-				} elseif (in_array($ext, $audioExts)) {
-					$media[] = "<div class=\"media-item\"><audio src=\"{$href}\" controls preload=\"metadata\"></audio><div class=\"caption\">{$safe}</div></div>";
-				}
+			$fileInfo = array('name' => $safe, 'href' => $href, 'size' => $sizeStr, 'ext' => $ext,
+				'isImage' => $isImage, 'isVideo' => $isVideo, 'isAudio' => $isAudio);
+			$files[] = $fileInfo;
+
+			if ($isImage && count($images) < $maxImages) {
+				$dim = @getimagesize($full);
+				$fileInfo['width'] = $dim ? $dim[0] : 0;
+				$fileInfo['height'] = $dim ? $dim[1] : 0;
+				$images[] = $fileInfo;
 			}
 		}
 
-		$safePath = htmlspecialchars($urlPath, ENT_QUOTES);
-		$upLink = ($urlPath !== '/')
-			? '<a href="../" class="item dir up"><span class="icon">⬆</span><span class="name">Parent Directory</span></a>'
-			: '';
+		// Check for user override: listing.php or listing.html
+		// in the app root, similar to errors/ override
+		$_path = $urlPath;
+		$_dirs = $dirs;
+		$_files = $files;
+		$_images = $images;
+		$_dir = $dir;
 
-		$mediaSection = '';
-		if ($media) {
-			$mediaSection = '<div class="divider">Media Preview</div><div class="media-grid">'
-				. implode("\n", $media) . '</div>';
+		foreach (Q::$paths as $base) {
+			$listingPhp = $base . DS . 'listing.php';
+			if (file_exists($listingPhp)) {
+				ob_start();
+				include $listingPhp;
+				return ob_get_clean();
+			}
+			$listingHtml = $base . DS . 'listing.html';
+			if (file_exists($listingHtml)) {
+				return file_get_contents($listingHtml);
+			}
 		}
+
+		// Built-in listing
+		$safePath = htmlspecialchars($urlPath, ENT_QUOTES);
+		$isRoot = ($urlPath === '/');
+
+		// Build file list HTML
+		$listHtml = '';
+		if (!$isRoot) {
+			$listHtml .= '<a href="../" class="item dir up"><span class="icon">⬆</span><span class="name">Parent Directory</span></a>';
+		}
+		foreach ($dirs as $d) {
+			$listHtml .= '<a href="' . $d['href'] . '" class="item dir"><span class="icon">📁</span><span class="name">' . $d['name'] . '/</span></a>';
+		}
+		foreach ($files as $f) {
+			$icon = in_array($f['ext'], $imageExts) ? '🖼' : (in_array($f['ext'], $videoExts) ? '🎬' : (in_array($f['ext'], $audioExts) ? '🎵' : '📄'));
+			$listHtml .= '<a href="' . $f['href'] . '" class="item file"><span class="icon">' . $icon . '</span><span class="name">' . $f['name'] . '</span><span class="size">' . $f['size'] . '</span></a>';
+		}
+
+		// Build image grid data as JSON for JS
+		$imagesJson = json_encode($images, JSON_UNESCAPED_SLASHES);
 
 		return <<<HTML
 <!DOCTYPE html>
@@ -2058,46 +2094,333 @@ WORKER;
 <title>Index of {$safePath}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,system-ui,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  background:#f8f9fa;color:#333;padding:20px;max-width:960px;margin:0 auto}
-h1{font-size:20px;font-weight:600;padding:16px 0;border-bottom:2px solid #e9ecef;margin-bottom:12px;
-  word-break:break-all}
+body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;background:#f8f9fa;color:#333}
+.layout{display:flex;min-height:100vh}
+.sidebar{width:240px;background:#fff;border-right:1px solid #e9ecef;padding:12px;overflow-y:auto;flex-shrink:0}
+.main{flex:1;padding:20px;overflow-y:auto;max-width:900px}
+h1{font-size:18px;font-weight:600;padding:12px 0;border-bottom:2px solid #e9ecef;margin-bottom:12px;word-break:break-all}
+.toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.toolbar button{background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px}
+.toolbar button.active{background:#1971c2;color:#fff;border-color:#1971c2}
+.toolbar .spacer{flex:1}
 .listing{display:flex;flex-direction:column;gap:2px}
-.item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;
-  text-decoration:none;color:#333;transition:background .15s}
+.item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;text-decoration:none;color:#333;transition:background .15s}
 .item:hover{background:#e9ecef}
-.icon{font-size:18px;flex-shrink:0;width:24px;text-align:center}
-.name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.icon{font-size:16px;flex-shrink:0;width:22px;text-align:center}
+.name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .size{color:#868e96;font-size:12px;flex-shrink:0}
 .dir .name{color:#1971c2;font-weight:500}
-.file .name{color:#333}
 .up{border-bottom:1px solid #e9ecef;margin-bottom:4px;padding-bottom:10px}
-.divider{font-size:12px;color:#868e96;text-transform:uppercase;letter-spacing:.5px;
-  padding:20px 0 8px;border-top:1px solid #e9ecef;margin-top:16px}
-.media-grid{display:flex;flex-wrap:wrap;gap:12px;padding:8px 0}
-.media-item{max-width:200px;text-align:center}
-.media-item img{max-width:200px;max-height:200px;height:auto;border-radius:6px;
-  display:block;margin:0 auto 4px;object-fit:cover}
-.media-item video{max-width:200px;max-height:200px;border-radius:6px;display:block;margin:0 auto 4px}
-.media-item audio{max-width:200px;display:block;margin:0 auto 4px}
-.caption{font-size:11px;color:#868e96;word-break:break-all;max-width:200px}
-@media(max-width:600px){
-  body{padding:12px}
-  .item{padding:10px 8px}
-  .media-item{max-width:calc(50vw - 24px)}
-  .media-item img,.media-item video{max-width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:8px 0}
+.grid-item{background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);cursor:pointer;transition:transform .15s,box-shadow .15s;position:relative}
+.grid-item:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.12)}
+.grid-item.selected{outline:3px solid #1971c2;outline-offset:-3px}
+.grid-item .check{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.7);background:rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;opacity:0;transition:opacity .15s;z-index:1}
+.grid-item:hover .check,.grid-item.selected .check{opacity:1}
+.grid-item.selected .check{background:#1971c2;border-color:#1971c2}
+.grid-item img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#f0f0f0}
+.grid-item .info{padding:6px 8px;font-size:11px;color:#868e96;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grid-item .info .dim{float:right;color:#adb5bd}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column}
+.lightbox.open{display:flex}
+.lightbox img{max-width:90vw;max-height:70vh;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.lightbox .close{position:absolute;top:16px;right:20px;color:#fff;font-size:28px;cursor:pointer;opacity:.7;background:none;border:none}
+.lightbox .close:hover{opacity:1}
+.lightbox .meta{color:#fff;text-align:center;padding:16px;max-width:500px}
+.lightbox .meta h3{font-size:16px;margin-bottom:8px;font-weight:500}
+.lightbox .meta .dims{color:#adb5bd;font-size:13px;margin-bottom:12px}
+.lightbox .sizes{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+.lightbox .sizes a{background:rgba(255,255,255,.15);color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;text-decoration:none;transition:background .15s}
+.lightbox .sizes a:hover{background:rgba(255,255,255,.3)}
+.lightbox .sizes a.orig{background:rgba(25,113,194,.6)}
+.sidebar h2{font-size:13px;font-weight:600;color:#868e96;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.tree-item{display:block;padding:4px 8px;font-size:13px;color:#495057;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tree-item:hover{background:#f1f3f5}
+.tree-item.active{background:#e7f5ff;color:#1971c2;font-weight:500}
+.tree-item .ti{margin-right:4px}
+.action-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1a1a2e;color:#fff;
+  padding:10px 20px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.3);display:none;align-items:center;gap:12px;z-index:500;font-size:13px}
+.action-bar.show{display:flex}
+.action-bar button{background:rgba(255,255,255,.15);color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+.action-bar button:hover{background:rgba(255,255,255,.25)}
+.action-bar button.primary{background:#1971c2}
+.action-bar button.primary:hover{background:#1562a5}
+.action-bar .count{font-weight:600}
+.bulk-panel{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:1001;display:none;flex-direction:column;align-items:center;padding:20px}
+.bulk-panel.open{display:flex}
+.bulk-panel .bulk-header{color:#fff;text-align:center;padding:16px;width:100%}
+.bulk-panel .bulk-header h3{font-size:18px;margin-bottom:8px}
+.bulk-panel .bulk-options{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:12px 0}
+.bulk-panel .bulk-options button{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.2);padding:6px 16px;border-radius:20px;cursor:pointer;font-size:13px}
+.bulk-panel .bulk-options button:hover,.bulk-panel .bulk-options button.active{background:rgba(25,113,194,.6);border-color:#1971c2}
+.bulk-panel .bulk-preview{flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-content:start;padding:12px}
+.bulk-panel .bulk-preview img{height:100px;border-radius:6px;object-fit:cover}
+.bulk-panel .bulk-close{position:absolute;top:12px;right:16px;color:#fff;font-size:28px;background:none;border:none;cursor:pointer;opacity:.7}
+.bulk-panel .bulk-close:hover{opacity:1}
+.bulk-panel .bulk-download{background:#1971c2;color:#fff;border:none;padding:10px 28px;border-radius:8px;font-size:15px;cursor:pointer;margin-top:12px}
+.bulk-panel .bulk-download:hover{background:#1562a5}
+@media(max-width:700px){
+  .sidebar{display:none}
+  .main{padding:12px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+  .lightbox img{max-width:95vw;max-height:60vh}
 }
 </style>
 </head><body>
-<h1>Index of {$safePath}</h1>
-<div class="listing">
-{$upLink}
-HTML
-		. implode("\n", $dirs) . "\n"
-		. implode("\n", $files)
-		. "\n</div>\n"
-		. $mediaSection
-		. "\n</body></html>";
+
+<div class="layout">
+  <div class="sidebar" id="sidebar">
+    <h2>Folders</h2>
+    <div id="tree"></div>
+  </div>
+  <div class="main">
+    <h1>Index of {$safePath}</h1>
+    <div class="toolbar" id="toolbar">
+      <button onclick="setView('list')" id="btn-list">☰ List</button>
+      <button onclick="setView('grid')" id="btn-grid" class="active">▦ Grid</button>
+      <span class="spacer"></span>
+      <span style="font-size:12px;color:#868e96" id="count"></span>
+    </div>
+    <div id="list-view" class="listing" style="display:none">
+      {$listHtml}
+    </div>
+    <div id="grid-view" class="grid"></div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
+  <button class="close" onclick="closeLightbox()">&times;</button>
+  <img id="lb-img" src="">
+  <div class="meta">
+    <h3 id="lb-name"></h3>
+    <div class="dims" id="lb-dims"></div>
+    <div class="sizes" id="lb-sizes"></div>
+  </div>
+</div>
+
+<div class="action-bar" id="action-bar">
+  <span><span class="count" id="sel-count">0</span> selected</span>
+  <button onclick="selectAll()">Select All</button>
+  <button onclick="clearSelection()">Clear</button>
+  <button class="primary" onclick="openBulkPanel()">⬇ Download</button>
+</div>
+
+<div class="bulk-panel" id="bulk-panel">
+  <button class="bulk-close" onclick="closeBulkPanel()">&times;</button>
+  <div class="bulk-header">
+    <h3>Download <span id="bulk-count">0</span> images</h3>
+    <p style="color:#adb5bd;font-size:13px">Choose a size and format for all images</p>
+    <div class="bulk-options" id="bulk-sizes">
+      <button onclick="setBulkSize(320)">320px</button>
+      <button onclick="setBulkSize(640)" class="active">640px</button>
+      <button onclick="setBulkSize(1024)">1024px</button>
+      <button onclick="setBulkSize(1920)">1920px</button>
+      <button onclick="setBulkSize(0)" class="active">Original</button>
+    </div>
+    <div class="bulk-options" id="bulk-formats">
+      <button onclick="setBulkFormat('')" class="active">Keep format</button>
+      <button onclick="setBulkFormat('webp')">WebP</button>
+      <button onclick="setBulkFormat('jpg')">JPEG</button>
+      <button onclick="setBulkFormat('png')">PNG</button>
+    </div>
+    <label style="color:#adb5bd;font-size:13px;cursor:pointer;margin-top:4px;display:inline-flex;align-items:center;gap:6px">
+      <input type="checkbox" id="bulk-rename"> Include size in filenames (e.g. photo-640w.webp)
+    </label>
+    <button class="bulk-download" onclick="bulkDownload()">⬇ Download ZIP</button>
+  </div>
+  <div class="bulk-preview" id="bulk-preview"></div>
+</div>
+
+<script>
+var images = {$imagesJson};
+var currentView = 'grid';
+var dirs = document.querySelectorAll('.item.dir:not(.up)');
+
+// Sidebar tree
+var tree = document.getElementById('tree');
+if ('{$safePath}' !== '/') {
+  tree.innerHTML += '<a class="tree-item" href="../"><span class="ti">⬆</span> ..</a>';
+}
+dirs.forEach(function(d) {
+  tree.innerHTML += '<a class="tree-item" href="' + d.getAttribute('href') + '"><span class="ti">📁</span> ' + d.querySelector('.name').textContent + '</a>';
+});
+if (!dirs.length && '{$safePath}' === '/') {
+  document.getElementById('sidebar').style.display = 'none';
+}
+
+// Count
+document.getElementById('count').textContent = images.length + ' images, ' + (dirs.length) + ' folders';
+
+// Grid view
+var gridEl = document.getElementById('grid-view');
+var selected = {};
+images.forEach(function(img, i) {
+  var thumb = img.href + '?w=240';
+  if (img.ext === 'svg') thumb = img.href;
+  var dim = img.width ? img.width+'×'+img.height : '';
+  var div = document.createElement('div');
+  div.className = 'grid-item';
+  div.dataset.idx = i;
+  div.innerHTML = '<div class="check">✓</div>'
+    + '<img src="' + thumb + '" loading="lazy" alt="' + img.name + '">'
+    + '<div class="info">' + img.name + '<span class="dim">' + dim + '</span></div>';
+  div.onclick = function(e) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey || Object.keys(selected).length > 0) {
+      toggleSelect(i, div);
+    } else {
+      openLightbox(i);
+    }
+  };
+  div.querySelector('.check').onclick = function(e) {
+    e.stopPropagation();
+    toggleSelect(i, div);
+  };
+  gridEl.appendChild(div);
+});
+
+function toggleSelect(i, el) {
+  if (selected[i]) { delete selected[i]; el.classList.remove('selected'); }
+  else { selected[i] = true; el.classList.add('selected'); }
+  updateActionBar();
+}
+function selectAll() {
+  document.querySelectorAll('.grid-item').forEach(function(el) {
+    var i = parseInt(el.dataset.idx);
+    selected[i] = true;
+    el.classList.add('selected');
+  });
+  updateActionBar();
+}
+function clearSelection() {
+  selected = {};
+  document.querySelectorAll('.grid-item.selected').forEach(function(el) {
+    el.classList.remove('selected');
+  });
+  updateActionBar();
+}
+function updateActionBar() {
+  var n = Object.keys(selected).length;
+  document.getElementById('sel-count').textContent = n;
+  document.getElementById('action-bar').className = 'action-bar' + (n > 0 ? ' show' : '');
+}
+
+// Bulk download
+var bulkSize = 0; // 0 = original
+var bulkFormat = ''; // '' = keep original
+function setBulkSize(w) {
+  bulkSize = w;
+  document.querySelectorAll('#bulk-sizes button').forEach(function(b) {
+    b.className = (w === 0 && b.textContent === 'Original') || (w && b.textContent === w+'px') ? 'active' : '';
+  });
+}
+function setBulkFormat(f) {
+  bulkFormat = f;
+  document.querySelectorAll('#bulk-formats button').forEach(function(b) {
+    b.className = (f === '' && b.textContent === 'Keep format') || (f && b.textContent.toLowerCase().indexOf(f) >= 0) ? 'active' : '';
+  });
+}
+function openBulkPanel() {
+  var keys = Object.keys(selected);
+  document.getElementById('bulk-count').textContent = keys.length;
+  var preview = document.getElementById('bulk-preview');
+  preview.innerHTML = '';
+  keys.forEach(function(k) {
+    var img = images[k];
+    var el = document.createElement('img');
+    el.src = img.href + '?w=100';
+    el.alt = img.name;
+    preview.appendChild(el);
+  });
+  document.getElementById('bulk-panel').classList.add('open');
+}
+function closeBulkPanel() {
+  document.getElementById('bulk-panel').classList.remove('open');
+}
+function bulkDownload() {
+  var keys = Object.keys(selected);
+  var files = keys.map(function(k) {
+    var img = images[k];
+    var href = img.href;
+    if (bulkFormat && bulkFormat !== img.ext) {
+      href = href.replace(/\.[^.]+$/, '.' + bulkFormat);
+    }
+    if (bulkSize) href += (href.indexOf('?') >= 0 ? '&' : '?') + 'w=' + bulkSize;
+    return href;
+  });
+  var form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/Q/api/images/zip';
+  form.style.display = 'none';
+  var input = document.createElement('input');
+  input.name = 'files';
+  input.value = JSON.stringify(files);
+  form.appendChild(input);
+  var renameInput = document.createElement('input');
+  renameInput.name = 'rename';
+  renameInput.value = document.getElementById('bulk-rename').checked ? '1' : '0';
+  form.appendChild(renameInput);
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+  closeBulkPanel();
+}
+
+function setView(v) {
+  currentView = v;
+  document.getElementById('list-view').style.display = v === 'list' ? '' : 'none';
+  document.getElementById('grid-view').style.display = v === 'grid' ? '' : 'none';
+  document.getElementById('btn-list').className = v === 'list' ? 'active' : '';
+  document.getElementById('btn-grid').className = v === 'grid' ? 'active' : '';
+}
+
+function openLightbox(i) {
+  var img = images[i];
+  var lb = document.getElementById('lightbox');
+  document.getElementById('lb-img').src = img.href;
+  document.getElementById('lb-name').textContent = img.name;
+  document.getElementById('lb-dims').textContent = img.width ? img.width + ' × ' + img.height + ' · ' + img.size : img.size;
+  var sizes = document.getElementById('lb-sizes');
+  sizes.innerHTML = '';
+  // Download size options
+  var widths = [320, 640, 1024, 1920];
+  widths.forEach(function(w) {
+    if (img.width && w >= img.width) return;
+    var a = document.createElement('a');
+    a.href = img.href + '?w=' + w;
+    a.download = img.name.replace(/\.[^.]+$/, '') + '-' + w + 'w.' + img.ext;
+    a.textContent = w + 'px';
+    sizes.appendChild(a);
+  });
+  // WebP version
+  if (img.ext !== 'webp' && img.ext !== 'svg') {
+    var a = document.createElement('a');
+    a.href = img.href.replace(/\.[^.]+$/, '.webp');
+    a.download = img.name.replace(/\.[^.]+$/, '.webp');
+    a.textContent = 'WebP';
+    sizes.appendChild(a);
+  }
+  // Original
+  var orig = document.createElement('a');
+  orig.href = img.href;
+  orig.download = img.name;
+  orig.className = 'orig';
+  orig.textContent = 'Original' + (img.width ? ' (' + img.width + 'px)' : '');
+  sizes.appendChild(orig);
+  lb.classList.add('open');
+}
+function closeLightbox(e) {
+  if (e && e.target !== document.getElementById('lightbox') && e.target !== document.querySelector('.close')) return;
+  document.getElementById('lightbox').classList.remove('open');
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeLightbox();
+});
+
+// Default to list if no images
+if (!images.length) setView('list');
+</script>
+</body></html>
+HTML;
 	}
 
 	// ── MIME types ────────────────────────────────────────
@@ -2893,6 +3216,82 @@ HTML
 	 * @method cleanupUploadFiles
 	 * @static
 	 */
+	/**
+	 * Handle bulk image download as ZIP.
+	 * Accepts POST with files[] JSON array of image URLs (with ?w= params).
+	 * Generates/caches each image, then streams a ZIP.
+	 */
+	static function handleBulkImageZip($client, $parsed)
+	{
+		if (!class_exists('ZipArchive')) {
+			self::sendResponse($client, 500, 'ZipArchive extension not available');
+			return;
+		}
+
+		// Parse form data
+		$body = $parsed['body'] ?? '';
+		parse_str($body, $post);
+		$files = json_decode($post['files'] ?? '[]', true);
+		if (!$files || !is_array($files) || count($files) > 200) {
+			self::sendResponse($client, 400, 'Invalid files list');
+			return;
+		}
+
+		$tmpZip = tempnam(sys_get_temp_dir(), 'qbix_zip_') . '.zip';
+		$zip = new \ZipArchive();
+		if ($zip->open($tmpZip, \ZipArchive::CREATE) !== true) {
+			self::sendResponse($client, 500, 'Cannot create ZIP');
+			return;
+		}
+
+		$rename = !empty($post['rename']) && $post['rename'] !== '0';
+
+		foreach ($files as $url) {
+			// Parse URL into path + query
+			$parts = parse_url($url);
+			$path = $parts['path'] ?? '';
+			$query = $parts['query'] ?? '';
+			$qp = array();
+			if ($query) parse_str($query, $qp);
+
+			$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+			$fsPath = self::resolveStatic($path);
+
+			// Try image handler (resize/convert)
+			$fakeParsed = array(
+				'path' => $path,
+				'query' => $query,
+				'headers' => $parsed['headers'] ?? array(),
+			);
+			$imgResponse = Q_WebServer_Image::handle($fsPath, $path, $fakeParsed);
+
+			if ($imgResponse && !empty($imgResponse['body'])) {
+				$filename = pathinfo($path, PATHINFO_FILENAME) . '.' . $ext;
+				if ($rename && !empty($qp['w'])) {
+					$filename = pathinfo($path, PATHINFO_FILENAME) . '-' . $qp['w'] . 'w.' . $ext;
+				}
+				$zip->addFromString($filename, $imgResponse['body']);
+			} elseif ($fsPath && is_file($fsPath)) {
+				$zip->addFile($fsPath, pathinfo($path, PATHINFO_BASENAME));
+			}
+		}
+
+		$zip->close();
+
+		if (!file_exists($tmpZip)) {
+			self::sendResponse($client, 500, 'ZIP creation failed');
+			return;
+		}
+
+		$zipData = file_get_contents($tmpZip);
+		@unlink($tmpZip);
+
+		self::sendResponse($client, 200, $zipData, 'application/zip', array(
+			'Content-Disposition' => 'attachment; filename="images.zip"',
+			'Content-Length' => (string) strlen($zipData),
+		));
+	}
+
 	static function cleanupUploadFiles()
 	{
 		foreach (self::$uploadTempFiles as $f) {
