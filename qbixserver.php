@@ -144,13 +144,21 @@ if (!$webDir || !is_dir($webDir)) {
 	exit(1);
 }
 
-// Initialize Q with the project root (parent of web/)
-// This sets up autoloading from classes/ and handlers from handlers/
+// Initialize project root
+// In standalone mode: Q::init() sets up autoloading from classes/ and handlers/
+// In --app mode: Platform already initialized, but we still register the path
 $projectRoot = dirname($webDir);
 if (!defined('APP_DIR')) {
 	define('APP_DIR', $projectRoot);
 }
-Q::init($projectRoot);
+if (method_exists('Q', 'init')) {
+	Q::init($projectRoot);
+} else {
+	// Platform's Q doesn't have init() — just register the path
+	if (!in_array($projectRoot, Q::$paths ?? array())) {
+		Q::$paths[] = $projectRoot;
+	}
+}
 
 // Load .env file if present (sets $_ENV and getenv())
 $envFile = $projectRoot . DIRECTORY_SEPARATOR . '.env';
@@ -243,7 +251,9 @@ if (file_exists($appConfig)) {
 }
 
 // Preload handlers if configured (Q.handlers.preload: true)
-Q::preload();
+if (method_exists('Q', 'preload')) {
+	Q::preload();
+}
 
 // CLI flag overrides
 if (!empty($opts['hotreload'])) {
@@ -424,11 +434,16 @@ echo "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n";
 echo "  └" . str_repeat('─', $W) . "┘\n";
 echo "\n";
 
-Q_WebServer::start(
-	$webDir,
-	$opts['host'],
-	(int) $opts['port'],
-	(int) $opts['workers']
-);
+try {
+	Q_WebServer::start(
+		$webDir,
+		$opts['host'],
+		(int) $opts['port'],
+		(int) $opts['workers']
+	);
+} catch (Exception $e) {
+	fwrite(STDERR, "Failed to start: " . $e->getMessage() . "\n");
+	exit(1);
+}
 
 Q_WebServer::run();

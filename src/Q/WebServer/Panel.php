@@ -785,7 +785,7 @@ class Q_WebServer_Panel
 		$bootstrap = "error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED);\n"
 			. "require_once " . var_export($qPath, true) . ";\n";
 		if (defined('APP_DIR')) {
-			$bootstrap .= "Q::init(" . var_export(APP_DIR, true) . ");\n";
+			$bootstrap .= "if (method_exists('Q','init')) Q::init(" . var_export(APP_DIR, true) . ");\n";
 		}
 		$fullCode = "<?php\n" . $bootstrap . $code;
 

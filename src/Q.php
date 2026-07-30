@@ -557,13 +557,18 @@ class Q
 	 * @static
 	 * @param {string} $projectRoot The project root (parent of web/)
 	 */
+	/**
+	 * Initialize a project root — registers paths and loads Composer autoloader.
+	 * Safe to call even if Platform's Q is loaded (it's a no-op if Q::init exists on Platform).
+	 * @method init
+	 * @static
+	 */
 	static function init($projectRoot)
 	{
 		$projectRoot = rtrim($projectRoot, DS);
 		if (!in_array($projectRoot, self::$paths)) {
 			self::$paths[] = $projectRoot;
 		}
-		// Composer autoloader — if present, handles its own PSR-4/classmap
 		$composerAutoload = $projectRoot . DS . 'vendor' . DS . 'autoload.php';
 		if (file_exists($composerAutoload)) {
 			require_once $composerAutoload;
@@ -571,28 +576,16 @@ class Q
 	}
 
 	/**
-	 * Preload all handler files if Q.handlers.preload is true.
-	 * Call this after config is loaded and before the server starts accepting
-	 * connections. Handlers are included once in the parent process and shared
-	 * via COW across all forked children.
-	 *
-	 * Off by default — handlers lazy-load via include_once on first call,
-	 * which is fine with opcache (edit a file, refresh, see the change).
-	 * Enable in production for full COW sharing of handler bytecode.
-	 *
+	 * Preload handler files for COW sharing across forks.
 	 * @method preload
 	 * @static
 	 */
 	static function preload()
 	{
-		if (!Q_Config::get('Q', 'handlers', 'preload', false)) {
-			return;
-		}
+		if (!Q_Config::get('Q', 'handlers', 'preload', false)) return;
 		foreach (self::$paths as $base) {
 			$handlersDir = $base . DS . 'handlers';
-			if (is_dir($handlersDir)) {
-				self::preloadDir($handlersDir);
-			}
+			if (is_dir($handlersDir)) self::preloadDir($handlersDir);
 		}
 	}
 
@@ -817,36 +810,29 @@ class Q_Room
  */
 class Q_Response
 {
-	/** @var array Response headers: name => value */
-	protected static $headers = array();
-	/** @var integer HTTP status code */
-	protected static $statusCode = 200;
-	/** @var string Status message */
-	protected static $statusMessage = 'OK';
-	/** @var array Cookies to set: name => [value, expires, path, domain, secure, httponly, samesite] */
+	/** @var array Cookies to set */
 	public static $cookies = array();
-	/** @var array Cookies to remove */
-	protected static $cookiesToRemove = array();
 	/** @var string|null Redirect URL if set */
 	public static $redirected = null;
+	/** @var array Internal header store */
+	private static $_headers = array();
+	/** @var integer Internal status code */
+	private static $_code = 200;
+	/** @var array Cookies to remove */
+	private static $cookiesToRemove = array();
+	/** @var array Response errors */
+	private static $errors = array();
 
 	/**
-	 * Set a response header using the same signature as PHP's header().
-	 * Parses "Name: Value" format. The preferred API for setting response
-	 * headers in Qbix Server — works in CLI SAPI where native header() is
-	 * silently discarded.
+	 * Set a response header. Same signature as PHP's header().
 	 * @method header
 	 * @static
-	 * @param {string} $header Full header string (e.g. 'Content-Type: text/html')
-	 * @param {boolean} $replace Whether to replace existing header
-	 * @param {integer} $code HTTP status code (0 = don't change)
 	 */
 	static function header($header, $replace = true, $code = 0)
 	{
-		// Handle HTTP status line: "HTTP/1.1 201 Created"
 		if (strncasecmp($header, 'HTTP/', 5) === 0) {
 			if (preg_match('/HTTP\/\S+\s+(\d+)\s*(.*)/i', $header, $m)) {
-				self::code((int) $m[1], trim($m[2]) ?: null);
+				self::code((int) $m[1]);
 			}
 			return;
 		}
@@ -856,82 +842,46 @@ class Q_Response
 			$value = trim(substr($header, $colonPos + 1));
 			self::setHeader($name, $value, $replace);
 		}
-		if ($code > 0) {
-			self::code($code);
-		}
+		if ($code > 0) self::code($code);
 	}
 
-	/**
-	 * Set a response header. Compatible with Q_Response::setHeader() from the Platform.
-	 * @method setHeader
-	 * @static
-	 * @param {string} $name Header name (e.g. 'Content-Type')
-	 * @param {string} $value Header value
-	 * @param {boolean} $replace Whether to replace existing header of same name
-	 */
+	/** @method setHeader */
 	static function setHeader($name, $value, $replace = true)
 	{
-		if ($replace || !isset(self::$headers[$name])) {
-			self::$headers[$name] = $value;
+		if ($replace || !isset(self::$_headers[$name])) {
+			self::$_headers[$name] = $value;
 		}
-		// Also store in Q's header capture
-		Q::$_responseHeaders[$name] = $value;
-		// Call native header() for non-CLI SAPIs
+		if (class_exists('Q_WebServer', false)) {
+			Q_WebServer::setResponseHeader($name, $value, $replace);
+		}
 		@header("$name: $value", $replace);
 	}
 
-	/**
-	 * Get a response header that was set.
-	 * @method getHeader
-	 * @static
-	 * @param {string} $name
-	 * @return {string|null}
-	 */
-	static function getHeader($name)
-	{
-		return self::$headers[$name] ?? null;
-	}
+	/** @method getHeader */
+	static function getHeader($name) { return self::$_headers[$name] ?? null; }
 
-	/**
-	 * Get all response headers.
-	 * @method getHeaders
-	 * @static
-	 * @return {array}
-	 */
-	static function getHeaders()
-	{
-		return self::$headers;
-	}
+	/** @method getHeaders */
+	static function getHeaders() { return self::$_headers; }
 
-	/**
-	 * Set or get the HTTP response status code.
-	 * Compatible with Q_Response::code() from the Platform.
-	 * @method code
-	 * @static
-	 * @param {integer} $code HTTP status code (omit to get current code)
-	 * @param {string} $message Optional status message
-	 * @return {integer} Current status code when called with no arguments
-	 */
-	static function code($code = null, $message = null)
+	/** @method clearHeaders */
+	static function clearHeaders()
 	{
-		if ($code === null) return self::$statusCode;
-		self::$statusCode = (int) $code;
-		if ($message !== null) {
-			self::$statusMessage = $message;
+		self::$_headers = array();
+		self::$_code = 200;
+		if (class_exists('Q_WebServer', false)) {
+			Q_WebServer::clearResponseState();
 		}
-		Q::$_responseCode = (int) $code;
-		@http_response_code($code);
 	}
 
-	/**
-	 * Get the current status code.
-	 * @method getStatusCode
-	 * @static
-	 * @return {integer}
-	 */
-	static function getStatusCode()
+	/** @method code */
+	static function code($code = null)
 	{
-		return self::$statusCode;
+		if ($code === null) return self::$_code;
+		self::$_code = (int) $code;
+		if (class_exists('Q_WebServer', false)) {
+			Q_WebServer::responseCode((int) $code);
+		}
+		@http_response_code($code);
 	}
 
 	/**
@@ -1049,13 +999,10 @@ class Q_Response
 	 */
 	static function clear()
 	{
-		self::$headers = array();
-		self::$statusCode = 200;
-		self::$statusMessage = 'OK';
+		self::$_headers = array();
+		self::$_code = 200;
 		self::$cookies = array();
-		self::$cookiesToRemove = array();
 		self::$redirected = null;
-		self::$errors = array();
 	}
 
 	/**
@@ -1128,9 +1075,6 @@ class Q_Response
 		self::$cookies = array();
 		self::$cookiesToRemove = array();
 	}
-
-	/** @var array Accumulated errors */
-	protected static $errors = array();
 }
 
 // ── Q_Request ───────────────────────────────────────

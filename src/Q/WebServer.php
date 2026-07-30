@@ -57,6 +57,9 @@ class Q_WebServer
 		self::$host = $host;
 		self::$port = $port;
 
+		// Initialize dashboard stats (uptime tracking)
+		Q_WebServer_Dashboard::init();
+
 		if ($ext = Q_Config::get('Q', 'webserver', 'extensions', null)) {
 			self::$allowedExtensions = $ext;
 		}
@@ -615,8 +618,9 @@ class Q_WebServer
 
 		// Stats + logging
 		Q_WebServer_Dashboard::recordRequest(
-			$parsed['method'], $parsed['uri'], self::$lastStatus, $ms
+			$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes
 		);
+		self::$lastBytes = 0;
 		if (self::$onRequest) {
 			(self::$onRequest)($parsed['method'], $parsed['uri'], self::$lastStatus, $ms);
 		}
@@ -1263,10 +1267,10 @@ class Q_WebServer
 					// 3. Response
 					Q::event("$module/$action/response", $routed, false, true);
 
-			$headers = Q::getResponseHeaders();
+			$headers = Q_WebServer::getResponseHeaders();
 					$code = http_response_code();
 					if ($code && $code !== 200) $status = $code;
-					if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
+					if (Q_WebServer::responseCode() !== 200) $status = Q_WebServer::responseCode();
 				} catch (\Throwable $e) {
 					$status = 500;
 					ob_clean();
@@ -1312,10 +1316,10 @@ class Q_WebServer
 				echo 'Method Not Allowed';
 			}
 			Q::event("$module/$action/response", $routed, false, true);
-			$headers = Q::getResponseHeaders();
+			$headers = Q_WebServer::getResponseHeaders();
 			$code = http_response_code();
 			if ($code && $code !== 200) $status = $code;
-			if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
+			if (Q_WebServer::responseCode() !== 200) $status = Q_WebServer::responseCode();
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
@@ -1442,7 +1446,7 @@ $req = json_decode($json, true);
 if (!$req) { echo json_encode(['status'=>500,'body'=>'Bad request','headers'=>[]]); exit; }
 if (isset($req['qFile']) && file_exists($req['qFile'])) {
     require_once $req['qFile'];
-    if (isset($req['projectRoot'])) Q::init($req['projectRoot']);
+    if (isset($req['projectRoot']) && method_exists('Q', 'init')) Q::init($req['projectRoot']);
 }
 $_SERVER['REQUEST_METHOD'] = $req['method'] ?? 'GET';
 $_SERVER['REQUEST_URI'] = $req['uri'] ?? '/';
@@ -1488,8 +1492,8 @@ if (class_exists('Q_Request',false)) Q_Request::setInput($raw);
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
-			$headers = Q::getResponseHeaders();
-    $code = http_response_code(); if (Q::$_responseCode !== 200) $status = Q::$_responseCode; if ($code) $status = $code;
+			$headers = Q_WebServer::getResponseHeaders();
+    $code = http_response_code(); if (Q_WebServer::responseCode() !== 200) $status = Q_WebServer::responseCode(); if ($code) $status = $code;
 } catch (Throwable $e) { $status = 500; ob_clean(); echo $e->getMessage(); $headers['Content-Type']='text/plain'; }
 $body = ob_get_clean();
 echo json_encode(compact('status','body','headers'), JSON_UNESCAPED_SLASHES);
@@ -1856,6 +1860,7 @@ WORKER;
 
 			// Serve from cache — single fwrite
 			self::$lastStatus = 200;
+			self::$lastBytes = $cached['bodyLen'];
 			if ($method === 'HEAD') {
 				@fwrite($client, $cached['head'][$connKey]);
 			} else {
@@ -1909,6 +1914,7 @@ WORKER;
 				. "Vary: Accept-Encoding\r\n"
 				. "Connection: $connHeader\r\n\r\n";
 			self::$lastStatus = 200;
+			self::$lastBytes = $preComp['size'];
 			@fwrite($client, $method === 'HEAD' ? $out : $out . file_get_contents($preComp['path']));
 			return;
 		}
@@ -1924,6 +1930,7 @@ WORKER;
 				$out .= "Content-Length: " . strlen($body) . "\r\n"
 					. "Connection: $connHeader\r\n\r\n";
 				self::$lastStatus = 200;
+				self::$lastBytes = strlen($body);
 				@fwrite($client, $method === 'HEAD' ? $out : $out . $body);
 				return;
 			}
@@ -1937,6 +1944,7 @@ WORKER;
 			. "Content-Length: $size\r\nConnection: close\r\n\r\n";
 
 		self::$lastStatus = 200;
+		self::$lastBytes = $size;
 		$headStr = $keepAlive ? $kaHead : $clHead;
 		@fwrite($client, $method === 'HEAD' ? $headStr : $headStr . $body);
 
@@ -2614,7 +2622,7 @@ HTML;
 		while (ob_get_level()) ob_end_clean();
 		@header_remove();
 		@http_response_code(200);
-		Q::clearResponseHeaders();
+		Q_WebServer::clearResponseState();
 		if (class_exists('Q_Response', false)) Q_Response::clear();
 		ob_start();
 		$status = 200;
@@ -2633,10 +2641,10 @@ HTML;
 					echo 'Not Found';
 				}
 			}
-			$headers = Q::getResponseHeaders();
+			$headers = Q_WebServer::getResponseHeaders();
 			$code = http_response_code();
 			if ($code && $code !== 200) $status = $code;
-			if (Q::$_responseCode !== 200) $status = Q::$_responseCode;
+			elseif (Q_WebServer::responseCode() !== 200) $status = Q_WebServer::responseCode();
 
 			// Cookies: Q_Response::setCookie() stores them.
 			// Headers::processResponse() reads them via cookieHeaders()
@@ -2894,6 +2902,7 @@ HTML;
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
 		$body = (string) $body;
+		self::$lastBytes = strlen($body);
 		$conn = $extra['Connection'] ?? 'keep-alive';
 		unset($extra['Connection']);
 		$out = "HTTP/1.1 $status " . ($reasons[$status] ?? 'OK')
@@ -3211,6 +3220,83 @@ HTML;
 	private static $running = false;
 	private static $lastStatus = 200;
 	private static $lastBody = '';
+	private static $lastBytes = 0;
+
+	// ── Response state (internal — not Q_Response, to avoid Platform collision) ──
+
+	/** @var array Captured response headers: name => value */
+	private static $_responseHeaders = array();
+	/** @var integer Captured response status code */
+	private static $_responseCode = 200;
+
+	/**
+	 * Capture a response header. Called by Q_Response::header() in standalone mode,
+	 * or read from headers_list() / http_response_code() in --app mode.
+	 * @method setResponseHeader
+	 * @static
+	 */
+	static function setResponseHeader($name, $value, $replace = true)
+	{
+		if ($replace || !isset(self::$_responseHeaders[$name])) {
+			self::$_responseHeaders[$name] = $value;
+		}
+	}
+
+	/**
+	 * Get all captured response headers.
+	 * In --app mode (Platform loaded), also reads headers_list().
+	 */
+	static function getResponseHeaders()
+	{
+		// Merge headers from Q_Response (our shim, if loaded)
+		if (class_exists('Q_Response', false) && method_exists('Q_Response', 'getHeaders')) {
+			foreach (Q_Response::getHeaders() as $k => $v) {
+				if (!isset(self::$_responseHeaders[$k])) {
+					self::$_responseHeaders[$k] = $v;
+				}
+			}
+		}
+		// Merge any headers set via native header()
+		if (function_exists('headers_list')) {
+			foreach (headers_list() as $h) {
+				$pos = strpos($h, ':');
+				if ($pos !== false) {
+					$name = trim(substr($h, 0, $pos));
+					$value = trim(substr($h, $pos + 1));
+					if (!isset(self::$_responseHeaders[$name])) {
+						self::$_responseHeaders[$name] = $value;
+					}
+				}
+			}
+		}
+		return self::$_responseHeaders;
+	}
+
+	/**
+	 * Get or set the response status code.
+	 * In --app mode, also reads http_response_code().
+	 */
+	static function responseCode($code = null)
+	{
+		if ($code !== null) {
+			self::$_responseCode = (int) $code;
+			return $code;
+		}
+		// Check native http_response_code first (catches Platform's header() calls)
+		$native = http_response_code();
+		if ($native && $native !== 200) return $native;
+		return self::$_responseCode;
+	}
+
+	/**
+	 * Clear response state between requests in the event loop.
+	 */
+	static function clearResponseState()
+	{
+		self::$_responseHeaders = array();
+		self::$_responseCode = 200;
+		@header_remove();
+	}
 	/** @internal pid => start_time for request timeout enforcement */
 	static $workerPids = array();
 	/** @var integer Max POST body size in bytes (from post_max_size ini) */
