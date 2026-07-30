@@ -377,7 +377,23 @@ class Q_WebServer
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
 				while (($pid = pcntl_waitpid(-1, $st, WNOHANG)) > 0) {
+					$info = Q_WebServer::$workerPids[$pid] ?? null;
 					unset(Q_WebServer::$workerPids[$pid]);
+					if (!$info) continue;
+
+					$startTime = is_array($info) ? $info['time'] : $info;
+					$ms = round((microtime(true) - $startTime) * 1000, 1);
+					$method = is_array($info) ? ($info['method'] ?? 'GET') : 'GET';
+					$uri = is_array($info) ? ($info['uri'] ?? '/') : '/';
+
+					// Check if child exited abnormally
+					if (!pcntl_wifexited($st) || pcntl_wexitstatus($st) !== 0) {
+						// Worker crashed or was killed — record as 502
+						Q_WebServer_Dashboard::recordRequest($method, $uri, 502, $ms, 0, true);
+					} else {
+						// Normal exit — child already sent the response and recorded nothing
+						// The child handles recording on its own via exit(0)
+					}
 				}
 			});
 		}
@@ -391,10 +407,15 @@ class Q_WebServer
 		if ($timeout > 0) {
 			Q_Evented::repeat(1, function () use ($timeout) {
 				$now = microtime(true);
-				foreach (Q_WebServer::$workerPids as $pid => $start) {
-					if ($now - $start > $timeout) {
+				foreach (Q_WebServer::$workerPids as $pid => $info) {
+					$startTime = is_array($info) ? $info['time'] : $info;
+					if ($now - $startTime > $timeout) {
+						$ms = round(($now - $startTime) * 1000, 1);
+						$method = is_array($info) ? ($info['method'] ?? 'GET') : 'GET';
+						$uri = is_array($info) ? ($info['uri'] ?? '/') : '/';
 						@posix_kill($pid, SIGKILL);
 						unset(Q_WebServer::$workerPids[$pid]);
+						Q_WebServer_Dashboard::recordRequest($method, $uri, 504, $ms, 0, true);
 					}
 				}
 			});
@@ -617,23 +638,28 @@ class Q_WebServer
 		}
 
 		// Stats + logging
-		Q_WebServer_Dashboard::recordRequest(
-			$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes
-		);
-		self::$lastBytes = 0;
-		if (self::$onRequest) {
-			(self::$onRequest)($parsed['method'], $parsed['uri'], self::$lastStatus, $ms);
-		}
+		// Skip if request was delegated to a forked child (-1)
+		// The child's exit status is recorded in the SIGCHLD handler
+		if (self::$lastStatus !== -1) {
+			Q_WebServer_Dashboard::recordRequest(
+				$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes
+			);
+			self::$lastBytes = 0;
+			if (self::$onRequest) {
+				(self::$onRequest)($parsed['method'], $parsed['uri'], self::$lastStatus, $ms);
+			}
 
-		// Log to file
-		$bodyLen = strlen(self::$lastBody ?? '');
-		Q_WebServer_Log::access(
-			$parsed['clientIp'], $parsed['method'], $parsed['uri'],
-			self::$lastStatus, $bodyLen,
-			$parsed['headers']['referer'] ?? '',
-			$parsed['headers']['user-agent'] ?? '',
-			$ms
-		);
+			// Log to file
+			$bodyLen = strlen(self::$lastBody ?? '');
+			Q_WebServer_Log::access(
+				$parsed['clientIp'], $parsed['method'], $parsed['uri'],
+				self::$lastStatus, $bodyLen,
+				$parsed['headers']['referer'] ?? '',
+				$parsed['headers']['user-agent'] ?? '',
+				$ms
+			);
+		}
+		self::$lastStatus = 200; // reset for next request
 
 		// ── Keep-alive decision ──────────────────────────
 		static $keepAliveTimeout = null;
@@ -1282,7 +1308,7 @@ class Q_WebServer
 				$response = compact('status', 'body', 'headers');
 				Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 				@fclose($client);
-				exit(0);
+				exit($status >= 500 ? 1 : 0);
 			} elseif ($pid > 0) {
 				@fclose($client);
 				$key = (int) $client;
@@ -1290,9 +1316,13 @@ class Q_WebServer
 					Q_Evented::cancel(self::$clientWatchers[$key]);
 				}
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
-				self::$workerPids[$pid] = microtime(true);
+				self::$workerPids[$pid] = array(
+					'time' => microtime(true),
+					'method' => $parsed['method'],
+					'uri' => $parsed['uri'],
+				);
 				pcntl_waitpid($pid, $st, WNOHANG);
-				self::$lastStatus = 200;
+				self::$lastStatus = -1; // -1 = delegated to child, don't record in parent
 				list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 				return false;
 			}
