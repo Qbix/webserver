@@ -578,6 +578,27 @@ class Q_WebServer
 			return;
 		}
 
+		// Issue #1: reject wrong-case methods (e.g. "get" instead of "GET")
+		if (!empty($parsed['_badMethod'])) {
+			self::sendResponse($client, 501, 'Not Implemented');
+			self::closeClient($key);
+			return;
+		}
+
+		// Issue #2: reject invalid header names
+		if (!empty($parsed['_badHeaders'])) {
+			self::sendResponse($client, 400, 'Bad Request: Invalid header name');
+			self::closeClient($key);
+			return;
+		}
+
+		// Issue #2: reject duplicate Host headers (common attack vector)
+		if (!empty($parsed['_duplicateHost'])) {
+			self::sendResponse($client, 400, 'Bad Request: Multiple Host headers');
+			self::closeClient($key);
+			return;
+		}
+
 		// Reject oversized headers (>64KB total)
 		$headerEnd = strpos($buf, "\r\n\r\n");
 		if ($headerEnd > 65536) {
@@ -2727,7 +2748,24 @@ HTML;
 				'httpVersion' => '1.0', '_malformed' => true
 			);
 		}
-		$method = strtoupper($m[1]);
+
+		// Issue #1: HTTP methods are case-sensitive per RFC 9110 §9.1.
+		// Standard methods are uppercase. We reject non-standard casing
+		// with 501 Not Implemented (same as nginx/Apache behavior).
+		$method = $m[1];
+		$knownMethods = array('GET','HEAD','POST','PUT','DELETE','PATCH','OPTIONS','TRACE','CONNECT');
+		if (!in_array($method, $knownMethods, true)) {
+			// Check if it's a known method with wrong case
+			if (in_array(strtoupper($method), $knownMethods, true)) {
+				return array(
+					'method' => $method, 'uri' => $m[2], 'path' => '/',
+					'query' => '', 'headers' => array(), 'body' => '',
+					'httpVersion' => $m[3], '_badMethod' => true
+				);
+			}
+			// Unknown method — allow it through (extensions are valid per RFC)
+		}
+
 		$uri = $m[2];
 		$httpVersion = $m[3];
 
@@ -2745,18 +2783,65 @@ HTML;
 			$path = preg_replace('#/+#', '/', $path);
 		}
 
-		// Fast header parsing — scan for common headers first
+		// Issue #2: RFC-compliant header parsing
 		$headers = array();
+		$hostCount = 0;
 		$pos = $rlEnd !== false ? $rlEnd + 2 : strlen($headerBlock);
 		$len = strlen($headerBlock);
 		while ($pos < $len) {
 			$nlPos = strpos($headerBlock, "\r\n", $pos);
 			if ($nlPos === false) $nlPos = $len;
+
+			// Check for continuation line (starts with SP or TAB) — obs-fold, RFC 9110 §5.2
+			$firstChar = $pos < $len ? $headerBlock[$pos] : '';
+			if (($firstChar === ' ' || $firstChar === "\t") && !empty($lastKey)) {
+				// Append to previous header value
+				$continuation = trim(substr($headerBlock, $pos, $nlPos - $pos), " \t");
+				$headers[$lastKey] .= ' ' . $continuation;
+				$pos = $nlPos + 2;
+				continue;
+			}
+
 			$colonPos = strpos($headerBlock, ':', $pos);
 			if ($colonPos !== false && $colonPos < $nlPos) {
-				$k = strtolower(substr($headerBlock, $pos, $colonPos - $pos));
-				$v = ltrim(substr($headerBlock, $colonPos + 1, $nlPos - $colonPos - 1));
-				$headers[$k] = $v;
+				$k = substr($headerBlock, $pos, $colonPos - $pos);
+
+				// Validate header name — must be a valid token (RFC 9110 §5.1)
+				// token = 1*tchar, tchar = letters, digits, !#$%&'*+-.^_`|~
+				if (!preg_match('/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/', $k)) {
+					// Invalid characters in header name → reject request
+					return array(
+						'method' => $method, 'uri' => $uri, 'path' => $path,
+						'query' => $query, 'headers' => array(), 'body' => '',
+						'httpVersion' => $httpVersion, '_badHeaders' => true
+					);
+				}
+
+				$k = strtolower($k);
+				// Trim both sides: SP and HTAB only (RFC 9110 §5.5)
+				$v = trim(substr($headerBlock, $colonPos + 1, $nlPos - $colonPos - 1), " \t");
+
+				// Duplicate header handling
+				if ($k === 'host') {
+					$hostCount++;
+					if ($hostCount > 1) {
+						// Multiple Host headers → reject (RFC 9110 §7.2, common attack vector)
+						return array(
+							'method' => $method, 'uri' => $uri, 'path' => $path,
+							'query' => $query, 'headers' => array(), 'body' => '',
+							'httpVersion' => $httpVersion, '_duplicateHost' => true
+						);
+					}
+				}
+
+				// RFC 9110 §5.3: multiple headers → combine with ", "
+				// Exceptions: Set-Cookie is special but that's a response header
+				if (isset($headers[$k])) {
+					$headers[$k] .= ', ' . $v;
+				} else {
+					$headers[$k] = $v;
+				}
+				$lastKey = $k;
 			}
 			$pos = $nlPos + 2;
 		}
