@@ -1,0 +1,62 @@
+// router — file-based routing with $param pattern matching
+
+d Route
+	path: S +M
+	handler_path: S +M
+	params: {S: S} +M = {}
+
+	f+E handle(req: Request) -> Response
+		...
+
+d RouteError
+	message: S +M
+
+d router
+
+	f+E+G scan(root: S) -> {S: Route}
+		result: {S: Route} +M = {}
+		entries = filesystem.readdir(root) x []
+		entries.on(entry => (
+			entry.is_dir ? (
+				sub = router.scan(entry.path)
+				sub.on((pp, rr) => result = result.set(pp, rr))
+			)
+			! (
+				ext = filesystem.extension(entry.name)
+				ext == "u" ? (
+					rel = entry.path.slice(root.len + 1, entry.path.len)
+					url = "/" + rel.slice(1, rel.len - 2)
+					url == "/index" ? url = "/"
+					result = result.set(url, Route({ path: url, handler_path: entry.path }))
+				)
+			)
+			none
+		))
+		r => result
+
+	f+G match(routes: {S: Route}, url_path: S) -> Route +N
+		routes.has(url_path) ? r => routes[url_path]
+		matched: Route +N +M = none
+		routes.on((pattern, route) => (
+			params = router.match_pattern(pattern, url_path)
+			params != none ? (
+				matched = Route({ path: pattern, handler_path: route.handler_path, params: params })
+				true
+			) ! none
+		))
+		r => matched
+
+	f+G match_pattern(pattern: S, path: S) -> {S: S} +N
+		p_segs = pattern.split("/")
+		u_segs = path.split("/")
+		p_segs.len != u_segs.len ? r => none
+		params: {S: S} +M = {}
+		ok: L +M = true
+		[1..p_segs.len].on(ii => (
+			seg = p_segs[ii]
+			seg.starts_with("$") ? params = params.set(seg.slice(2, seg.len), u_segs[ii])
+			! seg != u_segs[ii] ? ok = false
+			none
+		))
+		ok == false ? r => none
+		r => params

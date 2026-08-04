@@ -1,0 +1,69 @@
+// wellknown — .well-known endpoint handlers
+//
+// RFC 8615 well-known URIs for service discovery:
+//   /.well-known/qbix.json    — Qbix server capabilities
+//   /.well-known/openapi.json — OpenAPI spec for this server
+//   /.well-known/mcp.json     — MCP (Model Context Protocol) manifest
+//   /.well-known/health       — health check (alias for /Q/health)
+
+d WellKnownConfig
+	server_name: S +M = "U WebServer"
+	version: S +M = "0.1.0"
+	capabilities: [S] -M = []
+	api_routes: [{S: S}] +M = []
+
+/// Handle a .well-known request
+/// Returns response body or none if not handled
+f handle_well_known(path: S, config: WellKnownConfig) -> Response +N
+	// Strip the prefix
+	suffix = path.slice(13, path.len)  // strip /.well-known/
+
+	suffix == "qbix" ? r => well_known_qbix(config)
+	suffix == "qbix.json" ? r => well_known_qbix(config)
+	suffix == "openapi.json" ? r => well_known_openapi(config)
+	suffix == "openapi" ? r => well_known_openapi(config)
+	suffix == "mcp.json" ? r => well_known_mcp(config)
+	suffix == "mcp" ? r => well_known_mcp(config)
+	suffix == "health" ? r => Response.json(json.encode({ "status": "ok" }))
+
+	r => none
+
+f well_known_qbix(config: WellKnownConfig) -> Response
+	r => Response.json(json.encode({
+		"server": config.server_name,
+		"version": config.version,
+		"capabilities": config.capabilities,
+		"endpoints": {
+			"health": "/Q/health",
+			"dashboard": "/Q/dashboard",
+			"websocket": "/Q/ws"
+		}
+	}))
+
+f well_known_openapi(config: WellKnownConfig) -> Response
+	paths: {S: Tree} +M = {}
+	config.api_routes.on(route => (
+		method = route.get("method") ?? "get"
+		path = route.get("path") ?? "/"
+		paths.set(path, { method: { "summary": route.get("summary") ?? "" } })
+	))
+	r => Response.json(json.encode({
+		"openapi": "3.1.0",
+		"info": {
+			"title": config.server_name,
+			"version": config.version
+		},
+		"paths": paths
+	}))
+
+f well_known_mcp(config: WellKnownConfig) -> Response
+	r => Response.json(json.encode({
+		"schema_version": "1.0",
+		"name": config.server_name,
+		"version": config.version,
+		"capabilities": {
+			"tools": [],
+			"prompts": [],
+			"resources": []
+		}
+	}))

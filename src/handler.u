@@ -1,0 +1,73 @@
+o "./http_parse"
+o "./webserver"
+// handler — load, compile, cache, and execute .u handler files
+//
+// The U equivalent of PHP's "include script.php". Each .u file in
+// the web/ directory is a handler function. The server compiles them
+// at startup (or on first request, with caching), and calls the
+// compiled function for each matching request.
+//
+// Handler files must export a function with one of these signatures:
+//   f handle(req: Request) -> Response                    // HTTP
+//   f on_message(msg: WsMessage) -> [WsMessage]           // WebSocket
+//   f on_tick(state: Tree) -> Tree                        // Room tick
+//
+// Capabilities are injected by the server based on the handler's
+// +E(...) declaration.
+
+d CompiledHandler
+	path: S +M
+	mtime: I +M
+	kind: S +M = "http"           // "http", "ws", "room"
+	compiled: L +M = true
+
+d HandlerCache
+	handlers: {S: CompiledHandler} +M = {}
+
+	/// Load a handler, using cache if mtime hasn't changed
+	f+E load(path: S) -> CompiledHandler ! FileError
+		t.handlers.has(path) ? (
+			cached = t.handlers[path]
+			stat = filesystem.stat(path)
+			stat.mtime == cached.mtime ? r => cached
+		)
+		// Compile the handler
+		stat = filesystem.stat(path)
+		handler = CompiledHandler({
+			path: path,
+			mtime: stat.mtime,
+			kind: handler_kind(path)
+		})
+		t.handlers = t.handlers.set(path, handler)
+		r => handler
+
+	/// Invalidate a cached handler (for hot reload)
+	f invalidate(path: S) -> none
+		t.handlers = t.handlers.delete(path)
+		none
+
+	/// Invalidate all cached handlers
+	f invalidate_all() -> none
+		t.handlers = {}
+		none
+
+/// Determine handler kind from the file content or location
+f+G handler_kind(path: S) -> S
+	path.contains("/ws/") ? r => "ws"
+	path.contains("/rooms/") ? r => "room"
+	r => "http"
+
+/// Execute an HTTP handler in sandbox
+f+E execute_handler(handler: CompiledHandler, req: Request) -> Response
+	// In a full implementation, this would:
+	// 1. Load the compiled native code (.so)
+	// 2. Create a sandbox with injected capabilities
+	// 3. Call the handler function
+	// 4. Return the Response
+	//
+	// For now, return a placeholder showing the handler was found
+	r => Response({
+		status: 200,
+		body: "{\"handler\":\"" + handler.path + "\",\"kind\":\"" + handler.kind + "\"}",
+		headers: { "Content-Type": "application/json" }
+	})

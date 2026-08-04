@@ -1,0 +1,72 @@
+// ── Test handlers ─────────────────────────────────────────────────
+// These go in web/tests/ and are the U equivalent of the PHP test
+// scripts in tests/web/. Each is a handler function that exercises
+// a specific feature.
+
+// web/tests/hello.u — comprehensive request inspection
+f handle(req: Request) -> Response
+	r => Response.json({
+		"method": req.method,
+		"path": req.path,
+		"query": req.query,
+		"cookies": http_parse.parse_cookies(req.headers.get("cookie") x ""),
+		"content_type": req.headers.get("content-type") x "",
+		"body_length": req.body.len
+	})
+
+// web/tests/echo.u — echo POST body
+f handle(req: Request) -> Response
+	form = http_parse.parse_form(req)
+	r => Response.json({ "method": req.method, "body": form })
+
+// web/tests/json_api.u — JSON API endpoint
+f handle(req: Request) -> Response
+	r => Response.json({ "status": "ok", "method": req.method })
+
+// web/tests/headers.u — custom response headers
+f handle(req: Request) -> Response
+	r => Response({
+		status: 201,
+		body: "created",
+		headers: {
+			"X-Custom-Header": "hello",
+			"Cache-Control": "public, max-age=300",
+			"Content-Type": "text/plain; charset=utf-8"
+		}
+	})
+
+// web/tests/redirect.u — redirect
+f handle(req: Request) -> Response
+	r => Response.redirect("/index.html", 302)
+
+// web/tests/cookie_read.u — read cookies
+f handle(req: Request) -> Response
+	cookies = http_parse.parse_cookies(req.headers.get("cookie") x "")
+	r => Response.json({ "cookies": cookies })
+
+// web/tests/raw_input.u — raw body access
+f handle(req: Request) -> Response
+	r => Response.json({ "raw": req.raw_body, "length": req.body.len })
+
+// web/tests/upload.u — multipart file upload
+f handle(req: Request) -> Response
+	fields = http_parse.parse_multipart(req)
+	result: {S: Tree} +M = {}
+	fields.on((name, field) => (
+		result = result.set(name, {
+			"value": field.value,
+			"filename": field.filename,
+			"content_type": field.content_type,
+			"size": field.data.len
+		})
+		none
+	))
+	r => Response.json({ "fields": result })
+
+// web/tests/error.u — intentional error (test error handling)
+f handle(req: Request) -> Response
+	x ServerError({ message: "intentional test error" })
+	r => Response.ok("unreachable")
+
+d ServerError
+	message: S -M

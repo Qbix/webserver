@@ -1,0 +1,211 @@
+// ws — WebSocket server (RFC 6455 + Socket.IO)
+
+d WsConnection
+	conn: NetConn +R
+	key: I +M
+	path: S +M
+	headers: {S: S} +M
+	is_socket_io: L +M = false
+	sid: S +M = ""
+	room: S +M +N = none
+	state: Tree +M = {:}
+
+d WsMessage
+	data: S +M
+	is_binary: L +M = false
+	type: S +M = "message"
+
+d WsFrame
+	opcode: I +M
+	payload: [B] -M
+	fin: L +M = true
+
+d ws
+
+	f+E+G upgrade(state: ServerState +M, client: ClientState, req: Request) -> none
+		ws_key = req.headers.get("sec-websocket-key") ?? ""
+		ws_key.len == 0 ? r => webserver.send_error(client.conn, 400, "Missing WS Key")
+		magic = "258EAFA5-E914-47DA-95CA-5AB5DC76E51B"
+		accept = encoding.base64_encode(encoding.sha1((ws_key + magic).bytes))
+		resp = "HTTP/1.1 101 Switching Protocols\r\n"
+			+ "Upgrade: websocket\r\n"
+			+ "Connection: Upgrade\r\n"
+			+ "Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		client.conn.write(resp.bytes)
+		is_sio = req.path.contains("/socket.io")
+		ws_conn = WsConnection({
+			conn: client.conn, key: client.conn.id(),
+			path: req.path, headers: req.headers, is_socket_io: is_sio
+		})
+		is_sio ? ws.send_sio_handshake(ws_conn)
+		EventLoop.on_readable(ws_conn.conn, (cc) => ws.on_data(state, ws_conn))
+		none
+
+	f+E+G send_sio_handshake(ws_conn: WsConnection +M) -> none
+		sid = encoding.hex_encode(encoding.sha1(time.now_ms().__string__().bytes)).slice(1, 20)
+		ws_conn.sid = sid
+		open_data = json.encode({
+			"sid": sid, "upgrades": [], "pingInterval": 25000,
+			"pingTimeout": 20000, "maxPayload": 1000000
+		})
+		ws.send_raw(ws_conn, "0" + open_data)
+		ws.send_raw(ws_conn, "40")
+		none
+
+	f+E+G on_data(state: ServerState +M, ws_conn: WsConnection +M) -> none
+		raw = ws_conn.conn.read(65536) x r => none
+		raw.len == 0 ? r => none
+		frame = ws.decode_frame(raw)
+		frame.opcode == 0x8 ? r => ws_conn.conn.close()
+		frame.opcode == 0x9 ? r => ws.send_frame(ws_conn, 0xA, frame.payload)
+		msg_text = frame.payload.__string__()
+		ws_conn.is_socket_io ? r => ws.handle_sio(state, ws_conn, msg_text)
+		none
+
+	f+E+G handle_sio(state: ServerState +M, ws_conn: WsConnection +M, raw: S) -> none
+		raw.len == 0 ? r => none
+		engine_type = raw.slice(1, 2)
+		engine_type == "2" ? r => ws.send_raw(ws_conn, "3")
+		engine_type == "4" ? ws.handle_sio_message(state, ws_conn, raw)
+		none
+
+	f+E+G handle_sio_message(state: ServerState +M, ws_conn: WsConnection +M, raw: S) -> none
+		raw.len < 3 ? r => none
+		sio_type = raw.slice(2, 3)
+		sio_data = raw.slice(3, raw.len)
+		sio_type == "2" ? json.decode(sio_data)
+		none
+
+	// ── Frame encoding/decoding ─────────────────────────────────────
+
+	f+G decode_frame(data: [B]) -> WsFrame
+		data.len < 2 ? r => WsFrame({ opcode: 0x8, payload: [] })
+		opcode = data[1] & 0x0F
+		masked = (data[2] & 0x80) != 0
+		payload_len = data[2] & 0x7F
+		offset: I +M = 3
+		payload_len == 126 ? (
+			payload_len = data[3] * 256 + data[4]
+			offset = 5
+		)
+		payload: [B] +M = []
+		masked ? (
+			mask = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]
+			offset = offset + 4
+			payload = [offset..offset + payload_len].map(ii => data[ii] ^ mask[(ii - offset) & 3])
+		) ! (
+			payload = data.slice(offset, offset + payload_len)
+		)
+		r => WsFrame({ opcode: opcode, payload: payload })
+
+	f+G encode_frame(opcode: I, payload: [B]) -> [B]
+		frame: [B] +M = [0x80 + opcode]
+		payload.len < 126
+			? frame = frame + [payload.len]
+			! payload.len < 65536
+				? frame = frame + [126, (payload.len >> 8) & 0xFF, payload.len & 0xFF]
+				! frame = frame + [127, 0, 0, 0, 0,
+					(payload.len >> 24) & 0xFF, (payload.len >> 16) & 0xFF,
+					(payload.len >> 8) & 0xFF, payload.len & 0xFF]
+		r => frame + payload
+
+		r => []
+	f+E+G send(ws_conn: WsConnection, msg: S) -> none
+		ws.send_frame(ws_conn, 0x1, msg.bytes)
+		none
+
+	f+E+G send_raw(ws_conn: WsConnection, msg: S) -> none
+		ws.send_frame(ws_conn, 0x1, msg.bytes)
+		none
+
+	f+E+G send_frame(ws_conn: WsConnection, opcode: I, payload: [B]) -> none
+		frame = ws.encode_frame(opcode, payload)
+		ws_conn.conn.write(frame)
+		none
+
+// ── Room system ─────────────────────────────────────────────────
+// Process-less rooms — just data structures managed by the event loop.
+// Each room has members, state, and an optional tick interval.
+
+d Room
+	name: S +M
+	members: {I: WsConnection} +M = {}
+	state: Tree +M = {}
+	tick_ms: I +M = 0
+	tick_watcher: WatcherId +N +M = none
+	handler_path: S +M = ""
+
+d rooms
+
+	active: {S: Room} +G +M = {}
+
+	f+E+G join(ws_conn: WsConnection +M, room_name: S, config: Tree) -> none
+		ws_conn.room = room_name
+		rooms.active.has(room_name) == false ? rooms.create_room(room_name, config)
+		room = rooms.active[room_name]
+		room.members = room.members.set(ws_conn.key, ws_conn)
+		rooms.broadcast(room_name, "{\"type\":\"join\",\"key\":" + ws_conn.key.__string__() + "}", ws_conn.key)
+		none
+
+	f+E+G create_room(room_name: S, config: Tree) -> none
+		room = Room({
+			name: room_name,
+			tick_ms: config.get_int("tick") ?? 0,
+			handler_path: config.get_s("handler") ?? ""
+		})
+		rooms.active = rooms.active.set(room_name, room)
+		room.tick_ms > 0 ? room.tick_watcher = EventLoop.repeat(room.tick_ms, () => rooms.tick(room_name))
+		none
+
+	f+E+G leave(ws_conn: WsConnection +M, room_name: S) -> none
+		rooms.active.has(room_name) == false ? r => none
+		room = rooms.active[room_name]
+		room.members = room.members.delete(ws_conn.key)
+		ws_conn.room = none
+		rooms.broadcast(room_name, "{\"type\":\"leave\",\"key\":" + ws_conn.key.__string__() + "}", ws_conn.key)
+		room.members.len == 0 ? rooms.destroy(room_name)
+		none
+
+	f+E+G broadcast(room_name: S, msg: S, exclude_key: I) -> none
+		rooms.active.has(room_name) == false ? r => none
+		room = rooms.active[room_name]
+		room.members.on((key, conn) => (
+			key != exclude_key ? ws.send(conn, msg)
+			none
+		))
+		none
+
+	f+E+G send_to(room_name: S, target_key: I, msg: S) -> none
+		rooms.active.has(room_name) == false ? r => none
+		room = rooms.active[room_name]
+		conn = room.members.get(target_key) ?? r => none
+		ws.send(conn, msg)
+		none
+
+	f+E+G tick(room_name: S) -> none
+		rooms.active.has(room_name) == false ? r => none
+		room = rooms.active[room_name]
+		// Room tick — update state, broadcast if changed
+		// Handler loaded from room.handler_path if configured
+		none
+
+	f+E+G destroy(room_name: S) -> none
+		rooms.active.has(room_name) == false ? r => none
+		room = rooms.active[room_name]
+		room.tick_watcher != none ? EventLoop.cancel(room.tick_watcher)
+		room.members.on((key, conn) => (
+			ws.send(conn, "{\"type\":\"room_closed\"}")
+			none
+		))
+		rooms.active = rooms.active.delete(room_name)
+		none
+
+	f+G get_members(room_name: S) -> [I]
+		rooms.active.has(room_name) == false ? r => []
+		room = rooms.active[room_name]
+		result: [I] +M = []
+		room.members.on((key, conn) => result = result + [key])
+		r => result
+
+	f+G count() -> I
+		r => rooms.active.len

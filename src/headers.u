@@ -1,0 +1,65 @@
+o "./http_parse"
+o "./webserver"
+// headers — HTTP response header processing
+//
+// Handles special headers that control server behavior:
+//   X-Accel-Redirect: serve a file instead of the response body
+//   X-Accel-Buffering: control output buffering
+//   X-Accel-Expires: override Cache-Control
+//   Content-Encoding: compression negotiation
+//
+// Also handles companion .headers files — JSON files that sit
+// next to static files and add custom headers.
+
+d HeadersConfig
+	enable_accel: L +M = true
+	enable_companion: L +M = true
+
+/// Process response headers — apply X-Accel-* directives
+f process_response_headers(resp: Response, req_headers: {S: S}, config: HeadersConfig) -> Response
+	headers = resp.headers
+
+	// X-Accel-Redirect: serve a different file
+	accel = headers.get("X-Accel-Redirect")
+	config.enable_accel & accel != none ? r => Response({ status: 200, body: "", headers: headers })
+
+	// X-Accel-Expires: override cache duration
+	accel_expires = headers.get("X-Accel-Expires")
+	accel_expires != none ? (
+		headers.delete("X-Accel-Expires")
+		headers.set("Cache-Control", "public, max-age=" + accel_expires)
+	)
+
+	r => Response({ status: resp.status, body: resp.body, headers: headers })
+
+/// Load companion .headers file for a static file
+f+E load_companion_headers(file_path: S) -> {S: S}
+	headers_path = file_path + ".headers"
+	filesystem.is_file(headers_path) == false ? r => {}
+	content = filesystem.read(headers_path)
+	r => json.decode(content)
+
+/// Negotiate content encoding (gzip/deflate/br)
+f negotiate_encoding(accept_encoding: S, content_type: S, body_size: I) -> S +N
+	// Only compress text types above 1KB
+	body_size < 1024 ? r => none
+	is_text = content_type.contains("text/") | content_type.contains("json") | content_type.contains("javascript") | content_type.contains("xml") | content_type.contains("svg")
+	is_text == false ? r => none
+
+	// Prefer br > gzip > deflate
+	accept_encoding.contains("br") ? r => "br"
+	accept_encoding.contains("gzip") ? r => "gzip"
+	accept_encoding.contains("deflate") ? r => "deflate"
+	r => none
+
+/// Check for pre-compressed sibling (.gz, .br)
+f+E find_precompressed(file_path: S, accept_encoding: S) -> S +N
+	accept_encoding.contains("br") ? (
+		br_path = file_path + ".br"
+		filesystem.is_file(br_path) ? r => br_path
+	)
+	accept_encoding.contains("gzip") ? (
+		gz_path = file_path + ".gz"
+		filesystem.is_file(gz_path) ? r => gz_path
+	)
+	r => none

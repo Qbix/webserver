@@ -1,0 +1,39 @@
+// tls — TLS certificate loading and connection wrapping
+//
+// Wraps OpenSSL/libcrypto via C FFI. The server calls tls.wrap()
+// on accepted connections when HTTPS is configured.
+
+d TlsConfig
+	cert_path: S +M
+	key_path: S +M
+	ca_path: S +M = ""
+	min_version: S +M = "1.2"        // "1.2" or "1.3"
+	ciphers: S +M = ""               // empty = use defaults
+	alpn: [S] -M = ["h2", "http/1.1"]
+
+d TlsError
+	message: S +M
+
+d tls
+
+	/// Load certificate and key, create TLS context
+	f+E+G init(config: TlsConfig) -> none ! TlsError
+		filesystem.is_file(config.cert_path) == false
+			? x TlsError({ message: "cert not found: " + config.cert_path })
+		filesystem.is_file(config.key_path) == false
+			? x TlsError({ message: "key not found: " + config.key_path })
+		// Initialize OpenSSL context via C FFI
+		...
+
+	/// Wrap a plain TCP connection with TLS
+	f+E+G wrap(conn: NetConn, cert_path: S, key_path: S) -> NetConn ! TlsError
+		// SSL_new, SSL_set_fd, SSL_accept
+		...
+
+	/// Reload certificates (for auto-renewal)
+	f+E+G reload(config: TlsConfig) -> none ! TlsError
+		...
+
+	/// Check if certificate expires within N days
+	f+E+G expires_within(cert_path: S, days: I) -> L
+		...

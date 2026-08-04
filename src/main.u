@@ -1,0 +1,37 @@
+o "./webserver"
+// main — WebServer entry point
+//
+// Usage:
+//   u run main.u -- ./web 0.0.0.0 8080
+//   u run main.u -- ./web       (defaults: 0.0.0.0:8080)
+
+f+E main(args: [S]) -> none
+	dir = args.len > 1 ? args[1] ! "./web"
+	host = args.len > 2 ? args[2] ! "0.0.0.0"
+	port = args.len > 3 ? args[3].to_int() ! 8080
+
+	log("U WebServer starting on " + host + ":" + port.__string__())
+	log("Document root: " + dir)
+
+	config = ServerConfig({
+		root_dir: dir,
+		host: host,
+		port: port
+	})
+
+	state = webserver.start(config) x.on(
+		(err: FileError) => (
+			log("Fatal: " + err.message)
+			r => none
+		)
+	)
+
+	log("Listening on http://" + host + ":" + port.__string__())
+	log("Routes:")
+	state.routes.on((path, route) => (
+		log("  " + path + " → " + route.handler_path)
+		none
+	))
+
+	webserver.run(state)
+	none
