@@ -1,0 +1,211 @@
+// http_parse — HTTP/1.1 request parsing and response building
+//
+// All parse functions are pure (-E) — no I/O.
+// Ported from Q_WebServer::parseRequest and related methods.
+
+d HttpParseError
+	message: S +M
+	raw: S +M = ""
+
+d Request
+	method: S +M
+	path: S +M
+	query: {S: S} +M = {}
+	headers: {S: S} +M = {}
+	body: [B] -M = []
+	raw_body: S +M = ""
+	version: S +M = "1.1"
+	is_keep_alive: L +M = false
+
+d Response
+	status: I +M = 200
+	body: S +M = ""
+	headers: {S: S} +M = {}
+
+	f+G ok(body: S) -> Response
+		r => Response({ status: 200, body: body })
+
+	f+G json(data: Tree) -> Response
+		r => Response({
+			status: 200,
+			body: json.encode(data),
+			headers: { "Content-Type": "application/json" }
+		})
+
+	f+G html(body: S) -> Response
+		r => Response({
+			status: 200,
+			body: body,
+			headers: { "Content-Type": "text/html; charset=utf-8" }
+		})
+
+	f+G error(status: I, message: S) -> Response
+		r => Response({ status: status, body: message })
+
+	f+G redirect(url: S, status: I) -> Response
+		r => Response({
+			status: status,
+			headers: { "Location": url }
+		})
+
+d FormField
+	value: S +M = ""
+	filename: S +M = ""
+	content_type: S +M = ""
+	data: [B] -M = []
+
+	f is_file() -> L
+		r => t.filename.len > 0
+
+d http_parse
+
+	/// Parse raw HTTP request bytes into a Request
+	f+G parse_request(raw: S) -> Request ! HttpParseError
+		// Split headers from body at blank line
+		sep = raw.index_of("\r\n\r\n")
+		sep == none ? x HttpParseError({ message: "no header terminator" })
+		header_section = raw.slice(1, sep)
+		body_str = raw.slice(sep + 4, raw.len)
+
+		// Parse request line
+		lines = header_section.split("\r\n")
+		lines.len == 0 ? x HttpParseError({ message: "empty request" })
+		request_line = lines[1]
+		parts = request_line.split(" ")
+		parts.len < 3 ? x HttpParseError({ message: "malformed request line" })
+		method = parts[1]
+		full_path = parts[2]
+		version = parts[3]
+
+		// Parse path and query string
+		q_idx = full_path.index_of("?")
+		path = q_idx != none ? full_path.slice(1, q_idx) ! full_path
+		query_str = q_idx != none ? full_path.slice(q_idx + 1, full_path.len) ! ""
+		query = encoding.query_decode(query_str)
+
+		// URL-decode the path
+		path = encoding.percent_decode(path)
+
+		// Parse headers
+		headers: {S: S} +M = {}
+		[2..lines.len].on(ii => (
+			line = lines[ii]
+			colon = line.index_of(": ")
+			colon != none ? (
+				key = line.slice(1, colon).lower()
+				val = line.slice(colon + 2, line.len)
+				headers = headers.set(key, val)
+			)
+			none
+		))
+
+		// Determine keep-alive
+		conn_header = headers.get("connection") ?? ""
+		is_keep_alive = conn_header.lower() == "keep-alive"
+		version.contains("1.1") ? (is_keep_alive = conn_header.lower() != "close")
+
+		r => Request({
+			method: method,
+			path: path,
+			query: query,
+			headers: headers,
+			raw_body: body_str,
+			body: body_str.bytes,
+			version: version,
+			is_keep_alive: is_keep_alive
+		})
+
+	/// Parse form data from request body (urlencoded or multipart)
+	f+G parse_form(req: Request) -> {S: S}
+		ct = req.headers.get("content-type") ?? ""
+		ct.contains("x-www-form-urlencoded") ? r => encoding.query_decode(req.raw_body)
+		r => {}
+
+	/// Parse multipart form data
+	f+G parse_form_data(req: Request) -> {S: FormField} +N
+		ct = req.headers.get("content-type") ?? ""
+		ct.contains("multipart/form-data") == false ? r => {}
+		boundary_idx = ct.index_of("boundary=")
+		boundary_idx == none ? r => {}
+		boundary = ct.slice(boundary_idx + 9, ct.len).trim()
+		delimiter: S +M = "--" + boundary
+
+		result: {S: FormField} +M = {}
+		parts = req.raw_body.split(delimiter)
+		parts.on(part => (
+			part.len < 4 ? r => none
+			part.starts_with("--") ? r => none
+			hdr_end = part.index_of("\r\n\r\n")
+			hdr_end == none ? r => none
+			hdrs = part.slice(1, hdr_end)
+			value = part.slice(hdr_end + 4, part.len).trim_end("\r\n")
+			name = http_parse.extract_disp_field(hdrs, "name")
+			filename = http_parse.extract_disp_field(hdrs, "filename")
+			field_ct = http_parse.extract_header(hdrs, "Content-Type")
+			name.len > 0 ? (
+				result = result.set(name, FormField({
+					value: value,
+					filename: filename,
+					content_type: field_ct,
+					data: value.bytes
+				}))
+			)
+			none
+		))
+		r => result
+
+	/// Extract a field from Content-Disposition header
+	f+G extract_disp_field(headers: S, field: S) -> S
+		pattern = field + "=\""
+		idx = headers.index_of(pattern)
+		idx == none ? r => ""
+		start = idx + pattern.len
+		end_idx = headers.index_of("\"", start)
+		end_idx == none ? r => ""
+		r => headers.slice(start, end_idx)
+
+	/// Extract a header value from a header block
+	f+G extract_header(headers: S, name: S) -> S
+		pattern = name + ": "
+		idx = headers.index_of(pattern)
+		idx == none ? r => ""
+		start = idx + pattern.len
+		end_idx = headers.index_of("\r\n", start)
+		end_idx == none ? r => headers.slice(start, headers.len).trim()
+		r => headers.slice(start, end_idx).trim()
+
+	/// Parse cookie header into key-value pairs
+	f+G parse_cookies(header: S) -> {S: S}
+		result: {S: S} +M = {}
+		header.len == 0 ? r => result
+		header.split("; ").on(pair => (
+			eq = pair.index_of("=")
+			eq != none ? (
+				result = result.set(
+					encoding.percent_decode(pair.slice(1, eq).trim()),
+					encoding.percent_decode(pair.slice(eq + 1, pair.len).trim())
+				)
+			)
+			none
+		))
+		r => result
+
+	/// HTTP status reason phrase
+	f+G status_reason(code: I) -> S
+		code == 200 ? r => "OK"
+		code == 201 ? r => "Created"
+		code == 204 ? r => "No Content"
+		code == 301 ? r => "Moved Permanently"
+		code == 302 ? r => "Found"
+		code == 304 ? r => "Not Modified"
+		code == 400 ? r => "Bad Request"
+		code == 401 ? r => "Unauthorized"
+		code == 403 ? r => "Forbidden"
+		code == 404 ? r => "Not Found"
+		code == 405 ? r => "Method Not Allowed"
+		code == 413 ? r => "Payload Too Large"
+		code == 429 ? r => "Too Many Requests"
+		code == 500 ? r => "Internal Server Error"
+		code == 502 ? r => "Bad Gateway"
+		code == 503 ? r => "Service Unavailable"
+		r => "Unknown"

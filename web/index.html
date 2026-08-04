@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>U WebServer</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #1a1a2e; }
+h1 { font-size: 28px; margin-bottom: 4px; }
+.sub { color: #888; font-size: 15px; margin-bottom: 30px; }
+code { background: #f0f0f5; padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+pre { background: #f0f0f5; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+a { color: #2563eb; }
+.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 12px 0; }
+.card h3 { margin: 0 0 6px; font-size: 16px; }
+.card p { margin: 0; color: #555; font-size: 14px; }
+.endpoints { display: grid; gap: 8px; margin: 16px 0; }
+.ep { display: flex; gap: 12px; align-items: center; font-size: 14px; }
+.ep code { min-width: 140px; }
+</style>
+</head>
+<body>
+<h1>⚡ U WebServer</h1>
+<p class="sub">32 KB binary · epoll · keep-alive · TLS · response cache</p>
+
+<div class="card">
+<h3>It works!</h3>
+<p>Drop <code>.u</code> handlers and static files in <code>web/</code> and they'll be served automatically.</p>
+</div>
+
+<div class="endpoints">
+<div class="ep"><code>GET /</code> <span>This page (static HTML)</span></div>
+<div class="ep"><code>GET /hello</code> <span>Example U handler</span></div>
+<div class="ep"><code>GET /api/echo?msg=hi</code> <span>JSON echo handler</span></div>
+<div class="ep"><code>GET /health</code> <span>Server stats (JSON)</span></div>
+</div>
+
+<pre>// web/hello.u — your first handler
+f handle(req: Request) -> Response
+    r => Response.html("&lt;h1&gt;Hello from U!&lt;/h1&gt;")</pre>
+
+<p>Docs: <a href="https://ulanguage.pages.dev">ulanguage.pages.dev</a> · Inspired by <a href="https://github.com/Qbix/webserver">Qbix Server</a></p>
+</body>
+</html>

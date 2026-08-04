@@ -1,0 +1,512 @@
+// webserver — pure-U web server
+//
+// Serves static files with ETag/304, routes .u handlers via
+// file-based routing, upgrades WebSocket connections.
+// Single-threaded event loop, no fork() needed — U's -E sandbox
+// gives the same isolation PHP gets from process boundaries.
+//
+// Usage:
+//   webserver.start("./web", "0.0.0.0", 8080)
+//   webserver.run()
+
+o => d webserver
+o "./http_parse"
+
+// ── Configuration ───────────────────────────────────────────────
+
+d ServerConfig
+	root_dir: S +M
+	host: S +M = "0.0.0.0"
+	port: I +M = 8080
+	tls_port: I +M = 0
+	tls_cert: S +M = ""
+	tls_key: S +M = ""
+	max_post_size: I +M = 8388608       // 8MB
+	max_upload_size: I +M = 2097152     // 2MB
+	max_file_uploads: I +M = 20
+	read_timeout_sec: I +M = 30
+	keep_alive: L +M = true
+	file_cache_max_bytes: I +M = 67108864   // 64MB
+	file_cache_max_file: I +M = 1048576     // 1MB per file
+	allowed_extensions: [S] -M = [
+		"html", "css", "js", "json", "xml", "txt",
+		"png", "jpg", "jpeg", "gif", "svg", "webp", "ico",
+		"woff", "woff2", "ttf", "eot",
+		"pdf", "zip", "gz", "mp4", "webm", "mp3", "wasm"
+	]
+	blocked_prefixes: [S] -M = ["/.", "/_"]
+
+// ── Server state ────────────────────────────────────────────────
+
+d ServerState
+	config: ServerConfig +M
+	listener: NetConn +R +N = none
+	tls_listener: NetConn +R +N = none
+	clients: {I: ClientState} +M = {}
+	routes: {S: Route} +M = {}
+	file_cache: FileCache +R
+	running: L +M = false
+
+d ClientState
+	conn: NetConn +R
+	buffer: [B] +M = []
+	watcher: WatcherId +M
+	timeout_watcher: WatcherId +N = none
+	is_tls: L +M = false
+	keep_alive: L +M = false
+
+// ── Lifecycle ───────────────────────────────────────────────────
+
+	f+E+G start(config: ServerConfig) -> ServerState +R
+		root = filesystem.realpath(config.root_dir) x FileError
+			r => x FileError({ path: config.root_dir, message: "invalid root" })
+		filesystem.is_dir(root) == false
+			? x FileError({ path: root, message: "not a directory" })
+
+		state = ServerState({
+			config: config,
+			file_cache: FileCache.create(config.file_cache_max_bytes, config.file_cache_max_file)
+		})
+
+		// Scan web/ for .u handler files → build route table
+		state.routes = router.scan(root)
+
+		// Bind HTTP
+		state.listener = Net.listen(config.host, config.port)
+		EventLoop.on_readable(state.listener, (conn) => (
+			webserver.on_accept(state, conn, false)
+		))
+
+		// Bind HTTPS if configured
+		config.tls_port > 0 ? webserver.start_tls(state, config)
+
+		// Periodic: stat-cache check, cleanup
+		EventLoop.repeat(1, () => state.file_cache.check_mtime())
+
+		state.running = true
+		r => state
+
+	f+E+G run(state: ServerState +M) -> none
+		EventLoop.run()
+		none
+
+	f+E+G stop(state: ServerState +M) -> none
+		state.running = false
+		// Close all client connections
+		state.clients.on((key, client) => (
+			client.conn?.close()
+			EventLoop.cancel(client.watcher)
+			client.timeout_watcher != none
+				? EventLoop.cancel(client.timeout_watcher)
+			none
+		))
+		// Close listeners
+		state.listener != none ? state.listener?.close()
+		state.tls_listener != none ? state.tls_listener?.close()
+		EventLoop.stop()
+		none
+
+// ── Accept / Read ───────────────────────────────────────────────
+
+	f+E+G on_accept(state: ServerState +M, listener: NetConn, is_tls: L) -> none
+		conn = listener.accept() x r => none   // accept failure → skip
+		is_tls ? (conn = tls.wrap(conn, state.config.tls_cert, state.config.tls_key))
+		Net.set_nonblocking(conn)
+
+		key = conn.id()
+		watcher = EventLoop.on_readable(conn, (cc) => (
+			webserver.on_client_data(state, key)
+		))
+
+		timeout = state.config.read_timeout_sec > 0
+			? EventLoop.delay(state.config.read_timeout_sec * 1000, () => (
+				webserver.close_client(state, key)
+			))
+			! none
+
+		state.clients = state.clients.set(key, ClientState({
+			conn: conn, watcher: watcher, timeout_watcher: timeout,
+			is_tls: is_tls
+		}))
+		none
+
+	f+E+G on_client_data(state: ServerState +M, key: I) -> none
+		client = state.clients.get(key) ?? r => none
+		data = client.conn.read(65536) x (
+			webserver.close_client(state, key)
+			none
+		)
+		data.len == 0 ? (
+			webserver.close_client(state, key)
+			none
+		)
+
+		// Cancel read timeout
+		client.timeout_watcher != none ? EventLoop.cancel(client.timeout_watcher)
+
+		// Append to buffer
+		client.buffer = client.buffer + data
+
+		// Try to parse complete HTTP request
+		raw = client.buffer.__string__()
+		raw.contains("\r\n\r\n") == false ? r => none   // incomplete — wait
+
+		// Parse and handle
+		req = http_parse.parse_request(raw) x.on(
+			(err: HttpParseError) => (
+				webserver.send_error(client.conn, 400, "Bad Request")
+				webserver.close_client(state, key)
+				none
+			)
+		)
+
+		// Clear buffer
+		client.buffer = []
+
+		// Check keep-alive
+		ka = req.headers.get("Connection") ?? ""
+		client.keep_alive = ka.lower() == "keep-alive"
+
+		// Route and handle
+		webserver.handle_request(state, client, req)
+		none
+
+// ── Request handling ────────────────────────────────────────────
+
+	f+E+G handle_request(state: ServerState +M, client: ClientState +M, req: Request) -> none
+		path = req.path
+
+		// Security: block hidden files and prefixes
+		state.config.blocked_prefixes.on(prefix => (
+			path.contains(prefix) ? (
+				webserver.send_error(client.conn, 403, "Forbidden")
+				none
+			)
+			none
+		))
+
+		// Resolve to filesystem path
+		fs_path = filesystem.join([state.config.root_dir, path])
+
+		// Directory → try index.html, index.u, else directory listing
+		filesystem.is_dir(fs_path) ? (
+			index_html = filesystem.join([fs_path, "index.html"])
+			index_u = filesystem.join([fs_path, "index.u"])
+			filesystem.is_file(index_html) ? fs_path = index_html
+			! filesystem.is_file(index_u) ? fs_path = index_u
+			! (
+				webserver.serve_directory(state, client, fs_path, path)
+				none
+			)
+		)
+
+		// Check file exists
+		filesystem.is_file(fs_path) == false ? (
+			webserver.send_error(client.conn, 404, "Not Found")
+			none
+		)
+
+		ext = filesystem.extension(fs_path)
+
+		// .u handler files → sandbox execution
+		ext == "u" ? (
+			webserver.handle_u(state, client, req, fs_path)
+			none
+		)
+
+		// WebSocket upgrade
+		req.headers.get("Upgrade") ?? "" == "websocket" ? (
+			ws.upgrade(state, client, req)
+			none
+		)
+
+		// Static file
+		webserver.serve_static(state, client, req, fs_path, ext)
+		none
+
+// ── Static file serving ─────────────────────────────────────────
+
+	f+E+G serve_static(state: ServerState, client: ClientState, req: Request, path: S, ext: S) -> none
+		// Check extension whitelist
+		state.config.allowed_extensions.filter(ee => ee == ext).len == 0 ? (
+			webserver.send_error(client.conn, 403, "Forbidden")
+			none
+		)
+
+		// ETag / 304 check
+		stat = filesystem.stat(path) x (
+			webserver.send_error(client.conn, 500, "stat failed")
+			none
+		)
+		etag = "\"" + encoding.hex_encode(encoding.md5(stat.mtime.__string__().bytes + stat.size.__string__().bytes)) + "\""
+
+		if_none_match = req.headers.get("If-None-Match") ?? ""
+		if_none_match == etag ? (
+			headers = { "ETag": etag }
+			webserver.send_response(client.conn, 304, [], headers)
+			none
+		)
+
+		// Check file cache
+		cached = state.file_cache.get(path, stat.mtime) ?? none
+		cached != none ? (
+			headers = {
+				"Content-Type": mime.from_extension(ext),
+				"ETag": etag,
+				"Content-Length": cached.len.__string__()
+			}
+			webserver.send_response(client.conn, 200, cached, headers)
+			none
+		)
+
+		// Read file
+		body = filesystem.read(path) x (
+			webserver.send_error(client.conn, 500, "read failed")
+			none
+		)
+
+		// Cache if small enough
+		body.len <= state.config.file_cache_max_file ? (
+			state.file_cache.put(path, body, stat.mtime)
+		)
+
+		headers = {
+			"Content-Type": mime.from_extension(ext),
+			"ETag": etag,
+			"Content-Length": body.len.__string__(),
+			"Cache-Control": "public, max-age=3600"
+		}
+		webserver.send_response(client.conn, 200, body, headers)
+		none
+
+// ── U handler execution (the "fork") ────────────────────────────
+
+	f+E+G handle_u(state: ServerState, client: ClientState, req: Request, script_path: S) -> none
+		// Load the handler (cached / JIT compiled)
+		handler = state.routes[script_path] x.on(
+			(err: FileError) => (
+				webserver.send_error(client.conn, 500, "handler load failed")
+				none
+			)
+		)
+
+		// Execute in sandbox — this is the "fork"
+		// The handler is +E(caps) — can only use injected capabilities
+		// Everything is -R (stack) — freed when this call returns
+		response = handler.handle(req) x.on(
+			(err: Error) => Response({
+				status: 500,
+				body: json.encode({ "error": "error" }),
+				headers: { "Content-Type": "application/json" }
+			})
+		)
+
+		webserver.send_response(client.conn, response.status, response.body.bytes, response.headers)
+		none
+
+// ── Response sending ────────────────────────────────────────────
+
+	f+E+G send_response(conn: NetConn, status: I, body: [B], headers: {S: S}) -> none
+		reason = http_parse.status_reason(status)
+		header_str: S +M = "HTTP/1.1 " + status.__string__() + " " + reason + "\r\n"
+		headers.on((key, val) => (
+			header_str = header_str + key + ": " + val + "\r\n"
+			none
+		))
+		header_str = header_str + "\r\n"
+		conn.write(header_str.bytes)
+		body.len > 0 ? conn.write(body)
+		none
+
+	f+E+G send_error(conn: NetConn, status: I, message: S) -> none
+		body = message.bytes
+		headers = {
+			"Content-Type": "text/plain; charset=utf-8",
+			"Content-Length": body.len.__string__(),
+			"Connection": "close"
+		}
+		webserver.send_response(conn, status, body, headers)
+		none
+
+// ── Client cleanup ──────────────────────────────────────────────
+
+	f+E+G close_client(state: ServerState +M, key: I) -> none
+		client = state.clients.get(key) ?? r => none
+		client.conn?.close()
+		EventLoop.cancel(client.watcher)
+		client.timeout_watcher != none ? EventLoop.cancel(client.timeout_watcher)
+		state.clients = state.clients.delete(key)
+		none
+
+// ── TLS ─────────────────────────────────────────────────────────
+
+	f+E+G start_tls(state: ServerState +M, config: ServerConfig) -> none
+		state.tls_listener = Net.listen(config.host, config.tls_port)
+		EventLoop.on_readable(state.tls_listener, (conn) => webserver.on_accept(state, conn, true))
+		none
+
+// ── Directory listing ───────────────────────────────────────────
+// Like PHP's built-in server: responsive directory listing with
+// file sizes, modification times, and type icons.
+// Users can override by placing an index.u or index.html in the folder.
+
+	f+E+G serve_directory(state: ServerState, client: ClientState, dir_path: S, url_path: S) -> none
+		entries = filesystem.readdir(dir_path) x []
+		html: S +M = "<!DOCTYPE html><html><head>"
+		html = html + "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+		html = html + "<title>Index of " + url_path + "</title>"
+		html = html + "<style>"
+		html = html + "body{font-family:system-ui,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#333}"
+		html = html + "h1{font-size:20px;border-bottom:1px solid #ddd;padding-bottom:8px}"
+		html = html + "table{width:100%;border-collapse:collapse}"
+		html = html + "th,td{padding:6px 12px;text-align:left;border-bottom:1px solid #eee}"
+		html = html + "th{font-size:12px;color:#888;text-transform:uppercase}"
+		html = html + "a{color:#0066cc;text-decoration:none}"
+		html = html + "a:hover{text-decoration:underline}"
+		html = html + ".sz{color:#888;font-size:13px}"
+		html = html + ".dt{color:#888;font-size:13px}"
+		html = html + ".icon{width:20px;text-align:center}"
+		html = html + "</style></head><body>"
+		html = html + "<h1>Index of " + url_path + "</h1>"
+		html = html + "<table><thead><tr><th class=\"icon\"></th><th>Name</th><th>Size</th><th>Modified</th></tr></thead><tbody>"
+
+		// Parent directory link
+		url_path != "/" ? (
+			parent = filesystem.dirname(url_path)
+			parent == "." ? parent = "/"
+			html = html + "<tr><td class=\"icon\">📁</td><td><a href=\"" + parent + "\">../</a></td><td></td><td></td></tr>"
+		)
+
+		// Sort: directories first, then alphabetical
+		dirs: [DirEntry] +M = entries.filter(ee => ee.is_dir)
+		files: [DirEntry] +M = entries.filter(ee => ee.is_file)
+
+		// Directories
+		dirs.on(entry => (
+			entry.name.starts_with(".") ? r => none
+			link = url_path + (url_path.ends_with("/") ? "" ! "/") + entry.name + "/"
+			html = html + "<tr><td class=\"icon\">📁</td>"
+			html = html + "<td><a href=\"" + link + "\">" + entry.name + "/</a></td>"
+			html = html + "<td></td>"
+			html = html + "<td class=\"dt\">" + time.format(entry.mtime, "Y-m-d H:i") + "</td></tr>"
+			none
+		))
+
+		// Files
+		files.on(entry => (
+			entry.name.starts_with(".") ? r => none
+			link = url_path + (url_path.ends_with("/") ? "" ! "/") + entry.name
+			ext = filesystem.extension(entry.name)
+			icon = webserver.file_icon(ext)
+			html = html + "<tr><td class=\"icon\">" + icon + "</td>"
+			html = html + "<td><a href=\"" + link + "\">" + entry.name + "</a></td>"
+			html = html + "<td class=\"sz\">" + webserver.format_size(entry.size) + "</td>"
+			html = html + "<td class=\"dt\">" + time.format(entry.mtime, "Y-m-d H:i") + "</td></tr>"
+			none
+		))
+
+		html = html + "</tbody></table>"
+		html = html + "<footer style=\"margin-top:20px;font-size:12px;color:#aaa\">U WebServer</footer>"
+		html = html + "</body></html>"
+
+		headers = {
+			"Content-Type": "text/html; charset=utf-8",
+			"Content-Length": html.len.__string__()
+		}
+		webserver.send_response(client.conn, 200, html.bytes, headers)
+		none
+
+	f+G format_size(bytes: I) -> S
+		bytes < 1024 ? r => bytes.__string__() + " B"
+		bytes < 1048576 ? r => (bytes / 1024).__string__() + " KB"
+		bytes < 1073741824 ? r => (bytes / 1048576).__string__() + " MB"
+		r => (bytes / 1073741824).__string__() + " GB"
+
+	f+G file_icon(ext: S) -> S
+		ext == "html" ? r => "📄"
+		ext == "css" ? r => "🎨"
+		ext == "js" ? r => "⚡"
+		ext == "u" ? r => "🧲"
+		ext == "json" ? r => "📋"
+		ext == "png" ? r => "🖼"
+		ext == "jpg" ? r => "🖼"
+		ext == "jpeg" ? r => "🖼"
+		ext == "gif" ? r => "🖼"
+		ext == "svg" ? r => "🖼"
+		ext == "pdf" ? r => "📕"
+		ext == "zip" ? r => "📦"
+		ext == "md" ? r => "📝"
+		ext == "txt" ? r => "📝"
+		r => "📄"
+
+// ── Path security ───────────────────────────────────────────────
+
+	f+G is_blocked_path(config: ServerConfig, path: S) -> L
+		blocked: L +M = false
+		config.blocked_prefixes.on(prefix => (
+			path.contains(prefix) ? blocked = true
+			none
+		))
+		r => blocked
+
+// ── Security helpers ────────────────────────────────────────────
+
+// ── CORS ─────────────────────────────────────────────────────────────
+// Handles preflight OPTIONS and adds Access-Control headers.
+
+d CorsConfig
+	allowed_origins: [S] -M = ["*"]
+	allowed_methods: [S] -M = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+	allowed_headers: [S] -M = ["Content-Type", "Authorization", "X-Requested-With"]
+	max_age: I +M = 86400
+
+f cors_headers(cfg: CorsConfig, origin: S) -> {S: S}
+	allowed = cfg.allowed_origins.has("*") ? "*" ! (
+		cfg.allowed_origins.has(origin) ? origin ! ""
+	)
+	allowed == "" ? r => {}
+	r => {
+		"Access-Control-Allow-Origin": allowed,
+		"Access-Control-Allow-Methods": cfg.allowed_methods.join(", "),
+		"Access-Control-Allow-Headers": cfg.allowed_headers.join(", "),
+		"Access-Control-Max-Age": cfg.max_age.__string__()
+	}
+
+f handle_preflight(cfg: CorsConfig, req: Request) -> Response +N
+	req.method != "OPTIONS" ? r => none
+	origin = req.headers.get("Origin") ?? "*"
+	headers = cors_headers(cfg, origin)
+	r => Response({
+		status: 204,
+		body: "",
+		headers: headers
+	})
+
+// ── Virtual Hosts ────────────────────────────────────────────────────
+
+d VhostConfig
+	hosts: {S: S} +M = {}    // hostname → document root
+
+f resolve_vhost(cfg: VhostConfig, host_header: S) -> S +N
+	hostname = host_header.split(":").first() ?? host_header
+	r => cfg.hosts.get(hostname.lower())
+
+// ── Rate Limiting ────────────────────────────────────────────────────
+
+d RateLimiter
+	limits: {S: RateEntry} +M = {}
+	max_requests: I +M = 100
+	window_ms: I +M = 60000
+
+d RateEntry
+	count: I +M = 0
+	window_start: I +M = 0
+
+f+E check_rate(limiter: RateLimiter +M, client_ip: S) -> L
+	now = time.now_ms()
+	entry = limiter.limits.get(client_ip) ?? RateEntry({})
+	window_expired = now - entry.window_start > limiter.window_ms
+	window_expired ? r => true  // reset window
+	entry.count = entry.count + 1
+	limiter.limits.set(client_ip, entry)
+	r => entry.count <= limiter.max_requests

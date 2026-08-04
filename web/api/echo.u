@@ -1,0 +1,11 @@
+// web/api/echo.u — GET /api/echo?msg=hello
+// Returns JSON with the echoed message.
+
+f handle(req: Request) -> Response
+	msg = req.query.get("msg") ?? ""
+	msg.len == 0 ? r => Response.json({ "error": "missing msg parameter" })
+	r => Response.json({
+		"echo": msg,
+		"method": req.method,
+		"server": "U WebServer"
+	})

@@ -1,0 +1,71 @@
+// multipart — multipart/form-data body parsing
+//
+// Parses file uploads and form fields from HTTP POST bodies.
+// Pure — no I/O. Returns structured data.
+
+d UploadedFile
+	name: S +M            // original filename
+	content_type: S +M    // MIME type
+	data: [B] -M          // file contents
+	size: I +M = 0
+
+d MultipartResult
+	fields: {S: S} +M = {}        // form fields
+	files: {S: UploadedFile} +M = {}   // uploaded files
+
+/// Parse a multipart/form-data body
+/// content_type must include the boundary parameter
+f parse_multipart(content_type: S, body: [B]) -> MultipartResult ! ParseError
+	// Extract boundary from Content-Type header
+	boundary_match = content_type.split("boundary=")
+	boundary_match.len < 2 ? x ParseError({ message: "missing boundary" })
+	boundary: S +M = "--" + boundary_match[1].trim().replace("\"", "")
+
+	result = MultipartResult({})
+	body_str = body.__string__()
+	parts = body_str.split(boundary)
+
+	parts.len < 2 ? r => result
+
+	// Process each part (skip preamble and epilogue)
+	parts.slice(1, parts.len - 1).on(part => (
+		parse_multipart_part(part, result)
+	))
+
+	r => result
+
+/// Parse a single multipart part and add to result
+f parse_multipart_part(part: S, result: MultipartResult +M) -> none
+	header_end = part.find("\r\n\r\n") ?? part.find("\n\n")
+	header_end == none ? r => none
+	headers_str = part.slice(0, header_end)
+	part_body = part.slice(header_end + 4, part.len - 2)
+
+	// Extract field name from Content-Disposition
+	name_pos = headers_str.find("name=\"")
+	name_pos == none ? r => none
+	name_start = name_pos + 6
+	name_end = headers_str.find("\"", name_start) ?? headers_str.len
+	field_name = headers_str.slice(name_start, name_end)
+
+	// Check for filename (file upload vs form field)
+	filename_pos = headers_str.find("filename=\"")
+	filename_pos == none ? result.fields.set(field_name, part_body.trim())
+	filename_pos == none ? r => none
+
+	// File upload
+	fn_start = filename_pos + 10
+	fn_end = headers_str.find("\"", fn_start) ?? headers_str.len
+	filename = headers_str.slice(fn_start, fn_end)
+
+	ct_pos = headers_str.find("Content-Type: ")
+	file_ct = ct_pos != none
+		? headers_str.slice(ct_pos + 14, headers_str.find("\r\n", ct_pos + 14) ?? headers_str.len).trim()
+		! "application/octet-stream"
+
+	result.files.set(field_name, UploadedFile({
+		name: filename,
+		content_type: file_ct,
+		data: part_body.__bytes__(),
+		size: part_body.len
+	}))

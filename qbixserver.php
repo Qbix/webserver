@@ -153,12 +153,14 @@ if (!defined('APP_DIR')) {
 }
 if (method_exists('Q', 'init')) {
 	Q::init($projectRoot);
-} else {
-	// Platform's Q doesn't have init() — just register the path
+} else if (property_exists('Q', 'paths')) {
+	// Standalone shim (src/Q.php) exposes Q::$paths — register the path
 	if (!in_array($projectRoot, Q::$paths ?? array())) {
 		Q::$paths[] = $projectRoot;
 	}
 }
+// else: Platform's Q was bootstrapped via scripts/Q.inc.php, which already
+// registered all app/plugin paths — nothing to do here.
 
 // Load .env file if present (sets $_ENV and getenv())
 $envFile = $projectRoot . DIRECTORY_SEPARATOR . '.env';
@@ -422,7 +424,7 @@ echo "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n";
 echo "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n";
 echo "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n";
 $nClasses = count(get_declared_classes());
-$nHandlers = Q::$preloadedHandlers;
+$nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
 $preloadLabel = $nHandlers > 0
 	? "  Preloaded: {$nClasses} classes, {$nHandlers} handlers"
 	: "  Preloaded: {$nClasses} classes (handlers: lazy)";

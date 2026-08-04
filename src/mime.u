@@ -1,0 +1,53 @@
+// mime — MIME type lookup by file extension
+//
+// Pure — no I/O. Covers all common web types.
+
+d mime
+
+	f+G from_extension(ext: S) -> S
+		lower = ext.lower()
+		// Text
+		lower == "html" ? r => "text/html; charset=utf-8"
+		lower == "htm" ? r => "text/html; charset=utf-8"
+		lower == "css" ? r => "text/css; charset=utf-8"
+		lower == "js" ? r => "text/javascript; charset=utf-8"
+		lower == "mjs" ? r => "text/javascript; charset=utf-8"
+		lower == "json" ? r => "application/json"
+		lower == "xml" ? r => "application/xml"
+		lower == "txt" ? r => "text/plain; charset=utf-8"
+		lower == "csv" ? r => "text/csv; charset=utf-8"
+		lower == "md" ? r => "text/markdown; charset=utf-8"
+		lower == "yaml" ? r => "text/yaml; charset=utf-8"
+		lower == "yml" ? r => "text/yaml; charset=utf-8"
+		// Images
+		lower == "png" ? r => "image/png"
+		lower == "jpg" ? r => "image/jpeg"
+		lower == "jpeg" ? r => "image/jpeg"
+		lower == "gif" ? r => "image/gif"
+		lower == "svg" ? r => "image/svg+xml"
+		lower == "webp" ? r => "image/webp"
+		lower == "ico" ? r => "image/x-icon"
+		lower == "avif" ? r => "image/avif"
+		// Fonts
+		lower == "woff" ? r => "font/woff"
+		lower == "woff2" ? r => "font/woff2"
+		lower == "ttf" ? r => "font/ttf"
+		lower == "eot" ? r => "application/vnd.ms-fontobject"
+		lower == "otf" ? r => "font/otf"
+		// Documents
+		lower == "pdf" ? r => "application/pdf"
+		lower == "zip" ? r => "application/zip"
+		lower == "gz" ? r => "application/gzip"
+		lower == "tar" ? r => "application/x-tar"
+		// Media
+		lower == "mp4" ? r => "video/mp4"
+		lower == "webm" ? r => "video/webm"
+		lower == "ogg" ? r => "video/ogg"
+		lower == "mp3" ? r => "audio/mpeg"
+		lower == "wav" ? r => "audio/wav"
+		lower == "flac" ? r => "audio/flac"
+		// Binary
+		lower == "wasm" ? r => "application/wasm"
+		lower == "map" ? r => "application/json"
+		lower == "pem" ? r => "application/x-pem-file"
+		r => "application/octet-stream"

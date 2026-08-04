@@ -1,0 +1,59 @@
+// compress — HTTP response compression (gzip, deflate)
+//
+// Wraps zlib. Only compresses text responses above a minimum size.
+// Checks Accept-Encoding header to determine which encoding to use.
+
+d CompressConfig
+	min_size: I +M = 1024              // don't compress below 1KB
+	level: I +M = 6                     // zlib level 1-9, 6 = balanced
+	types: [S] -M = [                   // MIME types to compress
+		"text/html", "text/css", "text/javascript",
+		"application/json", "application/xml",
+		"text/plain", "image/svg+xml"
+	]
+
+d compress
+
+	/// Check if the client accepts gzip
+	f+G accepts_gzip(req: Request) -> L
+		ae = req.headers.get("accept-encoding") ?? ""
+		r => ae.contains("gzip")
+
+	/// Check if the client accepts deflate
+	f+G accepts_deflate(req: Request) -> L
+		ae = req.headers.get("accept-encoding") ?? ""
+		r => ae.contains("deflate")
+
+	/// Should we compress this response?
+	f+G should_compress(config: CompressConfig, content_type: S, body_len: I) -> L
+		body_len < config.min_size ? r => false
+		result: L +M = false
+		config.types.on(ct => (
+			content_type.contains(ct) ? result = true
+			none
+		))
+		r => result
+
+	/// Compress bytes with gzip
+	f+G gzip(data: [B], level: I) -> [B]
+		// Delegates to zlib via C FFI
+		...
+
+	/// Compress bytes with deflate
+	f+G deflate(data: [B], level: I) -> [B]
+		...
+
+	/// Apply compression to a response if appropriate
+	f+G compress_response(config: CompressConfig, req: Request, body: [B], headers: {S: S} +M) -> [B]
+		ct = headers.get("Content-Type") ?? "application/octet-stream"
+		compress.should_compress(config, ct, body.len) == false ? r => body
+		compress.accepts_gzip(req) ? r => compress.apply_encoding(body, "gzip", config.level, headers)
+		compress.accepts_deflate(req) ? r => compress.apply_encoding(body, "deflate", config.level, headers)
+		r => body
+
+	f+G apply_encoding(body: [B], enc: S, level: I, headers: {S: S} +M) -> [B]
+		compressed = enc == "gzip" ? compress.gzip(body, level) ! compress.deflate(body, level)
+		headers = headers.set("Content-Encoding", enc)
+		headers = headers.set("Content-Length", compressed.len.__string__())
+		headers = headers.set("Vary", "Accept-Encoding")
+		r => compressed

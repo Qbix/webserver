@@ -831,6 +831,8 @@ class Q_WebServer
 
 			if ($ext === 'php') {
 				// PHP dispatch (in-process — amphp uses fibers for concurrency)
+				// Run the *requested* script (e.g. action.php), not index.php.
+				$parsed['_scriptPath'] = $fsPath;
 				$response = self::dispatchToQ($parsed);
 				$response = self::processPhpResponse($response, $parsed['headers']);
 				Q_WebServer_Cache::put($parsed, $response);
@@ -919,9 +921,18 @@ class Q_WebServer
 			'Last-Modified' => gmdate('D, d M Y H:i:s', $mtime) . ' GMT',
 			'Cache-Control' => 'public, max-age=0, must-revalidate'
 		);
-		$body = ($method === 'HEAD') ? '' : file_get_contents($fsPath);
-		if ($method !== 'HEAD') {
-			$body = Q_WebServer_Headers::maybeCompress($body, $ct, $reqHeaders, $headers);
+		if ($method === 'HEAD') {
+			$body = '';
+		} else {
+			// Try the pre-compressed LRU cache first (build once, serve cached).
+			$body = Q_WebServer_Precompress::serve(
+				$fsPath, $ct, $mtime, $size, $reqHeaders, $headers
+			);
+			if ($body === null) {
+				// Not eligible / disabled — read and compress on the fly as before.
+				$body = file_get_contents($fsPath);
+				$body = Q_WebServer_Headers::maybeCompress($body, $ct, $reqHeaders, $headers);
+			}
 		}
 		return array('status'=>200, 'body'=>$body, 'headers'=>$headers);
 	}
@@ -2575,13 +2586,25 @@ HTML;
 		$_SERVER['REQUEST_METHOD']    = $parsed['method'];
 		$_SERVER['REQUEST_URI']       = $parsed['uri'];
 		$_SERVER['QUERY_STRING']      = $parsed['query'];
-		$_SERVER['SCRIPT_NAME']       = '/' . basename($scriptPath);
+		// Compute SCRIPT_NAME / PATH_INFO relative to docroot. Frameworks (Qbix
+		// included) route off PATH_INFO for action.php/{route}-style URLs and off
+		// a correct SCRIPT_NAME when the app is served under a subpath — hardcoding
+		// PATH_INFO to '' breaks both.
+		$docRoot     = rtrim(self::$rootDir, DS);
+		$requestPath = parse_url($parsed['uri'], PHP_URL_PATH) ?: '/';
+		$scriptRel   = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen($docRoot))), '/');
+		$pathInfo    = '';
+		if (strncmp($requestPath, $scriptRel, strlen($scriptRel)) === 0
+			&& strlen($requestPath) > strlen($scriptRel)) {
+			$pathInfo = substr($requestPath, strlen($scriptRel));
+		}
+		$_SERVER['SCRIPT_NAME']       = $scriptRel;
 		$_SERVER['SCRIPT_FILENAME']   = $scriptPath;
-		$_SERVER['PHP_SELF']          = $_SERVER['SCRIPT_NAME']; // WordPress uses this
-		$_SERVER['PATH_TRANSLATED']   = $scriptPath;
-		$_SERVER['PATH_INFO']         = '';
-		$_SERVER['DOCUMENT_ROOT']     = rtrim(self::$rootDir, DS);
-		$_SERVER['DOCUMENT_URI']      = $_SERVER['SCRIPT_NAME'];
+		$_SERVER['PHP_SELF']          = $scriptRel . $pathInfo; // WordPress uses this
+		$_SERVER['PATH_TRANSLATED']   = $pathInfo ? $docRoot . $pathInfo : $scriptPath;
+		$_SERVER['PATH_INFO']         = $pathInfo;
+		$_SERVER['DOCUMENT_ROOT']     = $docRoot;
+		$_SERVER['DOCUMENT_URI']      = $scriptRel;
 		$_SERVER['SERVER_NAME']       = $hostParts[0];
 		$_SERVER['SERVER_PORT']       = isset($hostParts[1]) ? $hostParts[1] : self::$port;
 		$_SERVER['SERVER_ADDR']       = self::$host === '0.0.0.0' ? '127.0.0.1' : self::$host;
