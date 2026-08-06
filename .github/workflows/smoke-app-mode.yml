@@ -1,0 +1,48 @@
+name: smoke — app mode
+
+# Boots the server the way the README documents for Qbix apps, against a stock
+# Qbix Platform checkout, and asserts it answers one request.
+#
+# No database, no installed plugins, no configuration beyond what
+# Platform/MyApp ships: the whole fixture is `cp -r local.sample local`, point
+# paths.json at platform/, and drop the "localNotYetConfigured" marker.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  app-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the webserver
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          # pcntl is what makes the fork-after-preload path run at all; without
+          # it the server silently falls back to subprocess mode.
+          extensions: pcntl, sockets
+
+      - name: Check out Qbix Platform
+        uses: actions/checkout@v4
+        with:
+          repository: Qbix/Platform
+          path: Platform
+          # Submodules are the plugins; the smoke test does not need them.
+          submodules: false
+
+      - name: Scaffold a stock app
+        run: |
+          cd Platform
+          cp -r MyApp/local.sample MyApp/local
+          printf '{"platform": "%s/platform"}\n' "$PWD" > MyApp/local/paths.json
+          # Platform refuses to boot while this marker is present.
+          sed -i '/localNotYetConfigured/d' MyApp/local/app.json
+
+      - name: Boot --app mode against it
+        run: APP_DIR="$PWD/Platform/MyApp" tests/smoke-app-mode.sh
