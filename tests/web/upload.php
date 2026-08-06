@@ -1,5 +1,5 @@
 <?php
-Q::header('Content-Type: application/json');
+Q_WebServer_State::header('Content-Type: application/json');
 $result = ['post' => $_POST, 'files' => []];
 foreach ($_FILES as $k => $f) {
     $result['files'][$k] = [

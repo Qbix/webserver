@@ -168,7 +168,9 @@ class Q
 	 */
 	static function header($header, $replace = true, $code = 0)
 	{
-		Q_Response::header($header, $replace, $code);
+		// Q_WebServer_State, not Q_Response: the Platform's Q_Response has no
+		// header() and wins in --app mode, so forwarding there is a fatal.
+		Q_WebServer_State::header($header, $replace, $code);
 	}
 
 	/**
@@ -195,7 +197,7 @@ class Q
 		// CLI SAPI: merge Q_Response headers over Q:: captured headers
 		$headers = self::$_responseHeaders;
 		if (class_exists('Q_Response', false)) {
-			$headers = array_merge($headers, Q_Response::getHeaders());
+			$headers = array_merge($headers, Q_WebServer_State::getHeaders());
 		}
 		return $headers;
 	}
@@ -296,7 +298,7 @@ class Q
 
 		// Generate unique message ID for loop prevention
 		// Format: serverFingerprint.microtime.random — globally unique
-		$identity = Q_Utils::serverIdentity();
+		$identity = Q_WebServer_Identity::serverIdentity();
 		$msgId = substr($identity ? $identity['fingerprint'] : gethostname(), 0, 8)
 			. '.' . str_replace('.', '', (string) microtime(true))
 			. '.' . bin2hex(random_bytes(4));
@@ -322,7 +324,7 @@ class Q
 			. "User-Agent: QbixServer/1.0\r\n";
 
 		// Add server fingerprint for identification
-		$identity = Q_Utils::serverIdentity();
+		$identity = Q_WebServer_Identity::serverIdentity();
 		if ($identity) {
 			$headers .= "X-Q-Fingerprint: " . $identity['fingerprint'] . "\r\n";
 		}
@@ -848,9 +850,10 @@ class Q_Response
 	/** @method setHeader */
 	static function setHeader($name, $value, $replace = true)
 	{
-		if ($replace || !isset(self::$_headers[$name])) {
-			self::$_headers[$name] = $value;
-		}
+		// Delegate: Q_WebServer_State is the single store the server reads from.
+		// Keeping a parallel self::$_headers here silently dropped every header
+		// set through this path once the readers moved to State.
+		Q_WebServer_State::setHeader($name, $value, $replace);
 		if (class_exists('Q_WebServer', false)) {
 			Q_WebServer::setResponseHeader($name, $value, $replace);
 		}
@@ -858,19 +861,31 @@ class Q_Response
 	}
 
 	/** @method getHeader */
-	static function getHeader($name) { return self::$_headers[$name] ?? null; }
+	static function getHeader($name) { return Q_WebServer_State::getHeader($name); }
 
 	/** @method getHeaders */
-	static function getHeaders() { return self::$_headers; }
+	static function getHeaders() { return Q_WebServer_State::getHeaders(); }
 
 	/** @method clearHeaders */
 	static function clearHeaders()
 	{
-		self::$_headers = array();
+		Q_WebServer_State::clearHeaders();
 		self::$_code = 200;
 		if (class_exists('Q_WebServer', false)) {
 			Q_WebServer::clearResponseState();
 		}
+	}
+
+	/**
+	 * Get or set the numeric status code (capture-only companion to code()).
+	 * Present so this shim and the Platform's Q_Response expose the same surface.
+	 * @method responseCode
+	 * @static
+	 */
+	static function responseCode($code = null)
+	{
+		if ($code === null) return self::$_code;
+		return self::code($code);
 	}
 
 	/** @method code */
@@ -878,6 +893,16 @@ class Q_Response
 	{
 		if ($code === null) return self::$_code;
 		self::$_code = (int) $code;
+		// Write into Q_WebServer_State: that is the store Q_Sapi::capture()
+		// reads when assembling the response. Writing only to Q_WebServer's
+		// own field left capture() reading a store nobody had written, so
+		// every status a script set came back as 200.
+		// Assign the field directly rather than calling
+		// Q_WebServer_State::responseCode(), which forwards back to this
+		// method and would recurse.
+		if (class_exists('Q_WebServer_State', false)) {
+			Q_WebServer_State::setCode((int) $code);
+		}
 		if (class_exists('Q_WebServer', false)) {
 			Q_WebServer::responseCode((int) $code);
 		}
@@ -999,7 +1024,7 @@ class Q_Response
 	 */
 	static function clear()
 	{
-		self::$_headers = array();
+		Q_WebServer_State::clearHeaders();
 		self::$_code = 200;
 		self::$cookies = array();
 		self::$redirected = null;
@@ -1512,5 +1537,225 @@ class Q_Config
 			}
 		}
 		return $base;
+	}
+}
+
+// ── Q_Sapi_Finalizer ────────────────────────────────
+
+/**
+ * Captures the response after EVERYTHING else has run.
+ *
+ * PHP's shutdown order is: exit() -> register_shutdown_function callbacks
+ * (in registration order) -> object destructors. Because the SAPI shim
+ * registers before any app code, a shutdown callback would fire FIRST --
+ * before user callbacks had a chance to echo or set cookies. A destructor
+ * is guaranteed to run last, and still runs on exit(), on uncaught
+ * exceptions and on fatal errors.
+ *
+ * Held in a global by Q_Sapi::enter(); destroyed at script end.
+ *
+ * @class Q_Sapi_Finalizer
+ */
+class Q_Sapi_Finalizer
+{
+	function __destruct()
+	{
+		Q_Sapi::capture();
+	}
+}
+
+// ── Q_Sapi ──────────────────────────────────────────
+
+/**
+ * SAPI emulation for forked children.
+ *
+ * A forked child of a CLI process has no SAPI: nothing populated the
+ * superglobals, nothing captures output, and native header() is a no-op.
+ * This class does what mod_php or php-fpm would do, per request.
+ *
+ * It is NOT Qbix-specific -- any PHP script can be run through it:
+ *
+ *   Q_Sapi::enter($parsed);
+ *   include $scriptPath;
+ *   list($status, $headers, $body) = Q_Sapi::leave();
+ *
+ * Native header() calls from third-party code still cannot be captured
+ * (PHP offers no hook). Such scripts must be routed to php-cgi via the
+ * Q.webserver.cgi.patterns config.
+ *
+ * @class Q_Sapi
+ */
+class Q_Sapi
+{
+	/** @internal */ static $captured = null;
+	/** @internal */ static $entered = false;
+
+	/**
+	 * Where a captured response goes when the script ends without an explicit
+	 * leave() -- i.e. normal end, exit(), uncaught exception, fatal error.
+	 * The worker pool sets this to write the response down its pipe. If it is
+	 * left null the child writes the body to STDOUT, so a forked child still
+	 * behaves correctly when run standalone.
+	 * @property $onCapture
+	 * @type callable|null
+	 * @static
+	 */
+	static $onCapture = null;
+
+	/** @internal true once a response has been handed off */
+	static $delivered = false;
+
+	/**
+	 * Populate superglobals from a parsed request and begin buffering.
+	 * @method enter
+	 * @static
+	 * @param {array} $parsed method, path, query, headers, body
+	 */
+	static function enter($parsed)
+	{
+		self::$captured = null;
+		self::$delivered = false;
+		self::$entered = true;
+
+		$headers = isset($parsed['headers']) ? $parsed['headers'] : array();
+		$host = isset($headers['host']) ? $headers['host'] : 'localhost';
+
+		$_GET = $_POST = $_REQUEST = $_COOKIE = $_FILES = array();
+		if (!empty($parsed['query'])) {
+			parse_str($parsed['query'], $_GET);
+		}
+		$ct = isset($headers['content-type']) ? $headers['content-type'] : '';
+		if (!empty($parsed['body'])) {
+			if (stripos($ct, 'application/json') !== false) {
+				$_POST = json_decode($parsed['body'], true) ?: array();
+			} else {
+				parse_str($parsed['body'], $_POST);
+			}
+		}
+		$_REQUEST = array_merge($_GET, $_POST);
+		if (!empty($headers['cookie'])) {
+			foreach (explode(';', $headers['cookie']) as $pair) {
+				$eq = strpos($pair, '=');
+				if ($eq === false) continue;
+				$_COOKIE[urldecode(trim(substr($pair, 0, $eq)))]
+					= urldecode(trim(substr($pair, $eq + 1)));
+			}
+		}
+
+		// HTTP_HOST must be set before any app code runs: Q_Response::setCookie()
+		// silently returns false without it, which would drop the session cookie.
+		$_SERVER['HTTP_HOST']      = $host;
+		$_SERVER['SERVER_NAME']    = explode(':', $host)[0];
+		$_SERVER['REQUEST_METHOD'] = isset($parsed['method']) ? $parsed['method'] : 'GET';
+		$_SERVER['REQUEST_URI']    = (isset($parsed['path']) ? $parsed['path'] : '/')
+			. (!empty($parsed['query']) ? '?' . $parsed['query'] : '');
+		$_SERVER['QUERY_STRING']   = isset($parsed['query']) ? $parsed['query'] : '';
+		$_SERVER['SCRIPT_NAME']    = isset($parsed['_scriptName']) ? $parsed['_scriptName'] : '/index.php';
+		$_SERVER['SCRIPT_FILENAME']= isset($parsed['_scriptPath']) ? $parsed['_scriptPath'] : '';
+		$_SERVER['PATH_INFO']      = isset($parsed['_pathInfo']) ? $parsed['_pathInfo'] : '';
+		$_SERVER['PHP_SELF']       = $_SERVER['SCRIPT_NAME'] . $_SERVER['PATH_INFO'];
+		$_SERVER['REMOTE_ADDR']    = isset($parsed['remoteAddr']) ? $parsed['remoteAddr'] : '127.0.0.1';
+		if ($ct !== '') $_SERVER['CONTENT_TYPE'] = $ct;
+		foreach ($headers as $k => $v) {
+			$_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
+		}
+
+		if (class_exists('Q_Request', false)
+		and method_exists('Q_Request', 'setInput')) {
+			Q_WebServer_State::setInput(isset($parsed['body']) ? $parsed['body'] : '');
+		}
+
+		ob_start();
+		$GLOBALS['__q_sapi_finalizer'] = new Q_Sapi_Finalizer();
+	}
+
+	/**
+	 * Capture the response. Idempotent -- safe to call from the finalizer
+	 * even if leave() already ran, and safe after flushEarly() closed
+	 * the buffer.
+	 * @method capture
+	 * @static
+	 * @return {array} status, headers, body
+	 */
+	static function capture()
+	{
+		if (self::$captured !== null) {
+			return self::$captured;
+		}
+		if (!self::$entered) {
+			return array(200, array(), '');
+		}
+		// Sessions must be written BEFORE we assemble the response, so the
+		// row and its cookie are settled by the time the parent replies.
+		if (function_exists('session_status')
+		and session_status() === PHP_SESSION_ACTIVE) {
+			@session_write_close();
+		}
+		$body = '';
+		while (ob_get_level() > 0) {
+			$chunk = ob_get_clean();
+			if ($chunk !== false) $body = $chunk . $body;
+		}
+		$status  = class_exists('Q_Response', false)
+			? Q_WebServer_State::responseCode() : 200;
+		$headers = class_exists('Q_Response', false)
+			? Q_WebServer_State::getHeaders() : array();
+		// Guard on the class only. Gating this on
+		// method_exists('Q_Response','cookieHeaders') tied it to a method the
+		// shim has and the Platform does not, so --app mode dropped every
+		// cookie. State::cookieHeaders() reads the shared $cookies property
+		// and works in both modes.
+		if (class_exists('Q_Response', false)) {
+			foreach (Q_WebServer_State::cookieHeaders() as $sc) {
+				$headers['Set-Cookie'] = isset($headers['Set-Cookie'])
+					? $headers['Set-Cookie'] . "\n" . $sc
+					: $sc;
+			}
+		}
+		self::$captured = array($status, $headers, $body);
+		self::deliver();
+		return self::$captured;
+	}
+
+	/**
+	 * Hand the captured response off exactly once.
+	 * @method deliver
+	 * @static
+	 */
+	static function deliver()
+	{
+		if (self::$delivered or self::$captured === null) {
+			return;
+		}
+		self::$delivered = true;
+		if (is_callable(self::$onCapture)) {
+			call_user_func(self::$onCapture, self::$captured);
+		} else if (defined('STDOUT')) {
+			// No consumer registered: emit the body so a standalone child
+			// behaves like an ordinary PHP script. Buffers are already closed,
+			// so write directly rather than echoing.
+			@fwrite(STDOUT, self::$captured[2]);
+		}
+	}
+
+	/**
+	 * Finish the request explicitly. Equivalent to letting the finalizer run,
+	 * but returns the response to the caller.
+	 * @method leave
+	 * @static
+	 * @return {array} status, headers, body
+	 */
+	static function leave()
+	{
+		$r = self::capture();
+		self::$entered = false;
+		self::$delivered = false;
+		self::$captured = null;
+		unset($GLOBALS['__q_sapi_finalizer']);
+		if (class_exists('Q_Request', false)
+		and method_exists('Q_Request', 'restoreInput')) {
+			Q_WebServer_State::restoreInput();
+		}
+		return $r;
 	}
 }

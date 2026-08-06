@@ -32,7 +32,7 @@ class Q_HotReload
 	static function init()
 	{
 		// Watch standard directories relative to each registered path
-		foreach (Q::$paths as $base) {
+		foreach (Q_WebServer::paths() as $base) {
 			foreach (array('classes', 'handlers', 'config') as $dir) {
 				$full = $base . DS . $dir;
 				if (is_dir($full)) {
@@ -136,7 +136,7 @@ class Q_HotReload
 	 */
 	static function relativePath($path)
 	{
-		foreach (Q::$paths as $base) {
+		foreach (Q_WebServer::paths() as $base) {
 			if (strpos($path, $base . DS) === 0) {
 				return substr($path, strlen($base) + 1);
 			}

@@ -77,6 +77,16 @@ class Q_WebServer_Headers
 		$body = $response['body'] ?? '';
 		$headers = $response['headers'] ?? array();
 
+		// RFC 9110 §9.3.2: a HEAD response is identical to GET except that it
+		// MUST NOT send a body. Static files already honoured this, but PHP
+		// script responses came through here with the body intact, so HEAD on
+		// any .php returned the whole page. Content-Length is left as-is --
+		// the spec requires it to describe what GET *would* have returned.
+		$reqMethod = strtoupper($response['_method'] ?? $requestHeaders['_method'] ?? '');
+		if ($reqMethod === 'HEAD') {
+			$body = '';
+		}
+
 		// ── X-Accel-Redirect ─────────────────────────────
 		// PHP script says "serve this internal file instead"
 		$accelPath = null;
@@ -120,7 +130,7 @@ class Q_WebServer_Headers
 
 		// Merge Q_Response cookies into Set-Cookie headers
 		if (class_exists('Q_Response', false)) {
-			$cookieHeaders = Q_Response::cookieHeaders();
+			$cookieHeaders = Q_WebServer_State::cookieHeaders();
 			foreach ($cookieHeaders as $ch) {
 				$headers['Set-Cookie'] = $ch; // last one wins for single-value
 			}
@@ -142,7 +152,7 @@ class Q_WebServer_Headers
 		}
 		// Multiple Set-Cookie headers (can't use the associative array for dupes)
 		if (class_exists('Q_Response', false)) {
-			$cookieHeaders = Q_Response::cookieHeaders();
+			$cookieHeaders = Q_WebServer_State::cookieHeaders();
 			if (count($cookieHeaders) > 1) {
 				// Remove the single Set-Cookie we added above
 				$out = preg_replace("/Set-Cookie:.*\r\n/", "", $out);

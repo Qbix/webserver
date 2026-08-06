@@ -1,3 +1,3 @@
 <?php
-Q_Response::header('Location: /index.html');
-Q_Response::code(302);
+Q_WebServer_State::header('Location: /index.html');
+Q_WebServer_State::responseCode(302);

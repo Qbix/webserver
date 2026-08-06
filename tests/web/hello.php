@@ -1,5 +1,5 @@
 <?php
-Q::header('Content-Type: application/json');
+Q_WebServer_State::header('Content-Type: application/json');
 echo json_encode([
     'method'     => $_SERVER['REQUEST_METHOD'],
     'uri'        => $_SERVER['REQUEST_URI'],
@@ -17,5 +17,5 @@ echo json_encode([
     'q_class'    => class_exists('Q'),
     'q_request'  => class_exists('Q_Request'),
     'q_config'   => class_exists('Q_Config'),
-    'raw_input'  => Q_Request::input(),
+    'raw_input'  => file_get_contents('php://input'),
 ]);

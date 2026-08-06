@@ -16,6 +16,33 @@
  */
 class Q_WebServer
 {
+
+	/**
+	 * Search paths for app/user files.
+	 *
+	 * Q::$paths is declared by the webserver's STANDALONE shim (src/Q.php), not
+	 * by the Platform's Q.php. In --app mode the Platform's Q is authoritative,
+	 * so dereferencing Q::$paths there raised
+	 * "Access to undeclared static property Q::$paths" and turned every request
+	 * into a 500. Use this instead of touching the property directly.
+	 */
+	static function paths()
+	{
+		// NOTE: read via reflection rather than Q::$paths directly. The property is
+		// declared by this repo's standalone shim, NOT by the Platform's Q.php, and
+		// naming it directly is exactly the coupling this class exists to avoid.
+		if (property_exists('Q', 'paths')) {
+			$declared = (new ReflectionClass('Q'))->getStaticPropertyValue('paths', null);
+			if (is_array($declared)) {
+				return $declared;
+			}
+		}
+		$paths = array();
+		if (defined('APP_DIR') && APP_DIR) { $paths[] = APP_DIR; }
+		if (defined('Q_DIR') && Q_DIR)     { $paths[] = Q_DIR; }
+		return $paths;
+	}
+
 	/** @property $pool Q_WebServer_Pool|null */
 	static $pool = null;
 	/** @property $rootDir Document root with trailing DS */
@@ -37,8 +64,39 @@ class Q_WebServer
 	 * @param {int} [$port=8080]
 	 * @param {int} [$workers=0] 0=in-process, N=prefork pool
 	 */
+	/**
+	 * Refuse to run without per-request process isolation.
+	 * Qbix (and ordinary PHP) assume one request per process. Fork gives that
+	 * on Unix, php-cgi on Windows. With neither, a process would serve many
+	 * requests and inherit the previous one's state -- which fails silently on
+	 * the SECOND request, the worst possible shape to debug.
+	 * @method requireIsolation
+	 * @static
+	 */
+	static function requireIsolation()
+	{
+		if (function_exists('pcntl_fork')) {
+			return true;
+		}
+		$bin = Q_Config::get('Q', 'webserver', 'cgi', 'binary', null);
+		if (!$bin) {
+			foreach (array('php-cgi','php-cgi8.3','php-cgi8.2','php-cgi8.1') as $b) {
+				$w = @shell_exec("command -v $b 2>/dev/null");
+				if (trim((string) $w) !== '') { $bin = trim($w); break; }
+			}
+		}
+		if ($bin) {
+			return true;
+		}
+		fwrite(STDERR, "\n  ERROR: no per-request process isolation available.\n"
+			. "  Neither the pcntl extension (fork) nor a php-cgi binary was found.\n"
+			. "  Install one, or set Q.webserver.cgi.binary in your config.\n\n");
+		exit(1);
+	}
+
 	static function start($dir, $host = '0.0.0.0', $port = 8080, $workers = 0)
 	{
+		self::requireIsolation();
 		if (self::$running) {
 			throw new Exception("Q_WebServer already running");
 		}
@@ -502,14 +560,49 @@ class Q_WebServer
 		});
 	}
 
+
+	/**
+	 * Whether a buffer holds a COMPLETE request (headers plus, for methods
+	 * that carry one, the whole body). Used to decide if another socket read
+	 * is needed. Checking only for "\r\n\r\n" treats a partially-received
+	 * POST as finished, which truncates bodies larger than one read.
+	 *
+	 * @method requestComplete
+	 * @static
+	 * @param {string} $buf
+	 * @return {boolean}
+	 */
+	static function requestComplete($buf)
+	{
+		$headerEnd = strpos($buf, "\r\n\r\n");
+		if ($headerEnd === false) return false;
+		if ($buf[0] !== 'P') return true;   // only POST/PUT/PATCH carry a body
+		if (preg_match('/transfer-encoding:\s*chunked/i', $buf)) {
+			$bodyPart = substr($buf, $headerEnd + 4);
+			return strpos($bodyPart, "\r\n0\r\n") !== false
+				|| strpos($bodyPart, "\n0\n") !== false;
+		}
+		$cl = 0;
+		if (preg_match('/content-length:\s*(\d+)/i', $buf, $m)) $cl = (int) $m[1];
+		if ($cl <= 0) return true;
+		return (strlen($buf) - $headerEnd - 4) >= $cl;
+	}
+
 	static function onClientData($client)
 	{
 		$key = (int) $client;
 		if (!isset(self::$clients[$key])) return;
 
-		// Check if we already have a complete request from pipelining
+		// Check if we already have a complete request from pipelining.
+		//
+		// Headers alone are NOT enough: a large POST arrives over several TCP
+		// segments, so after the first read the buffer holds "\r\n\r\n" plus a
+		// partial body. Treating that as pipelined skipped the next fread(),
+		// and the loop then returned waiting for bytes it had stopped reading
+		// -- so any body larger than one 64KB read was silently truncated.
+		// Only skip the read when the FULL body is already buffered.
 		$buf = self::$buffers[$key] ?? '';
-		$havePipelined = ($buf !== '' && strpos($buf, "\r\n\r\n") !== false);
+		$havePipelined = ($buf !== '' && self::requestComplete($buf));
 
 		if (!$havePipelined) {
 			$chunk = @fread($client, 65536);
@@ -825,8 +918,31 @@ class Q_WebServer
 			}
 		}
 
+		// BUG #37: split "script.php/extra/path" into SCRIPT + PATH_INFO, the way
+		// nginx's fastcgi_split_path_info does. Without this, a request for
+		// /action.php/Safebox/workload is not a file, so it fell through to the
+		// clean-URL front controller and every framework action URL rendered the
+		// notFound page instead of dispatching. That broke the entire Node->PHP
+		// contract (Q.Utils.sendToPHP posts to action.php/<Module>/<action>).
+		if (!$fsPath || !is_file($fsPath)) {
+			$_pi = self::splitPathInfo($path);
+			if ($_pi !== null) {
+				$parsed['_scriptPath'] = $_pi['scriptPath'];
+				$parsed['_pathInfo']   = $_pi['pathInfo'];
+				$response = self::dispatchToQ($parsed);
+				$response = self::processPhpResponse($response, $parsed['headers']);
+				return $response;
+			}
+		}
+
 		// File
-		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+		// Take the extension from the RESOLVED file, not the URL. A directory
+		// request like "/" has no extension in $path, but $fsPath has already been
+		// resolved to the directory index (.../index.php) above. Reading $path here
+		// meant "/" fell past the PHP branch into the static branch, where an empty
+		// extension is not in $allowedExtensions — so the app's own home page came
+		// back 403 while "/index.php" served fine.
+		$ext = strtolower(pathinfo($fsPath ? $fsPath : $path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
 
 			if ($ext === 'php') {
@@ -1149,8 +1265,27 @@ class Q_WebServer
 			}
 		}
 
+		// BUG #37: split "script.php/extra/path" into SCRIPT + PATH_INFO, the way
+		// nginx's fastcgi_split_path_info does. /action.php/Safebox/workload is
+		// not itself a file, so without this it fell through to the clean-URL
+		// branch (index.php) and every framework action URL rendered the notFound
+		// page instead of dispatching — which broke the whole Node->PHP contract,
+		// since Q.Utils.sendToPHP posts to action.php/<Module>/<action>.
+		if (!$fsPath || !is_file($fsPath)) {
+			$_pi = self::splitPathInfo($path);
+			if ($_pi !== null) {
+				$parsed['_pathInfo'] = $_pi['pathInfo'];
+				return self::handlePhp($client, $parsed, $_pi['scriptPath']);
+			}
+		}
+
 		// 5. File handling
-		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+		// Extension from the RESOLVED file, not the URL. "/" carries no
+		// extension, but $fsPath was already resolved to the directory index
+		// (.../index.php). Reading $path here sent "/" down the STATIC path,
+		// where serveStaticFile() rejects an unlisted extension — so the app's
+		// home page returned 403 while "/index.php" served fine.
+		$ext = strtolower(pathinfo($fsPath ? $fsPath : $path, PATHINFO_EXTENSION));
 		if ($fsPath && is_file($fsPath)) {
 
 			// PHP scripts → worker pool or in-process
@@ -1187,16 +1322,12 @@ class Q_WebServer
 
 		// 6. Route dispatch — if Q.routes configured, match URL to handler
 		//    Q_Uri caches compiled patterns and path→URI results in memory.
-		static $routingEnabled = null;
-		if ($routingEnabled === null) {
-			$routingEnabled = Q_Config::get('Q', 'routes', null) !== null
-				&& class_exists('Q_Uri', true);
-		}
-		if ($routingEnabled) {
-			$uri = Q_Uri::fromPath($path);
-			if ($uri && !empty($uri->module) && !empty($uri->action)) {
-				return self::handleRoute($client, $parsed, $uri);
-			}
+		// Q_WebServer_Router picks whichever Q_Uri entry point exists: our
+		// fromPath() standalone, the Platform's from() in --app mode. Both read
+		// the same Q/routes table, so the webserver's cases behave identically.
+		$uri = Q_WebServer_Router::resolve($path);
+		if ($uri) {
+			return self::handleRoute($client, $parsed, $uri);
 		}
 
 		// 7. Clean URL → route through index.php (if exists)
@@ -1298,7 +1429,7 @@ class Q_WebServer
 		$_REQUEST = array_merge($_GET, $_POST);
 
 		// Make raw body available
-		Q_Request::setInput($rawBody);
+		Q_WebServer_State::setInput($rawBody);
 
 		// If pcntl available, fork to isolate
 		if (function_exists('pcntl_fork')) {
@@ -1337,7 +1468,8 @@ class Q_WebServer
 				}
 
 				$body = ob_get_clean();
-				$response = compact('status', 'body', 'headers');
+				$_method = $parsed['method'] ?? 'GET';
+				$response = compact('status', 'body', 'headers', '_method');
 				Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 				@fclose($client);
 				exit($status >= 500 ? 1 : 0);
@@ -1361,7 +1493,22 @@ class Q_WebServer
 			// Fork failed — fall through to in-process
 		}
 
-		// In-process fallback
+		// EMERGENCY in-process fallback -- reached only when fork() itself failed
+		// (EAGAIN/ENOMEM). This is the ONE path where a process serves more than
+		// one request, so it must explicitly discard the previous request's
+		// captured state. Everything else relies on per-request processes.
+		// See requireIsolation(): we never get here without pcntl or php-cgi.
+		if (class_exists('Q_Response', false)
+		and method_exists('Q_Response', 'clear')) {
+			Q_WebServer_State::clear();
+		}
+		if (class_exists('Q_Sapi', false)) {
+			Q_Sapi::$captured = null;
+			Q_Sapi::$delivered = false;
+			Q_Sapi::$entered = false;
+		}
+		@error_log('Q_WebServer: fork failed, serving in-process (state cleared)');
+
 		while (ob_get_level()) ob_end_clean();
 		header_remove();
 		http_response_code(200);
@@ -1393,7 +1540,8 @@ class Q_WebServer
 		header_remove();
 		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 
-		$response = compact('status', 'body', 'headers');
+		$_method = $parsed['method'] ?? 'GET';
+		$response = compact('status', 'body', 'headers', '_method');
 		Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 		self::$lastStatus = $status;
 		Q_WebServer_Cache::put($parsed, $response);
@@ -1413,7 +1561,12 @@ class Q_WebServer
 		static $cgiPatterns = null;
 		static $cgiBinary = null;
 		if ($cgiPatterns === null) {
-			$cgiPatterns = Q_Config::get('Q', 'webserver', 'cgi', 'patterns', array());
+			// Item 2: without pcntl there is no fork, so per-request process
+			// isolation can only come from php-cgi. Default to routing ALL php
+			// through it there; `patterns` then means "exceptions". With pcntl
+			// available the carveout stays opt-in.
+			$_cgiDefault = function_exists('pcntl_fork') ? array() : array('*');
+			$cgiPatterns = Q_Config::get('Q', 'webserver', 'cgi', 'patterns', $_cgiDefault);
 			$cgiBinary = Q_Config::get('Q', 'webserver', 'cgi', 'binary', null);
 			if (!$cgiBinary) {
 				// Auto-detect php-cgi
@@ -1456,9 +1609,66 @@ class Q_WebServer
 			} elseif ($pid === 0) {
 				// ── CHILD: handle request, write response to client, exit ──
 				$parsed['_scriptPath'] = $scriptPath;
+
+				// A script calling exit()/die() unwinds straight past
+				// dispatchToQ()'s return, so processResponse() below never ran
+				// and the client received ZERO bytes -- while the access log
+				// still said 200, because the parent had already assumed
+				// success. Register the emit as a shutdown function so it
+				// happens on every termination path: normal return, exit(),
+				// uncaught exception and fatal error.
+				$emitted = false;
+				$emit = function ($response) use (&$emitted, $client, $parsed) {
+					if ($emitted) return;      // exactly once
+					$emitted = true;
+					Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
+					@fclose($client);
+				};
+				register_shutdown_function(function () use ($emit) {
+					// Reached only when dispatchToQ() did NOT return normally --
+					// the Platform's exception handler echoes and then exits.
+					// Read with ob_get_contents(): dispatchToQ() uses a
+					// NON-REMOVABLE buffer, on which ob_get_clean() fails.
+					$body = '';
+					if (ob_get_level() > 0) {
+						$body = (string) ob_get_contents();
+					}
+					while (@ob_end_clean()) { /* drop what we can */ }
+					if ($body === '') {
+						$body = Q_WebServer::$_capturedOutput;
+					}
+					Q_WebServer::$_capturedOutput = '';
+					$status = Q_WebServer::responseCode();
+					// Same recovery as dispatchToQ(): the Platform's exception
+					// handler echoes the error page and then exits, so we never
+					// reach the normal status resolution. The code lives on the
+					// exception objects, not in http_response_code().
+					if ((!$status or $status === 200)
+					and class_exists('Q_Response', false)
+					and method_exists('Q_Response', 'getErrors')) {
+						try {
+							foreach ((array) Q_Response::getErrors() as $err) {
+								if (is_object($err) and !empty($err->httpResponseCode)) {
+									$status = (int) $err->httpResponseCode;
+									break;
+								}
+							}
+						} catch (\Throwable $e) { /* non-fatal */ }
+					}
+					$err = error_get_last();
+					if ($err && in_array($err['type'],
+						array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR), true)) {
+						$status = 500;
+					}
+					$emit(array(
+						'status'  => $status ?: 200,
+						'body'    => $body,
+						'headers' => Q_WebServer::getResponseHeaders(),
+					));
+				});
+
 				$response = self::dispatchToQ($parsed);
-				Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
-				@fclose($client);
+				$emit($response);
 				exit(0);
 			} else {
 				// ── PARENT: close client socket (child owns it now), reap later ──
@@ -1550,7 +1760,7 @@ if (strpos($ct,'application/x-www-form-urlencoded') !== false) parse_str($raw, $
 elseif (strpos($ct,'application/json') !== false) $_POST = json_decode($raw, true) ?: [];
 elseif (strpos($ct,'multipart/form-data') !== false) { $oct=$req['headers']['content-type']??''; Q_WebServer::parseMultipart($oct, $raw, $_POST, $_FILES); }
 $_REQUEST = array_merge($_COOKIE, $_GET, $_POST);
-if (class_exists('Q_Request',false)) Q_Request::setInput($raw);
+if (class_exists('Q_Request',false)) Q_WebServer_State::setInput($raw);
 ob_start(); $status = 200; $headers = [];
 try {
     if (is_file($req['scriptPath'])) include $req['scriptPath']; else { $status = 404; echo 'Not Found'; }
@@ -1888,23 +2098,34 @@ WORKER;
 		$connKey = $keepAlive ? 'ka' : 'cl';
 		$now = microtime(true);
 
+		// The cache key MUST include the negotiated content-encoding.
+		// Keyed on $fsPath alone, whichever variant was stored first was then
+		// served to everyone: a client that sent no Accept-Encoding poisoned
+		// the entry so later gzip-capable clients got the uncompressed body --
+		// and in the reverse order a client that cannot decompress received
+		// gzipped bytes, which it has no way to read.
+		$aeRaw = strtolower($reqHeaders['accept-encoding'] ?? '');
+		$encKey = strpos($aeRaw, 'br') !== false ? 'br'
+			: (strpos($aeRaw, 'gzip') !== false ? 'gzip' : 'id');
+		$cacheKey = $fsPath . '|' . $encKey;
+
 		// ── Try response cache ──
-		if (isset(self::$fileCache[$fsPath])) {
-			$cached = &self::$fileCache[$fsPath];
+		if (isset(self::$fileCache[$cacheKey])) {
+			$cached = &self::$fileCache[$cacheKey];
 			// Revalidate mtime periodically
 			if (($now - $cached['checked']) >= self::$fileCacheCheckInterval) {
 				clearstatcache(true, $fsPath);
 				if (filemtime($fsPath) !== $cached['mtime']) {
 					self::$fileCacheSize -= $cached['bodyLen'] * 2;
-					unset(self::$fileCache[$fsPath]);
+					unset(self::$fileCache[$cacheKey]);
 				} else {
 					$cached['checked'] = $now;
 				}
 			}
 		}
 
-		if (isset(self::$fileCache[$fsPath])) {
-			$cached = &self::$fileCache[$fsPath];
+		if (isset(self::$fileCache[$cacheKey])) {
+			$cached = &self::$fileCache[$cacheKey];
 			$etag = $cached['etag'];
 
 			// 304 against cached etag
@@ -2014,7 +2235,7 @@ WORKER;
 		if ($size <= self::$fileCacheMaxFile
 			&& self::$fileCacheSize + $size * 2 < self::$fileCacheMaxSize
 		) {
-			self::$fileCache[$fsPath] = array(
+			self::$fileCache[$cacheKey] = array(
 				'mtime'   => $mtime,
 				'bodyLen' => $size,
 				'etag'    => $etag,
@@ -2178,7 +2399,7 @@ WORKER;
 		$_images = $images;
 		$_dir = $dir;
 
-		foreach (Q::$paths as $base) {
+		foreach (Q_WebServer::paths() as $base) {
 			$listingPhp = $base . DS . 'listing.php';
 			if (file_exists($listingPhp)) {
 				ob_start();
@@ -2594,7 +2815,10 @@ HTML;
 		$requestPath = parse_url($parsed['uri'], PHP_URL_PATH) ?: '/';
 		$scriptRel   = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen($docRoot))), '/');
 		$pathInfo    = '';
-		if (strncmp($requestPath, $scriptRel, strlen($scriptRel)) === 0
+		if (isset($parsed['_pathInfo'])) {
+			// Precomputed by splitPathInfo() (BUG #37) — authoritative.
+			$pathInfo = $parsed['_pathInfo'];
+		} else if (strncmp($requestPath, $scriptRel, strlen($scriptRel)) === 0
 			&& strlen($requestPath) > strlen($scriptRel)) {
 			$pathInfo = substr($requestPath, strlen($scriptRel));
 		}
@@ -2688,7 +2912,7 @@ HTML;
 		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
 
 		// Make raw body available
-		Q_Request::setInput($rawBody);
+		Q_WebServer_State::setInput($rawBody);
 
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
@@ -2697,8 +2921,22 @@ HTML;
 		@header_remove();
 		@http_response_code(200);
 		Q_WebServer::clearResponseState();
-		if (class_exists('Q_Response', false)) Q_Response::clear();
-		ob_start();
+		if (class_exists('Q_Response', false)) Q_WebServer_State::clear();
+
+		// Capture in a NON-REMOVABLE buffer.
+		//
+		// Q_Dispatcher::dispatch() unwinds through Q_OutputBuffer::endFlush(),
+		// which calls @ob_end_flush() down to and including our level. A normal
+		// buffer is destroyed by that: its contents go to the process's STDOUT
+		// and there is nothing left to send. The visible symptom was every
+		// application error under --app arriving as "200 with an empty body"
+		// while the rendered error page appeared in the server's log.
+		//
+		// Passing flags=0 (not PHP_OUTPUT_HANDLER_REMOVABLE) makes
+		// ob_end_flush()/ob_end_clean() fail on this buffer instead, so it
+		// survives however the Platform chooses to unwind. We read it with
+		// ob_get_contents(), which works on a protected buffer.
+		ob_start(null, 0, 0);
 		$status = 200;
 		$headers = array();
 		try {
@@ -2720,17 +2958,50 @@ HTML;
 			if ($code && $code !== 200) $status = $code;
 			elseif (Q_WebServer::responseCode() !== 200) $status = Q_WebServer::responseCode();
 
+			// Recover the status from the Platform's OWN error state.
+			//
+			// Q_Response::errorHeaderCode() and Q_Response::code() both publish
+			// the status by calling http_response_code()/header(), which the CLI
+			// SAPI discards -- so a validation failure that should be a 412 went
+			// out with a 200 status line and an error page as its body. An API
+			// client reads 200, treats it as success, and parses the error page.
+			//
+			// The code is not actually lost: it is still on the exception
+			// objects in Q_Response::getErrors(), which the Platform declares.
+			// Read it from there rather than from PHP's SAPI plumbing.
+			if ($status === 200
+			and class_exists('Q_Response', false)
+			and method_exists('Q_Response', 'getErrors')) {
+				try {
+					foreach ((array) Q_Response::getErrors() as $err) {
+						if (is_object($err) and !empty($err->httpResponseCode)) {
+							$status = (int) $err->httpResponseCode;
+							break;
+						}
+					}
+				} catch (\Throwable $e) { /* never let error reporting throw */ }
+			}
+
 			// Cookies: Q_Response::setCookie() stores them.
 			// Headers::processResponse() reads them via cookieHeaders()
 			// and emits Set-Cookie headers when assembling the response.
 			// No action needed here.
 		} catch (\Throwable $e) {
 			$status = 500;
-			ob_clean();
+			if (ob_get_level()) ob_clean();
 			echo json_encode(array('error' => $e->getMessage()));
 			$headers['Content-Type'] = 'application/json';
 		}
-		$body = ob_get_clean();
+		// ob_get_contents() reads a non-removable buffer; ob_get_clean() would
+		// return false on it. Record the content for the shutdown handler in
+		// case the Platform exits before we return, then drop the buffer.
+		$body = '';
+		if (ob_get_level()) {
+			$body = (string) ob_get_contents();
+			@ob_clean();
+		}
+		self::$_capturedOutput = '';
+		while (@ob_end_clean()) { /* drop any buffers we can */ }
 		@header_remove();
 
 		// Fix 1: Clean up upload temp files
@@ -2738,7 +3009,7 @@ HTML;
 
 		// Fix 3: Restore native php:// stream wrapper
 		if (class_exists('Q_Request', false)) {
-			Q_Request::restoreInput();
+			Q_WebServer_State::restoreInput();
 		}
 
 		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
@@ -2749,7 +3020,20 @@ HTML;
 			Q_WebServer_Cache_Components::processResponseHeaders($pageKey, $headers);
 		}
 
-		return compact('status', 'body', 'headers');
+		// Default Content-Type. A script that never calls header() leaves none set,
+		// so we were emitting a 200 with NO Content-Type at all — browsers sniff and
+		// strict clients reject. Error paths set it explicitly, which is why this only
+		// ever bit successful PHP dispatches, such as the app's own home page.
+		$hasContentType = false;
+		foreach ($headers as $_hk => $_hv) {
+			if (strcasecmp($_hk, 'Content-Type') === 0) { $hasContentType = true; break; }
+		}
+		if (!$hasContentType && $status != 204 && $status != 304) {
+			$headers['Content-Type'] = 'text/html; charset=utf-8';
+		}
+		// Carry the request method so processResponse() can honour HEAD.
+		$_method = $parsed['method'] ?? 'GET';
+		return compact('status', 'body', 'headers', '_method');
 	}
 
 	// ── Request parsing ──────────────────────────────────
@@ -3077,7 +3361,7 @@ HTML;
 		$safe = htmlspecialchars($path, ENT_QUOTES);
 
 		// Check user overrides: errors/404.php, errors/404.html
-		foreach (Q::$paths as $base) {
+		foreach (Q_WebServer::paths() as $base) {
 			$phpFile = $base . DS . 'errors' . DS . $code . '.php';
 			if (file_exists($phpFile)) {
 				ob_start();
@@ -3241,6 +3525,37 @@ HTML;
 		return true;
 	}
 
+
+	/**
+	 * Split a URL path into an existing .php script plus the remaining PATH_INFO.
+	 * Mirrors nginx's fastcgi_split_path_info: walk the segments and return the
+	 * LONGEST prefix that is an actual .php file on disk.
+	 * @return {array|null} ['scriptPath'=>..., 'pathInfo'=>...] or null
+	 */
+	protected static function splitPathInfo($path)
+	{
+		$segments = explode('/', trim($path, '/'));
+		$prefix = '';
+		for ($i = 0; $i < count($segments); ++$i) {
+			$prefix .= '/' . $segments[$i];
+			if (substr($prefix, -4) !== '.php') {
+				continue;
+			}
+			// Resolve against the document root directly. resolveStatic() applies
+			// extension allow-listing and a realpath cache that reject a bare
+			// script prefix, so it cannot be used here.
+			$candidate = rtrim(self::$rootDir, '/\\') . $prefix;
+			if (is_file($candidate)) {
+				$rest = implode('/', array_slice($segments, $i + 1));
+				return array(
+					'scriptPath' => $candidate,
+					'pathInfo'   => $rest === '' ? '' : '/' . $rest
+				);
+			}
+		}
+		return null;
+	}
+
 	private static function resolveStatic($urlPath)
 	{
 		// Path resolution cache — avoids repeated realpath() syscalls
@@ -3368,6 +3683,16 @@ HTML;
 	private static $_responseCode = 200;
 
 	/**
+	 * Output accumulated by dispatchToQ()'s callback buffer.
+	 *
+	 * Public because the buffer callback and the fork child's shutdown handler
+	 * both need it. It cannot live in the buffer itself: Q_Dispatcher flushes
+	 * and closes buffers on its way out, which would send the response to the
+	 * process's stdout and leave the client with an empty body.
+	 */
+	static $_capturedOutput = '';
+
+	/**
 	 * Capture a response header. Called by Q_Response::header() in standalone mode,
 	 * or read from headers_list() / http_response_code() in --app mode.
 	 * @method setResponseHeader
@@ -3386,15 +3711,25 @@ HTML;
 	 */
 	static function getResponseHeaders()
 	{
-		// Merge headers from Q_Response (our shim, if loaded)
-		if (class_exists('Q_Response', false) && method_exists('Q_Response', 'getHeaders')) {
-			foreach (Q_Response::getHeaders() as $k => $v) {
+		// Merge headers captured by Q_WebServer_State (webserver-owned, so it
+		// exists in BOTH modes). This was previously guarded on
+		// method_exists('Q_Response','getHeaders') -- a method only the
+		// STANDALONE shim declares -- so under --app the guard was false and
+		// every header a script set was silently dropped, even though State
+		// had captured them correctly.
+		if (class_exists('Q_WebServer_State', false)) {
+			foreach (Q_WebServer_State::getHeaders() as $k => $v) {
 				if (!isset(self::$_responseHeaders[$k])) {
 					self::$_responseHeaders[$k] = $v;
 				}
 			}
 		}
-		// Merge any headers set via native header()
+		// NOTE: headers_list() is ALWAYS empty under the CLI SAPI -- PHP
+		// discards native header() calls and gives no hook to capture them.
+		// So this merge is a no-op in normal operation; it only contributes
+		// if the server is run under a SAPI that does record them. Scripts
+		// relying on native header() must be routed to php-cgi via
+		// Q.webserver.cgi.patterns -- that is the documented escape hatch.
 		if (function_exists('headers_list')) {
 			foreach (headers_list() as $h) {
 				$pos = strpos($h, ':');
@@ -3416,11 +3751,21 @@ HTML;
 	 */
 	static function responseCode($code = null)
 	{
+		// Set only our own field. Q_WebServer_State::responseCode() already
+		// forwards to Q_Response::code(), which calls back here -- propagating
+		// in this direction too would close the cycle into infinite recursion.
 		if ($code !== null) {
 			self::$_responseCode = (int) $code;
 			return $code;
 		}
-		// Check native http_response_code first (catches Platform's header() calls)
+		// Q::header() and Q_Response::code() write to Q_WebServer_State, so it
+		// is the authority. Reading only $_responseCode here silently dropped
+		// every status a script set, and everything went out as 200.
+		if (class_exists('Q_WebServer_State', false)) {
+			$state = Q_WebServer_State::responseCode();
+			if ($state && $state !== 200) return $state;
+		}
+		// Check native http_response_code (catches Platform's header() calls)
 		$native = http_response_code();
 		if ($native && $native !== 200) return $native;
 		return self::$_responseCode;
@@ -3801,7 +4146,7 @@ HTML;
 			return array('status' => 404, 'body' => 'Not found');
 		}
 		$host = $parsed['headers']['host'] ?? 'localhost';
-		$identity = Q_Utils::serverIdentity();
+		$identity = Q_WebServer_Identity::serverIdentity();
 		$info = array(
 			'server' => 'Qbix Server',
 			'version' => defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0.0',
@@ -4103,7 +4448,7 @@ HTML;
 
 		// 1. Auto-generated server identity claim
 		if ($claimPath === $hostname . '/server.json' || $claimPath === 'server.json') {
-			$claim = Q_Utils::serverClaim($hostname);
+			$claim = Q_WebServer_Identity::serverClaim($hostname);
 			if (!$claim) {
 				return array('status' => 500,
 					'body' => json_encode(array('error' => 'Could not generate claim')),
@@ -4129,7 +4474,7 @@ HTML;
 			if ($params) parse_str($params, $queryParams);
 			$claim = self::loadClaimPhp($phpFile, $queryParams);
 			if ($claim) {
-				$claim = Q_Utils::signClaim($claim);
+				$claim = Q_WebServer_Identity::signClaim($claim);
 				return self::claimResponse($claim);
 			}
 		}
@@ -4149,7 +4494,7 @@ HTML;
 			// Sign and cache
 			$template = json_decode(file_get_contents($jsonFile), true);
 			if ($template) {
-				$signed = Q_Utils::signClaim($template);
+				$signed = Q_WebServer_Identity::signClaim($template);
 				$dir = dirname($cacheFile);
 				if (!is_dir($dir)) @mkdir($dir, 0755, true);
 				file_put_contents($cacheFile, json_encode($signed, JSON_UNESCAPED_SLASHES));
@@ -4305,7 +4650,7 @@ HTML;
 		$secret = Q_Config::get('Q', 'internal', 'secret', null);
 		if ($secret) {
 			$hmacHeader = $parsed['headers']['x-q-hmac'] ?? '';
-			$bodyValid = Q_Utils::verify($body, $secret);
+			$bodyValid = Q_WebServer_Identity::verify($body, $secret);
 			$headerValid = $hmacHeader && hash_equals(
 				hash_hmac('sha1', $parsed['body'], $secret), $hmacHeader
 			);

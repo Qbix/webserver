@@ -107,6 +107,37 @@ if ($opts['app']) {
 		define('APP_DIR', $appDir);
 		require_once $qInc;
 		$qbixMode = true;
+		// The webserver owns these classes; the Platform does not need them.
+		// Nothing in platform/classes or the plugins references Q_WebServer except
+		// a single comment, and a Platform running behind nginx or php-fpm should
+		// not carry a copy of code it never loads. So we do NOT duplicate them into
+		// the Platform — we teach Q's autoloader where ours live.
+		//
+		// Deliberately selective. src/Q also contains Utils, Uri, Evented and
+		// Snapshot, which the PLATFORM also defines. Claiming those here would
+		// shadow the Platform's versions with the standalone ones — the same
+		// duplication bug in reverse. In --app mode the Platform wins for anything
+		// it defines; we only claim what is ours alone.
+		$webserverOwnedClasses = array(
+			'Q_WebServer',   // + Q_WebServer_* subclasses, handled by prefix below
+			'Q_WebSocket',
+			'Q_Scheduler',
+			'Q_FileCache',
+			'Q_HotReload'
+		);
+		spl_autoload_register(function ($className) use ($webserverOwnedClasses) {
+			$ours = in_array($className, $webserverOwnedClasses, true)
+				|| strpos($className, 'Q_WebServer_') === 0;
+			if (!$ours) {
+				return; // let the Platform's autoloader handle everything else
+			}
+			$rel = str_replace('_', DIRECTORY_SEPARATOR, substr($className, 2)) . '.php';
+			$file = __DIR__ . DIRECTORY_SEPARATOR . 'src'
+				. DIRECTORY_SEPARATOR . 'Q' . DIRECTORY_SEPARATOR . $rel;
+			if (file_exists($file)) {
+				require_once $file;
+			}
+		}, true, true); // prepend: these names are ours, not the Platform's
 	} else {
 		// Try local/paths.json (Qbix convention for Q_DIR)
 		$pathsJson = $appDir . '/local/paths.json';

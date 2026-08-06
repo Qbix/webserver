@@ -45,8 +45,12 @@ $stub = <<<'STUB'
 <?php
 Phar::mapPhar('qbixserver.phar');
 
-// Bootstrap
-require 'phar://qbixserver.phar/Q.php';
+// NOTE: Q.php is NOT required here. It declares `class Q`, and in --app mode
+// the Platform declares its own, so loading it unconditionally made the phar
+// die with "Cannot declare class Q, because the name is already in use" the
+// moment it was pointed at a real app. Which shim to load depends on the mode,
+// so the decision is made after the arguments are parsed, exactly as
+// qbixserver.php does when running from source.
 
 // Parse args the same way as qbixserver.php
 $opts = array(
@@ -85,16 +89,36 @@ foreach ($argv as $i => $arg) {
 }
 
 // Qbix app mode
+$qbixMode = false;
 if ($opts['app']) {
 	$appDir = realpath($opts['app']);
 	$qInc = $appDir . '/scripts/Q.inc.php';
-	if (!$qInc) $qInc = $appDir . '/../Platform/scripts/Q.inc.php';
+	if (!file_exists($qInc)) $qInc = $appDir . '/../Platform/scripts/Q.inc.php';
 	if (file_exists($qInc)) {
 		define('APP_DIR', $appDir);
-		require_once $qInc;
+		require_once $qInc;   // the Platform's Q wins for every name it defines
+		$qbixMode = true;
+
+		// Teach the Platform's autoloader where OUR classes live. Deliberately
+		// selective: the phar also carries Utils, Uri, Evented and Snapshot,
+		// which the Platform defines too. Claiming those would shadow the
+		// Platform's with the standalone versions -- the same duplication bug
+		// in reverse. We claim only what is ours alone.
+		spl_autoload_register(function ($className) {
+			$owned = array('Q_WebServer', 'Q_WebSocket', 'Q_Scheduler',
+				'Q_FileCache', 'Q_HotReload');
+			$ours = in_array($className, $owned, true)
+				|| strpos($className, 'Q_WebServer_') === 0;
+			if (!$ours) return;
+			$rel = str_replace('_', '/', substr($className, 2)) . '.php';
+			$file = 'phar://qbixserver.phar/Q/' . $rel;
+			if (file_exists($file)) require_once $file;
+		}, true, true);
 	}
 	$webDir = $appDir . '/web';
 } else {
+	// Standalone: the bundled shim provides Q, Q_Response, Q_Request, Q_Config.
+	require 'phar://qbixserver.phar/Q.php';
 	$webDir = $opts['root'] ?: (getcwd() . '/web');
 }
 
