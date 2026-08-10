@@ -125,19 +125,38 @@ if ($opts['app']) {
 			'Q_FileCache',
 			'Q_HotReload'
 		);
-		spl_autoload_register(function ($className) use ($webserverOwnedClasses) {
+		$serverSrcDir = __DIR__ . DIRECTORY_SEPARATOR . 'src'
+			. DIRECTORY_SEPARATOR . 'Q' . DIRECTORY_SEPARATOR;
+		spl_autoload_register(function ($className) use ($webserverOwnedClasses, $serverSrcDir) {
 			$ours = in_array($className, $webserverOwnedClasses, true)
 				|| strpos($className, 'Q_WebServer_') === 0;
 			if (!$ours) {
 				return; // let the Platform's autoloader handle everything else
 			}
 			$rel = str_replace('_', DIRECTORY_SEPARATOR, substr($className, 2)) . '.php';
-			$file = __DIR__ . DIRECTORY_SEPARATOR . 'src'
-				. DIRECTORY_SEPARATOR . 'Q' . DIRECTORY_SEPARATOR . $rel;
+			$file = $serverSrcDir . $rel;
 			if (file_exists($file)) {
 				require_once $file;
 			}
 		}, true, true); // prepend: these names are ours, not the Platform's
+
+		// Issue #13: fallback autoloader for shared classes (Q_Evented,
+		// Q_Snapshot, Q_Utils, Q_Uri) when the Platform doesn't provide them.
+		// Appended (not prepended) so the Platform gets first refusal.
+		spl_autoload_register(function ($className) use ($serverSrcDir) {
+			if (strpos($className, 'Q_') !== 0) {
+				return;
+			}
+			// Only act if no other loader resolved it
+			if (class_exists($className, false)) {
+				return;
+			}
+			$rel = str_replace('_', DIRECTORY_SEPARATOR, substr($className, 2)) . '.php';
+			$file = $serverSrcDir . $rel;
+			if (file_exists($file)) {
+				require_once $file;
+			}
+		}); // appended: Platform wins, we're the safety net
 	} else {
 		// Try local/paths.json (Qbix convention for Q_DIR)
 		$pathsJson = $appDir . '/local/paths.json';
@@ -310,10 +329,10 @@ if (!empty($opts['signal'])) {
 	}
 	if ($opts['signal'] === 'stop') {
 		posix_kill($pid, SIGTERM);
-		echo "Sent SIGTERM to PID $pid\n";
+		fwrite(STDERR, "Sent SIGTERM to PID $pid\n");
 	} elseif ($opts['signal'] === 'reload') {
 		posix_kill($pid, SIGHUP);
-		echo "Sent SIGHUP to PID $pid\n";
+		fwrite(STDERR, "Sent SIGHUP to PID $pid\n");
 	}
 	exit(0);
 }
@@ -439,33 +458,33 @@ $reset = "\033[0m";
 Q_WebServer::$onRequest = function ($method, $uri, $status, $ms) use ($colors, $reset, $opts) {
 	$color = $colors[(int)($status / 100)] ?? '';
 	$time = date('H:i:s');
-	echo "$time {$color}{$status}{$reset} $method $uri ({$ms}ms)\n";
+	fwrite(STDERR, "$time {$color}{$status}{$reset} $method $uri ({$ms}ms)\n");
 };
 
 // ── Start server ────────────────────────────────────
 
 $W = 38; // inner width of the box
 
-echo "\n";
-echo "  ┌" . str_repeat('─', $W) . "┐\n";
-echo "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n";
-echo "  ├" . str_repeat('─', $W) . "┤\n";
-echo "  │" . str_pad("  http://{$opts['host']}:{$opts['port']}", $W) . "│\n";
-echo "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n";
-echo "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n";
-echo "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n";
+fwrite(STDERR, "\n");
+fwrite(STDERR, "  ┌" . str_repeat('─', $W) . "┐\n");
+fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n");
+fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
+fwrite(STDERR, "  │" . str_pad("  http://{$opts['host']}:{$opts['port']}", $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n");
 $nClasses = count(get_declared_classes());
 $nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
 $preloadLabel = $nHandlers > 0
 	? "  Preloaded: {$nClasses} classes, {$nHandlers} handlers"
 	: "  Preloaded: {$nClasses} classes (handlers: lazy)";
-echo "  │" . str_pad($preloadLabel, $W) . "│\n";
-echo "  ├" . str_repeat('─', $W) . "┤\n";
-echo "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n";
-echo "  │" . str_pad("  Health:    /Q/health", $W) . "│\n";
-echo "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n";
-echo "  └" . str_repeat('─', $W) . "┘\n";
-echo "\n";
+fwrite(STDERR, "  │" . str_pad($preloadLabel, $W) . "│\n");
+fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
+fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
+fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
+fwrite(STDERR, "\n");
 
 try {
 	Q_WebServer::start(

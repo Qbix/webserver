@@ -218,6 +218,15 @@ class Q_WebServer
 		}
 
 		self::$running = true;
+
+		// Register getallheaders() / apache_request_headers() for PHP scripts
+		$gahFile = __DIR__ . '/WebServer/GetAllHeaders.php';
+		if (!class_exists('Q_WebServer_GetAllHeaders', false) && is_file($gahFile)) {
+			require_once $gahFile;
+		}
+		if (class_exists('Q_WebServer_GetAllHeaders', false)) {
+			Q_WebServer_GetAllHeaders::register();
+		}
 	}
 
 	/**
@@ -1405,7 +1414,8 @@ class Q_WebServer
 		$module = $uri->module;
 		$action = $uri->action;
 		$routed = $uri->toArray();
-		$method = strtolower($parsed['method']); // get, post, put, delete
+		$method = $parsed['method']; // GET, POST, PUT, DELETE (case-sensitive per RFC 9110 §9.1)
+		$methodLower = strtolower($method); // for handler file lookup (handlers/module/action/get.php)
 
 		// Set up superglobals
 		$parsed['_scriptPath'] = ''; // no script — handler-based
@@ -1422,6 +1432,13 @@ class Q_WebServer
 		$_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
 		foreach ($parsed['headers'] as $k => $v) {
 			$_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
+		}
+		// Populate getallheaders() with original-case names and raw values
+		if (class_exists('Q_WebServer_GetAllHeaders', false)) {
+			Q_WebServer_GetAllHeaders::set(
+				$parsed['headers'],
+				$parsed['rawHeaders'] ?? array()
+			);
 		}
 
 		$_GET = $_POST = $_REQUEST = $_FILES = array();
@@ -1456,9 +1473,9 @@ class Q_WebServer
 					Q::event("$module/$action/validate", $routed, false, true);
 
 					// 2. Method handler (get, post, put, delete)
-					if (Q::canHandle("$module/$action/$method")) {
-						Q::event("$module/$action/$method", $routed);
-					} elseif ($method !== 'get') {
+					if (Q::canHandle("$module/$action/$methodLower")) {
+						Q::event("$module/$action/$methodLower", $routed);
+					} elseif ($method !== 'GET') {
 						$status = 405;
 						echo 'Method Not Allowed';
 					}
@@ -1528,9 +1545,9 @@ class Q_WebServer
 
 		try {
 			Q::event("$module/$action/validate", $routed, false, true);
-			if (Q::canHandle("$module/$action/$method")) {
-				Q::event("$module/$action/$method", $routed);
-			} elseif ($method !== 'get') {
+			if (Q::canHandle("$module/$action/$methodLower")) {
+				Q::event("$module/$action/$methodLower", $routed);
+			} elseif ($method !== 'GET') {
 				$status = 405;
 				echo 'Method Not Allowed';
 			}
@@ -1619,6 +1636,14 @@ class Q_WebServer
 			} elseif ($pid === 0) {
 				// ── CHILD: handle request, write response to client, exit ──
 				$parsed['_scriptPath'] = $scriptPath;
+
+				// Populate getallheaders() for PHP scripts
+				if (class_exists('Q_WebServer_GetAllHeaders', false)) {
+					Q_WebServer_GetAllHeaders::set(
+						$parsed['headers'],
+						$parsed['rawHeaders'] ?? array()
+					);
+				}
 
 				// A script calling exit()/die() unwinds straight past
 				// dispatchToQ()'s return, so processResponse() below never ran
@@ -1755,6 +1780,15 @@ $_SERVER['HTTPS'] = ($req['https'] ?? false) ? 'on' : '';
 foreach ($req['headers'] ?? [] as $k=>$v) $_SERVER['HTTP_'.strtoupper(str_replace('-','_',$k))] = $v;
 if (isset($req['headers']['content-type'])) $_SERVER['CONTENT_TYPE'] = $req['headers']['content-type'];
 if (isset($req['headers']['content-length'])) $_SERVER['CONTENT_LENGTH'] = $req['headers']['content-length'];
+// Populate getallheaders() for PHP scripts
+if (!class_exists('Q_WebServer_GetAllHeaders', false)) {
+	$_gah = __DIR__ . '/WebServer/GetAllHeaders.php';
+	if (is_file($_gah)) require_once $_gah;
+}
+if (class_exists('Q_WebServer_GetAllHeaders', false)) {
+	Q_WebServer_GetAllHeaders::register();
+	Q_WebServer_GetAllHeaders::set($req['headers'] ?? [], $req['rawHeaders'] ?? []);
+}
 // Parse cookies
 $_COOKIE = [];
 $ck = $req['headers']['cookie'] ?? '';
@@ -2212,12 +2246,26 @@ WORKER;
 			return;
 		}
 
-		// On-the-fly gzip — not cached (different per Accept-Encoding)
+		// On-the-fly gzip — use Precompress if enabled (caches to disk)
 		if ($size < 5242880) {
 			$gzHeaders = array();
 			if (Q_WebServer_Headers::shouldCompress($contentType, $size, $reqHeaders)) {
-				$body = file_get_contents($fsPath);
-				$body = Q_WebServer_Headers::maybeCompress($body, $contentType, $reqHeaders, $gzHeaders);
+				// Issue #10: Precompress::serve() was wired into buildFileResponse()
+				// but static GETs go through serveStaticFile(). Wire it here too.
+				if (!class_exists('Q_WebServer_Precompress', false)) {
+					$_pcf = __DIR__ . '/WebServer/Precompress.php';
+					if (is_file($_pcf)) require_once $_pcf;
+				}
+				$precompressEnabled = class_exists('Q_WebServer_Precompress', false)
+					&& Q_Config::get('Q', 'webserver', 'precompress', 'enabled', false);
+				if ($precompressEnabled) {
+					$body = Q_WebServer_Precompress::serve(
+						$fsPath, $contentType, $mtime, $size, $reqHeaders, $gzHeaders
+					);
+				} else {
+					$body = file_get_contents($fsPath);
+					$body = Q_WebServer_Headers::maybeCompress($body, $contentType, $reqHeaders, $gzHeaders);
+				}
 				$out = "HTTP/1.1 200 OK\r\n" . $baseHeaders;
 				foreach ($gzHeaders as $k => $v) $out .= "$k: $v\r\n";
 				$out .= "Content-Length: " . strlen($body) . "\r\n"
@@ -3102,6 +3150,7 @@ HTML;
 
 		// Issue #2: RFC-compliant header parsing
 		$headers = array();
+		$rawHeaders = array();
 		$hostCount = 0;
 		$pos = $rlEnd !== false ? $rlEnd + 2 : strlen($headerBlock);
 		$len = strlen($headerBlock);
@@ -3134,9 +3183,13 @@ HTML;
 					);
 				}
 
-				$k = strtolower($k);
 				// Trim both sides: SP and HTAB only (RFC 9110 §5.5)
 				$v = trim(substr($headerBlock, $colonPos + 1, $nlPos - $colonPos - 1), " \t");
+
+				// Preserve raw header line with original case for getallheaders()
+				$rawHeaders[] = $k . ': ' . $v;
+
+				$k = strtolower($k);
 
 				// Duplicate header handling
 				if ($k === 'host') {
@@ -3189,7 +3242,7 @@ HTML;
 			$headers['content-length'] = (string) strlen($body);
 		}
 
-		return compact('method', 'uri', 'path', 'query', 'headers', 'body', 'httpVersion');
+		return compact('method', 'uri', 'path', 'query', 'headers', 'body', 'httpVersion', 'rawHeaders');
 	}
 
 	/**

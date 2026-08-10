@@ -179,7 +179,7 @@ class Q_WebServer_Pool
 			}
 
 			// Superglobals: overwritten by executeScript() on next iteration.
-			// Output buffers: cleaned by executeScript()'s ob_start/ob_get_clean.
+			// Output buffers: non-removable buffer in executeScript, read via ob_get_contents.
 			// Error state: clear it.
 			error_clear_last();
 
@@ -232,6 +232,19 @@ class Q_WebServer_Pool
 		if (isset($req['headers']['content-length']))
 			$_SERVER['CONTENT_LENGTH'] = $req['headers']['content-length'];
 
+		// Populate getallheaders() / apache_request_headers()
+		if (!class_exists('Q_WebServer_GetAllHeaders', false)) {
+			$_gah = __DIR__ . '/GetAllHeaders.php';
+			if (is_file($_gah)) require_once $_gah;
+		}
+		if (class_exists('Q_WebServer_GetAllHeaders', false)) {
+			Q_WebServer_GetAllHeaders::register();
+			Q_WebServer_GetAllHeaders::set(
+				$req['headers'] ?? array(),
+				$req['rawHeaders'] ?? array()
+			);
+		}
+
 		$_GET = $_POST = $_REQUEST = array();
 		if (!empty($req['query'])) parse_str($req['query'], $_GET);
 
@@ -247,7 +260,11 @@ class Q_WebServer_Pool
 		// php://input workaround for forked processes
 		$GLOBALS['_Q_RAW_INPUT'] = $raw;
 
-		ob_start();
+		// Non-removable buffer: Q_Dispatcher::dispatch() calls ob_end_flush()
+		// which would destroy a normal buffer. Passing flags=0 makes
+		// ob_end_flush()/ob_end_clean() fail on this buffer, so it survives.
+		// We read it with ob_get_contents(). (Same fix as dispatchToQ, issue #12.)
+		ob_start(null, 0, 0);
 		$status = 200;
 		$headers = array();
 		try {
@@ -285,10 +302,17 @@ class Q_WebServer_Pool
 			}
 		} catch (\Throwable $e) {
 			$status = 500;
-			ob_clean();
+			if (ob_get_level()) ob_clean();
 			echo $e->getMessage();
 		}
-		$body = ob_get_clean();
+		// ob_get_contents reads the non-removable buffer; ob_get_clean would
+		// return false. Then drop any buffers we can.
+		$body = '';
+		if (ob_get_level()) {
+			$body = (string) ob_get_contents();
+			@ob_clean();
+		}
+		while (@ob_end_clean()) { /* drop removable buffers */ }
 		return compact('status', 'body', 'headers');
 	}
 
@@ -334,6 +358,7 @@ class Q_WebServer_Pool
 			'path'           => $parsed['path'],
 			'query'          => $parsed['query'],
 			'headers'        => $parsed['headers'],
+			'rawHeaders'     => $parsed['rawHeaders'] ?? array(),
 			'body'           => $parsed['body'],
 			'scriptFilename' => $scriptPath,
 			'scriptName'     => '/' . basename($scriptPath),
