@@ -994,24 +994,34 @@ class Q_WebServer
 	 */
 	static function processPhpResponse($response, $reqHeaders)
 	{
-		$headers = Q_WebServer_Headers::stripInternal($response['headers'] ?? array());
+		$passthrough = Q_Config::get(
+			'Q', 'webserver', 'accel', 'passthrough', false
+		);
+		$headers = $passthrough
+			? Q_WebServer_Headers::stripInternalExceptAccel($response['headers'] ?? array())
+			: Q_WebServer_Headers::stripInternal($response['headers'] ?? array());
 		$body = $response['body'] ?? '';
 
 		// X-Accel-Redirect
-		foreach ($response['headers'] ?? array() as $k => $v) {
-			if (strtolower($k) === 'x-accel-redirect') {
-				$af = Q_WebServer_Headers::resolveAccelPath($v);
-				if ($af && is_file($af)) {
-					$body = file_get_contents($af);
-					$ext = strtolower(pathinfo($af, PATHINFO_EXTENSION));
-					if (!Q_WebServer_Headers::hasHeader($headers, 'Content-Type')) {
-						$headers['Content-Type'] = self::mimeType($ext);
+		if (!$passthrough) {
+			foreach ($response['headers'] ?? array() as $k => $v) {
+				if (strtolower($k) === 'x-accel-redirect') {
+					// Standalone: read the file and replace the body
+					$af = Q_WebServer_Headers::resolveAccelPath($v);
+					if ($af && is_file($af)) {
+						$body = file_get_contents($af);
+						$ext = strtolower(pathinfo($af, PATHINFO_EXTENSION));
+						if (!Q_WebServer_Headers::hasHeader($headers, 'Content-Type')) {
+							$headers['Content-Type'] = self::mimeType($ext);
+						}
 					}
+					$headers = Q_WebServer_Headers::stripInternal($headers);
+					break;
 				}
-				$headers = Q_WebServer_Headers::stripInternal($headers);
-				break;
 			}
 		}
+		// In passthrough mode, X-Accel-Redirect stays in $headers for the
+		// reverse proxy (nginx) to intercept and serve with sendfile().
 
 		$ct = '';
 		foreach ($headers as $k => $v) {

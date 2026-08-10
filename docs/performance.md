@@ -34,19 +34,18 @@ TLSv1.3 with AES-256-GCM-SHA384, X25519 key exchange, ALPN negotiation (h2/http1
 
 nginx is the gold standard for static file serving. Both servers use epoll and TCP_NODELAY. The key difference: nginx uses sendfile() from disk, U uses an in-memory response cache for small files and sendfile() for large files.
 
-| Metric | nginx (1 worker) | U WebServer | Ratio |
+| Metric | nginx (1 worker) | Qbix Server | Ratio |
 |--------|-----------------|-------------|-------|
-| Keep-alive req/s | 80,000–120,000 | **104,000** | **~1.0x** (on par) |
-| Sequential req/s | 10,000–15,000 | 21,090 | **~1.5x faster** |
-| Binary size | 1.3MB | 32KB | **40x smaller** |
+| Keep-alive req/s (13KB) | 50,000–87,000 | 20,000–32,000 | nginx **2.5–3× faster** |
+| No keep-alive req/s | 17,000 | 8,500 | nginx **2× faster** |
 | Memory (idle) | 2MB | 18MB | nginx smaller |
 | TLS | ✅ | ✅ | same |
 | HTTP/2 | ✅ | planned | nginx ahead |
 | sendfile | ✅ | ✅ | same |
 
-**Why U matches nginx on keep-alive:** For small responses (<4KB), U's in-memory cache is faster than nginx's sendfile because it avoids VFS lookup, page cache check, and the sendfile syscall. The response is pre-built (headers + body) and written in one call.
+**Static file throughput:** Qbix serves ~20K req/s from an in-memory cache (pre-built headers + body, single `fwrite`). nginx is ~2.5× faster (~50K req/s) using `sendfile()` and compiled C. The advantage of our approach is simplicity (no separate server) and access-controlled serving via `X-Accel-Redirect`.
 
-**Where nginx still wins:** Large file serving (sendfile from page cache without user-space copy), HTTP/2 multiplexing, 20 years of battle-testing.
+**Where nginx still wins:** Raw static throughput, large file serving (sendfile from page cache without user-space copy), HTTP/2 multiplexing, 20 years of battle-testing.
 
 **Where U wins:** Dynamic content (compiled handlers vs FastCGI to PHP), binary size (40x smaller), simplicity (one binary, one config file, one command).
 

@@ -97,25 +97,31 @@ class Q_WebServer_Headers
 		}
 
 		if ($accelPath) {
-			// Strip internal headers from response
-			$headers = self::stripInternal($headers);
+			$passthrough = Q_Config::get(
+				'Q', 'webserver', 'accel', 'passthrough', false
+			);
 
-			// Resolve the internal path
-			$fsPath = self::resolveAccelPath($accelPath);
-			if ($fsPath && is_file($fsPath)) {
-				// Serve the file, keeping Content-Type and other
-				// headers the PHP script set
-				self::serveAccelFile($client, $fsPath, $headers, $requestHeaders);
+			if ($passthrough) {
+				// Pass the header through to the reverse proxy.
+				// Keep X-Accel-* headers, strip other internals.
+				$headers = self::stripInternalExceptAccel($headers);
+			} else {
+				// Standalone: serve the file ourselves.
+				$headers = self::stripInternal($headers);
+
+				$fsPath = self::resolveAccelPath($accelPath);
+				if ($fsPath && is_file($fsPath)) {
+					self::serveAccelFile($client, $fsPath, $headers, $requestHeaders);
+					return true;
+				}
+
+				Q_WebServer::sendResponse($client, 404, 'X-Accel-Redirect: file not found');
 				return true;
 			}
-
-			// Path not found — send 404
-			Q_WebServer::sendResponse($client, 404, 'X-Accel-Redirect: file not found');
-			return true;
+		} else {
+			// No X-Accel-Redirect — strip internal headers normally
+			$headers = self::stripInternal($headers);
 		}
-
-		// ── Strip internal headers ───────────────────────
-		$headers = self::stripInternal($headers);
 
 		// ── Compression ──────────────────────────────────
 		$ct = '';
@@ -416,6 +422,24 @@ class Q_WebServer_Headers
 		$result = array();
 		foreach ($headers as $k => $v) {
 			if (!in_array(strtolower($k), self::$internalHeaders)) {
+				$result[$k] = $v;
+			}
+		}
+		return $result;
+	}
+
+	/**
+	 * Strip internal headers but preserve X-Accel-* for passthrough
+	 * to a reverse proxy (nginx, CDN) that handles file serving.
+	 */
+	static function stripInternalExceptAccel($headers)
+	{
+		$result = array();
+		foreach ($headers as $k => $v) {
+			$lower = strtolower($k);
+			if (strpos($lower, 'x-accel-') === 0) {
+				$result[$k] = $v; // keep X-Accel-* for the proxy
+			} elseif (!in_array($lower, self::$internalHeaders)) {
 				$result[$k] = $v;
 			}
 		}

@@ -1215,14 +1215,53 @@ static void do_read(int fd) {
             return;
         }
         c->buf_len += n;
-        if (memmem(c->buf, c->buf_len, "\r\n\r\n", 4)) {
-            handle_request(c);
+
+        /* Drain EVERY complete request already in the buffer.
+         *
+         * A client may pipeline several requests in one write. The old code
+         * handled the first and returned; handle_request() sets buf_len = 0,
+         * so the rest were discarded unread. And because the socket is
+         * EPOLLET, those bytes never produce another readiness edge -- epoll
+         * never reports the fd again and the client blocks forever waiting
+         * for responses that will never come. Symptom: 1 of 3 responses.
+         */
+        char* hend;
+        while ((hend = memmem(c->buf, c->buf_len, "\r\n\r\n", 4)) != NULL) {
+            int consumed = (int)(hend - c->buf) + 4;
+            /* Defensive: never trust this arithmetic enough to memmove on it. */
+            if (consumed <= 0 || consumed > c->buf_len) { c->buf_len = 0; break; }
+            int leftover = c->buf_len - consumed;
+
+            /* Scope handle_request to THIS request only. It scans the whole
+             * buffer -- e.g. memmem(buf, buf_len, "Connection: close") -- so
+             * with pipelining a later request's "Connection: close" would tear
+             * down the connection while an earlier one was still being served.
+             */
+            char next_byte = c->buf[consumed];  /* handle_request NUL-terminates here */
+            c->buf_len = consumed;
+
+            handle_request(c);                  /* resets buf_len to 0 */
+
+            /* handle_request only writes that one NUL and clears the length --
+             * it never touches the bytes behind the request. So the pipelined
+             * data is still intact and a memmove is enough. No scratch buffer,
+             * hence no stack-smash risk from a mis-computed length.
+             */
+            c->buf[consumed] = next_byte;
+            if (leftover > 0) memmove(c->buf, c->buf + consumed, leftover);
+            c->buf_len = leftover;
+
             if (!c->keep_alive) {
                 epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                 conn_close(c);
+                return;
             }
-            return;
+            if (leftover == 0) break;
         }
+        /* Do NOT return here. Under EPOLLET the fd must be read until EAGAIN,
+         * or anything that arrived after the last read stays stuck. The loop
+         * exits through the n <= 0 branch above.
+         */
     }
 }
 

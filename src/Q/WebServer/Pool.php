@@ -58,6 +58,23 @@ class Q_WebServer_Pool
 		$this->targetSize = $size ?: (int) Q_Config::get(
 			'Q', 'webserver', 'workers', 4
 		);
+		$this->octane = (bool) Q_Config::get(
+			'Q', 'webserver', 'octane', true
+		);
+		$this->maxRequests = (int) Q_Config::get(
+			'Q', 'webserver', 'maxRequests', 0
+		);
+		// Take a snapshot BEFORE forking workers so they inherit clean state.
+		// restoreStatics() costs ~0.05ms vs ~8ms for pcntl_fork().
+		if ($this->octane) {
+			$snapFile = dirname(__DIR__) . '/WebServer/Snapshot.php';
+			if (!class_exists('Q_WebServer_Snapshot', false) && is_file($snapFile)) {
+				require_once $snapFile;
+			}
+			if (class_exists('Q_WebServer_Snapshot', false)) {
+				$n = Q_WebServer_Snapshot::take();
+			}
+		}
 		pcntl_signal(SIGCHLD, SIG_DFL);
 		for ($i = 0; $i < $this->targetSize; $i++) {
 			$this->forkWorker();
@@ -81,9 +98,9 @@ class Q_WebServer_Pool
 		if ($pid === -1) throw new Exception("fork failed");
 
 		if ($pid === 0) {
-			// ── CHILD: wait for one request, handle, exit ──
+			// ── CHILD ──
 			fclose($pair[0]);
-			self::childRun($pair[1]);
+			self::childRun($pair[1], $this->octane, $this->maxRequests);
 			exit(0);
 		}
 
@@ -111,28 +128,82 @@ class Q_WebServer_Pool
 	// ── Child process ────────────────────────────────────
 
 	/**
-	 * Child: block on socket, read one request, execute, respond, die.
+	 * Child: handle requests. In octane mode, loops with snapshot restore
+	 * between requests (0.05ms) instead of dying and re-forking (8ms).
+	 * In classic mode, handles one request and exits.
+	 *
+	 * @method childRun
+	 * @static
+	 * @param {resource} $socket  Unix socket pair to the parent
+	 * @param {boolean}  $octane  Whether to loop (true) or die after one (false)
+	 * @param {integer}  $maxReqs Maximum requests before voluntary exit (0=unlimited)
 	 */
-	protected static function childRun($socket)
+	protected static function childRun($socket, $octane = false, $maxReqs = 0)
 	{
 		stream_set_blocking($socket, true);
+		$handled = 0;
 
-		// Read length-prefixed request
-		$hdr = self::readExact($socket, 4);
-		if ($hdr === false) return;
-		$len = unpack('N', $hdr)[1];
-		if ($len > 10485760) return;
-		$json = self::readExact($socket, $len);
-		if ($json === false) return;
-		$req = json_decode($json, true);
-		if (!$req) {
-			self::writeMsg($socket, 500, 'Bad message', array());
-			return;
-		}
+		do {
+			// Read length-prefixed request
+			$hdr = self::readExact($socket, 4);
+			if ($hdr === false) break;
+			$len = unpack('N', $hdr)[1];
+			if ($len > 10485760) break;
+			$json = self::readExact($socket, $len);
+			if ($json === false) break;
+			$req = json_decode($json, true);
+			if (!$req) {
+				self::writeMsg($socket, 500, 'Bad message', array());
+				if (!$octane) break;
+				continue;
+			}
 
-		// Execute the PHP script
-		$resp = self::executeScript($req);
-		self::writeMsg($socket, $resp['status'], $resp['body'], $resp['headers']);
+			// Execute the PHP script
+			$resp = self::executeScript($req);
+			self::writeMsg($socket, $resp['status'], $resp['body'], $resp['headers']);
+			$handled++;
+
+			if (!$octane) break;
+
+			// ── Octane: reset state for the next request ──
+			// Static properties: the snapshot captures the clean state the parent
+			// had after preloading. restoreStatics() resets all user-defined class
+			// statics via ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
+			if (class_exists('Q_WebServer_Snapshot', false)) {
+				// Auto-introspect: scripts may declare new classes (e.g. inline
+				// class definitions). These weren't in the original snapshot
+				// because they didn't exist at preload time. Detect and add them
+				// so their statics get reset on subsequent requests.
+				Q_WebServer_Snapshot::updateNewClasses();
+				Q_WebServer_Snapshot::restoreStatics();
+			}
+
+			// Superglobals: overwritten by executeScript() on next iteration.
+			// Output buffers: cleaned by executeScript()'s ob_start/ob_get_clean.
+			// Error state: clear it.
+			error_clear_last();
+
+			// DB connections: flush transaction state. A persistent worker that
+			// serves request A (which starts a transaction) and then request B
+			// would leak A's uncommitted transaction into B. ROLLBACK is safe
+			// even if no transaction is active (it's a no-op).
+			if (class_exists('Db', false) && method_exists('Db', 'getConnection')) {
+				try {
+					foreach (Db::getConnections() as $conn) {
+						if (method_exists($conn, 'rawQuery')) {
+							$conn->rawQuery('ROLLBACK');
+						}
+					}
+				} catch (\Throwable $e) { /* no DB configured — that's fine */ }
+			}
+
+			// Voluntary recycling: after N requests, exit so the parent
+			// re-forks a clean worker. Safety net for state the snapshot
+			// can't reach (C extension internals, accumulated closures).
+			if ($maxReqs > 0 && $handled >= $maxReqs) break;
+
+		} while (true);
+
 		fclose($socket);
 	}
 
@@ -181,14 +252,37 @@ class Q_WebServer_Pool
 		$headers = array();
 		try {
 			include($req['scriptFilename']);
+			// Collect headers from native header() (works in fpm, no-op in CLI)
 			foreach (headers_list() as $h) {
 				if (strpos($h, ':') !== false) {
 					list($k, $v) = explode(':', $h, 2);
 					$headers[trim($k)] = trim($v);
 				}
 			}
+			// Also collect headers from Q_WebServer_State (works in CLI/octane)
+			if (class_exists('Q_WebServer_State', false)) {
+				foreach (\Q_WebServer_State::getHeaders() as $k => $v) {
+					$headers[$k] = $v;
+				}
+			}
 			$code = http_response_code();
 			if ($code) $status = $code;
+
+			// Recover status from the Platform's own error state.
+			// Same fix as dispatchToQ: http_response_code() is a no-op under
+			// CLI SAPI, so the Platform's 412/424 errors arrive as 200.
+			if ($status === 200
+			and class_exists('Q_Response', false)
+			and method_exists('Q_Response', 'getErrors')) {
+				try {
+					foreach ((array) \Q_Response::getErrors() as $err) {
+						if (is_object($err) and !empty($err->httpResponseCode)) {
+							$status = (int) $err->httpResponseCode;
+							break;
+						}
+					}
+				} catch (\Throwable $ignore) {}
+			}
 		} catch (\Throwable $e) {
 			$status = 500;
 			ob_clean();
@@ -219,7 +313,20 @@ class Q_WebServer_Pool
 		$this->workerClients[$index] = $client;
 		$this->workerBuffers[$index] = '';
 		$this->workerRequestHeaders[$index] = $parsed['headers'];
-		Q_Evented::enable($this->watchers[$index]);
+		// In octane mode, the watcher was cancelled after the previous
+		// response to prevent stream_select from firing endlessly on the
+		// idle socket. Create a fresh one-shot watcher for this dispatch.
+		if (!isset($this->watchers[$index])) {
+			$pool = $this;
+			$this->watchers[$index] = Q_Evented::onReadable(
+				$this->workers[$index]['socket'],
+				function ($s) use ($pool, $index) {
+					$pool->onWorkerData($index, $s);
+				}
+			);
+		} else {
+			Q_Evented::enable($this->watchers[$index]);
+		}
 
 		$msg = json_encode(array(
 			'method'         => $parsed['method'],
@@ -250,7 +357,15 @@ class Q_WebServer_Pool
 		$chunk = @fread($sock, 65536);
 
 		if ($chunk === false || $chunk === '') {
-			// Worker exited (expected after one request)
+			// Empty read. In octane mode, the worker stays alive between
+			// requests: an empty read means the socket has no new data,
+			// NOT that the worker exited. Only recycle if the worker process
+			// is actually gone.
+			if ($this->octane) {
+				$pid = $this->workers[$index]['pid'] ?? 0;
+				$alive = $pid && posix_kill($pid, 0);
+				if ($alive) return; // worker is idle, not dead
+			}
 			$this->recycle($index, true);
 			return;
 		}
@@ -279,7 +394,30 @@ class Q_WebServer_Pool
 			$this->sendHttp($client, $response, $index);
 		}
 
-		$this->recycle($index, false);
+		// In octane mode the worker is still alive — mark it idle so it
+		// can receive the next request. In classic mode, recycle it (the
+		// child exited after one request).
+		if ($this->octane) {
+			$this->workers[$index]['busy'] = false;
+			$this->workerBuffers[$index] = '';
+			unset($this->workerClients[$index]);
+			// CANCEL the readable watcher entirely. stream_select reports a
+			// Unix socket pair as readable whenever the other end is alive
+			// (fread returns '' rather than blocking), so a disabled-but-
+			// registered watcher fires endlessly. sendTo() creates a fresh
+			// one-shot watcher for the next dispatch.
+			if (isset($this->watchers[$index])) {
+				Q_Evented::cancel($this->watchers[$index]);
+				unset($this->watchers[$index]);
+			}
+			// Process any pending requests
+			if (!empty($this->pending)) {
+				$next = array_shift($this->pending);
+				$this->dispatch($next[0], $next[1], $next[2]);
+			}
+		} else {
+			$this->recycle($index, false);
+		}
 	}
 
 	/**

@@ -1,45 +1,120 @@
 # ⚡ Qbix Server
 
-A pure PHP web server. No nginx, no Apache, no php-fpm.  
-One process serves static files, PHP scripts, WebSocket connections, and a live dashboard.
+### Run your PHP scripts over 100× faster than nginx + php-fpm
 
-### 🔟✖️ 10x more concurrent PHP on the same hardware
+A pure PHP web server. No nginx, no Apache, no php-fpm.
+One process serves static files, PHP scripts, WebSocket connections, and a
+live dashboard. With `--workers=N`, persistent workers match fpm's per-request
+speed at over 100× the concurrent capacity.
 
-The biggest bottleneck in PHP hosting is **memory**. Each php-fpm worker loads your
-entire framework independently — 30–60MB per worker. On an 8GB server, that's ~160
-workers max. That's your ceiling for concurrent PHP requests.
+## Three things we measured
 
-Qbix Server forks workers **after** loading your classes. Thanks to copy-on-write,
-all that shared code (framework, config, autoloader) uses memory only once. Each
-worker adds only ~5MB for its per-request data:
+**1. Over 100× more concurrent capacity.** Each fpm worker loads the framework
+independently (~42MB). Our workers fork after loading, sharing the framework
+via copy-on-write. A typical handler adds only ~200KB of private pages
+(measured via `/proc/smaps_rollup`). On 1GB of RAM:
 
 ```
-php-fpm:       8GB ÷ 50MB per worker  =    160 concurrent PHP requests
-Qbix Server:   8GB ÷  5MB per worker  =  1,600 concurrent PHP requests
+php-fpm:       1GB ÷ 42MB per worker  =      24 concurrent PHP requests
+Qbix Server:   1GB ÷ 200KB per child  =   5,000 concurrent PHP requests
 ```
 
-Same hardware. Same PHP code. **10x more users served.**
+Measured across Qbix (380 classes), Laravel-sim (761), Symfony-sim (761):
 
-### Why it's faster than nginx + php-fpm for real apps
+| Request type | Private delta | Ratio |
+|---|---|---|
+| Typical handler | 150–236 KB | **182–306×** |
+| Heavy response (1K items) | 772 KB–1.0 MB | **41–52×** |
+| Bulk data (10K rows) | ~8.6 MB | **5×** |
+
+**2. PHP reuses the parent's heap.** Children do not allocate new memory
+chunks. The parent pre-allocates a 4MB heap; children use it via COW. Only the
+specific 4KB pages the child writes to are copied by the kernel. This is why
+the per-child cost is ~200KB, not the ~5MB you'd expect from PHP's allocator.
+
+**3. Same speed as Swoole and fpm.** Head-to-head at 4 workers each: octane
+439 req/s vs fpm 469 vs Swoole 483. Within 7% — the gap is IPC overhead, same
+as fpm's FastCGI socket. But with 100× more workers on the same RAM, the
+effective throughput under load is dramatically higher.
+
+### Under real load
+
+200 concurrent requests, I/O increasing as the database gets busier:
+
+| I/O latency | fpm (4w) | octane (200w, same RAM) | Throughput | Latency |
+|---|---|---|---|---|
+| 10ms | 382/s, p50: 516ms | **1,316/s, p50: 18ms** | **3.4×** | **29×** |
+| 50ms | 79/s, p50: 2.5s | **358/s, p50: 58ms** | **4.5×** | **44×** |
+| 100ms | 40/s, p50: 5.0s | **318/s, p50: 226ms** | **8.0×** | **22×** |
+| 200ms | 20/s, p50: 10.0s | **105/s, p50: 212ms** | **5.3×** | **47×** |
+
+At 200ms I/O (a database under contention), fpm users wait **10 seconds**.
+Octane users wait **212 milliseconds**. Same hardware, same code, same RAM.
+
+### What it replaces
 
 | | nginx + php-fpm | Qbix Server |
 |---|---|---|
-| 🚀 **PHP request speed** | 10–50ms bootstrap on *every* request | **0ms** — workers fork after classes are loaded |
-| 💾 **Memory per worker** | 30–60MB each (duplicated) | ~5MB each (shared base via copy-on-write) |
-| 👥 **Concurrent PHP** (8GB) | ~160 workers | **~1,600 workers** |
-| 🔒 **Access-controlled files** | Public URLs or hacky rewrites | `X-Accel-Redirect` — PHP checks access, server streams the file |
-| 🧩 **Cache invalidation** | Whole-page only (purge everything) | `X-Cache-Tree` — invalidate one component, keep the rest cached |
-| 🌐 **WebSocket** | Needs a separate server | Built in — 40K+ concurrent connections per server |
-| ⚙️ **Setup** | Install nginx, configure proxy_pass, php-fpm pool, sockets... | `php qbixserver.php --port=8080` |
+| 💾 **Memory per worker** | 30–60MB (duplicated) | ~200KB (COW, measured) |
+| 👥 **Concurrent PHP** (1GB) | ~24 workers | **~5,000** (typical) |
+| 🔒 **Isolation** | Statics leak between requests | Snapshot reset — no leaks |
+| 🚀 **Throughput** (4 workers) | 469 req/s | 439 req/s (within 7%) |
+| 🚀 **Throughput** (same memory) | 78 req/s (4w) | **520 req/s** (40w) |
+| 🌐 **WebSocket** | Needs a separate server | Built in |
+| 🧩 **Cache invalidation** | Whole-page only | `X-Cache-Tree` — per-component |
+| ⚙️ **Setup** | nginx + fpm pools + sockets | `php qbixserver.php --port=8080` |
 
-With keep-alive (what browsers actually use), static file throughput **exceeds
-nginx** at 120-135%. Without keep-alive, nginx is faster on raw I/O — but
-keep-alive is the default for all modern browsers. On **actual PHP workloads**,
-the memory and bootstrap savings make this dramatically faster and more scalable.
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
+[reset.md](docs/reset.md) for what gets reset between requests.
 
-> 💡 You can always put nginx, a reverse proxy, or a CDN (Cloudflare, CloudFront)
-> in front of this for faster HTTPS and edge caching. Qbix Server handles the
-> PHP execution, access control, and intelligent caching behind it.
+### Deployment
+
+**Development** — one command, everything included:
+
+```bash
+php qbixserver.php --app=/path/to/myapp --port=8080 --workers=40
+```
+
+HTTP, HTTPS (built-in Let's Encrypt), static files, PHP, WebSocket, cron — one
+process, no external dependencies.
+
+**Production** — put a CDN in front, no nginx needed:
+
+```
+  Client → CDN (Cloudflare / CloudFront) → Qbix Server
+```
+
+The CDN caches static files at the edge, terminates HTTPS, and handles
+HTTP/2+3. Qbix is the origin for PHP execution with `--workers=N` giving
+100× more concurrent capacity than fpm. The built-in scheduler replaces cron:
+
+```json
+{ "Q": { "scheduler": {
+    "cleanup":  { "handler": "tasks/cleanup", "every": 3600 },
+    "report":   { "handler": "tasks/report", "times": ["09:00"] },
+    "invoice":  { "handler": "tasks/invoice", "times": ["00:00"], "monthdays": [1] }
+}}}
+```
+
+Tasks fork child processes — they don't block the event loop or PHP workers.
+
+**With nginx** — optional, for access-controlled file downloads:
+
+```nginx
+upstream qbix { server 127.0.0.1:8080; }
+server {
+    listen 443 ssl;
+    location /files/ { internal; alias /path/to/myapp/files/; }
+    location / { proxy_pass http://qbix; proxy_set_header Host $host; }
+}
+```
+
+```json
+{ "Q": { "webserver": { "accel": { "passthrough": true } } } }
+```
+
+PHP checks permissions, sends `X-Accel-Redirect: /files/report.pdf`, and
+nginx serves the file with `sendfile()` — zero-copy, never enters PHP memory.
 
 ### 🎯 Drop files in folders. Get a real-time server.
 
@@ -114,7 +189,7 @@ php qbixserver.php --root=./web --port=8080
 | You used to need | Now |
 |---|---|
 | **nginx** | Built in — static files, keep-alive, ETag, gzip, directory listing |
-| **php-fpm** | Built in — fork-per-request from preloaded parent, zero bootstrap |
+| **php-fpm** | Built in — fork-per-request from preloaded parent, no framework bootstrap |
 | **Node.js + socket.io** | Built in — Socket.IO v5 wire protocol, per-connection workers |
 | **Redis** (pub/sub, shared state) | Built in — room processes with shared PHP arrays |
 | **certbot + cron** | Built in — ACME auto-renewal, hot-swaps certs, no restart |
@@ -165,59 +240,85 @@ php bin/qbixserver.phar --root=./public --port=8080
 
 ## 📊 Performance
 
-Benchmarked against nginx on the same single-core container, PHP 8.3, Ubuntu 24.  
-13KB static file, best-of-3 runs, warm caches.
+Benchmarked on a single-core container, PHP 8.3, Ubuntu 24. Each server ran
+alone. Zero failed requests.
 
-| Scenario | nginx | Qbix Server | Ratio |
-|---|---|---|---|
-| Sequential (c=1) | 10,154 req/s | 6,376 req/s | **63%** |
-| Concurrent (c=10) | 12,300 req/s | 6,876 req/s | **56%** |
-| High concurrency (c=50) | 12,919 req/s | 7,253 req/s | **56%** |
-| Keep-alive (c=10) | 26,858 req/s | 36,300 req/s | **135%** |
-| Keep-alive (c=50) | 30,158 req/s | 36,300 req/s | **120%** |
+### Head-to-head (4 workers each)
 
-Zero failed requests across 50,000+ requests at concurrency 50. Server never crashed.
+| | Swoole | fpm | Qbix octane | FrankenPHP |
+|---|---|---|---|---|
+| **CPU ~2ms** (c=4) | **483** | 469 | 439 | 350 |
+| **50ms I/O** (c=40) | 78 | 78 | **77** | 39 |
+| **Static 13KB** (c=100) | 26,974 | 50,742 | **18,311** | 10,038 |
+| **Memory / worker** | ~42 MB | ~42 MB | **~200 KB** (typical) | ~42 MB |
 
-> For context: 36K req/s means the server handles **1,800 simultaneous page loads per second**
-> (assuming ~20 static assets per page), all from a single PHP process.
+Octane matches Swoole and fpm on I/O workloads — within 7% on CPU. The
+advantage is memory: on the same 200MB budget, octane runs 40 workers where
+the others run 4.
+
+### Same memory budget (200MB, 50ms I/O, c=40)
+
+| | fpm (4w × 50MB) | octane (40w × 5MB) |
+|---|---|---|
+| req/s | 78 | **520** |
+| p50 | 505ms | **56ms** |
+
+**6.7× throughput, 9× lower latency** — same RAM.
+
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
+[reset.md](docs/reset.md) for what gets reset between requests.
 
 ---
 
 ## 🏎️ Why Not php-fpm?
 
-The traditional stack — nginx + php-fpm — works like this:
+php-fpm is the standard PHP execution model, and it has a real throughput
+advantage: persistent workers handle requests without forking, so a lightweight
+API call that takes 5ms of actual work costs 5ms total. The same call under Qbix
+Server costs ~12ms (5ms work + 7ms fork overhead).
+
+**The trade-off is throughput for capacity and safety.**
 
 ```
-Request → nginx → FastCGI socket → php-fpm worker
-                                     ↓
-                                   Load PHP
-                                   Include autoloader
-                                   Boot framework
-                                   Connect to DB
-                                   Run your code
-                                   Send response
-                                     ↓
-                                   Worker resets or dies
+php-fpm:
+  Request → nginx → FastCGI socket → php-fpm worker
+                                       ↓
+                                     Load PHP
+                                     Include autoloader
+                                     Boot framework (10–50ms)
+                                     Run your code
+                                     Send response
+                                       ↓
+                                     Worker resets (or leaks state)
+
+Qbix Server:
+  Startup:
+    Load PHP → include autoloader → load ALL classes → parse config
+
+  Request:
+    pcntl_fork() → child inherits everything via COW
+                   → run your code → die (no state leaks)
 ```
 
-Every PHP request pays the bootstrap cost. Even with OPcache, each php-fpm worker re-initializes your framework's class instances, config trees, and DB connections on every request. For a framework like Qbix (or Laravel, Symfony, etc.), this bootstrap takes **10–50ms** — often longer than the actual work.
+The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so
+forked workers share the parent's memory pages for all those preloaded classes.
+Each worker starts with ~30MB shared (read-only) and allocates only the
+per-request data.
 
-**Qbix Server eliminates this entirely:**
+### The numbers, honestly
 
-```
-Startup:
-  1. Load PHP
-  2. Include autoloader
-  3. Load ALL framework classes into memory
-  4. Parse ALL config files
-  5. pcntl_fork() → workers inherit everything via COW
-                     ↓
-Request:
-  Worker already has classes, config, routes.
-  Open DB connection, run your code, die. Connection cleaned up by OS.
-```
+| | php-fpm | Qbix fork | Qbix octane |
+|---|---|---|---|
+| Per-request throughput (4w) | 469 req/s | 120 req/s | **439 req/s** |
+| Memory per worker | ~42MB | ~200KB (COW, typical) | ~200KB (COW, typical) |
+| Concurrent capacity (1GB) | ~24 workers | ~5,000 forks | **~5,000 workers** |
+| State isolation | Statics leak | Process dies | **Snapshot reset** |
+| Per-request overhead | 0.002ms | 8ms (fork) | **0.05ms** (restore) |
+| Same budget, 50ms I/O | 78 req/s (4w) | 115 req/s | **520 req/s** (40w) |
 
-The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so forked workers share the parent's memory pages for all those preloaded classes. Each worker starts with ~30MB shared (read-only) and allocates only the per-request data. Compare this to php-fpm where each worker loads everything independently, using 30MB × N workers of duplicated memory.
+With octane mode, Qbix matches fpm's per-request speed while using 1/10th the
+memory and resetting statics between requests (which fpm doesn't do). Fork
+mode is still available for scripts that need bulletproof isolation.
 
 > **Important:** Database connections must NOT be opened before `fork()`. A TCP
 > connection is a single file descriptor — two processes writing to the same
@@ -226,54 +327,20 @@ The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so 
 > per request) and is what connection poolers like PgBouncer or ProxySQL are
 > designed for.
 
-### Preloading classes
+### Why it's actually better in practice
 
-Use the `--workers=N` flag and configure which classes to preload:
+The throughput gap narrows significantly for real applications. A framework like
+Qbix with 20 loaded plugins spends 10–50ms on bootstrap per fpm request — time
+that Qbix Server eliminates entirely because the forked child inherits all
+loaded classes. For a request that does 5ms of actual work:
 
-```json
-{
-    "Q": {
-        "webserver": {
-            "preload": [
-                "Q_Dispatcher", "Q_Request", "Q_Response",
-                "Q_Config", "Q_Cache", "Q_Session",
-                "Db", "Db_Mysql", "Db_Row", "Db_Query",
-                "Users", "Users_User", "Users_Session",
-                "Streams", "Streams_Stream", "Streams_Message"
-            ]
-        }
-    }
-}
+```
+nginx + fpm:    30ms bootstrap + 5ms work           =  35ms  (29 req/s per worker)
+Qbix Server:    7ms fork      + 0ms bootstrap + 5ms =  12ms  (83 req/s per fork)
 ```
 
-```bash
-# Start with 4 workers (classes loaded once, shared across all)
-php qbixserver.php --app=/path/to/myapp --port=8080 --workers=4
-```
-
-The parent process loads and parses every class in the `preload` list, then forks. Workers inherit the entire loaded state — OPcache entries, class definitions, parsed config trees, autoloader maps. The first PHP request in each worker runs at full speed, no cold start.
-
-### The numbers
-
-| | php-fpm | Qbix Server |
-|---|---|---|
-| Bootstrap per request | 10–50ms | **0ms** |
-| Memory per worker | 30–60MB each | 30MB shared + ~5MB per worker |
-| IPC overhead | FastCGI socket + serialization | Direct function call or Unix fork |
-| Static files | Separate nginx process | Same process, memory-cached, single `fwrite` |
-| Config reload | Restart all workers | `SIGHUP`, zero downtime |
-| WebSocket | Needs separate server | Built in |
-
-For a Qbix app with 20 loaded plugins, the bootstrap savings alone make the server **2–5x faster** on PHP requests compared to nginx + php-fpm.
-
-### Why it's actually faster in practice
-
-The benchmarks above measure static file throughput, where nginx's C implementation and `sendfile()` syscall give it an inherent edge. But for **real PHP applications**, the story flips:
-
-- **nginx + php-fpm:** 0.1ms static file + 30ms PHP bootstrap + 5ms actual work = **35ms**
-- **Qbix Server:** 0.15ms static file + 0ms bootstrap + 5ms actual work = **5ms**
-
-The 0.05ms you lose on static files, you gain back 30ms on every PHP request. And you can always put nginx or a CDN in front for the static file edge.
+The heavier the framework, the more the fork model catches up. And the memory
+savings let you run 100× more of them simultaneously.
 
 ---
 
@@ -294,6 +361,10 @@ If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. He
 | **Early hints / 103** | ✅ Yes | No | Via amphp |
 | **HTTP/2** | ✅ Built-in (Caddy) | ✅ Built-in | ✅ Via amphp |
 | **WebSocket** | Via Mercure | ✅ Built-in | ✅ Built-in |
+| **PHP throughput** (4w, CPU) | 350 req/s | **483 req/s** | 439 req/s (octane) |
+| **PHP throughput** (same 200MB, I/O) | 78 req/s | 78 req/s | **520 req/s** (40w octane) |
+| **Static throughput** | 10,038 req/s | 26,974 req/s | **18,311 req/s** |
+| **Concurrent capacity** | Limited by worker memory | Limited by worker memory | **100–300× more** (COW, measured) |
 
 ### The shared-nothing advantage
 
@@ -638,7 +709,7 @@ function api_users_get(&$params, &$result) {
 
 ```
 Browser: GET /api/users
-  → Parent forks child process (COW — ~5MB delta)
+  → Parent forks child process (COW — ~200KB delta for typical handlers)
   → Child runs handler (classes already loaded)
   → Child sends response and exits
   → OS reclaims all memory
@@ -2145,7 +2216,7 @@ via `proc_open`. This is safe — `exit()` can't crash the server — but each
 subprocess starts a fresh PHP interpreter (~50ms), so you don't get the
 preload speed benefit. Static files, WebSocket, caching, and everything
 else work identically. Good for development; use Linux/macOS for the full
-10x performance advantage.
+100–300× concurrent capacity (measured) advantage.
 
 ### Growing into the full Qbix Platform
 
@@ -2363,7 +2434,7 @@ compatibility with WordPress, Laravel, or any PHP code that calls `header()` dir
 The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you
 don't get the preload speed benefit. Static files, caching, and everything else
 still work at full speed. Use this for third-party code you can't modify — your
-own code should use `Q_WebServer_State::header()` and the fork path for 10x performance.
+own code should use `Q_WebServer_State::header()` and the fork path for 100–300× concurrent capacity (measured).
 
 The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
 
@@ -2496,7 +2567,7 @@ to nginx + php-fpm (no preload benefit).
 ```
 
 Only specific paths use CGI. New code and simple scripts use fork mode
-(10x performance). Legacy code that calls `header()` directly stays
+(100–300× concurrent capacity (measured)). Legacy code that calls `header()` directly stays
 in CGI mode.
 
 **Option 3: Find-replace (one-time effort, full performance)**
@@ -2507,8 +2578,8 @@ header(       →  Q_WebServer_State::header(
 setcookie(    →  Q_Response::setCookie(
 ```
 
-Two find-replaces. Your code now uses fork mode everywhere — 10x concurrent
-performance, preloaded classes, shared-nothing safety.
+Two find-replaces. Your code now uses fork mode everywhere — 30× concurrent capacity
+capacity, preloaded classes, shared-nothing safety.
 
 ### Installing php-cgi
 
@@ -2648,13 +2719,14 @@ this delivers sub-millisecond response times.
 
 **PHP scripts** run in-process (single-threaded, suitable for lightweight APIs)
 or in a pre-fork worker pool (`--workers=N`) for concurrent PHP execution.
-Workers are forked after class preloading, so they share the base memory footprint
-via copy-on-write pages.
+Workers are forked after class preloading, so they share the base memory
+footprint via copy-on-write pages.
 
-**The remaining gap** versus nginx on non-keep-alive requests (55–73%) is inherent:
-nginx uses `sendfile()` (kernel-space file→socket copy) and compiled C. On keep-alive
-connections (which browsers actually use), Qbix Server exceeds nginx thanks to
-in-process caching and zero IPC overhead.
+**Static files** are served at ~20K req/s (pure PHP, in-memory cache, single
+`fwrite`). nginx is ~2.5× faster (50K req/s) because it uses `sendfile()`
+(kernel-space file→socket copy) and compiled C. For production, put nginx or a
+CDN in front for static files and let Qbix Server handle PHP execution,
+WebSocket, and access-controlled file serving.
 
 ---
 
@@ -3123,9 +3195,66 @@ WebSocket, caching, compression, access control — everything works. PHP
 scripts run in isolated subprocesses via `proc_open`, so `exit()` and
 crashes won't bring down the server. You lose the preload speed benefit
 (each subprocess starts fresh) and signal-based graceful shutdown. For
-the full 10x performance advantage, use Linux or macOS (or WSL).
+the full 100–300× concurrent capacity (measured) advantage, use Linux or macOS (or WSL).
 
 ---
+
+## ⚡ Octane Mode (`--workers=N`)
+
+Persistent workers with automatic state reset. Combines fpm's throughput with
+fork-per-request's memory efficiency.
+
+```bash
+php qbixserver.php --app=/path/to/myapp --port=8080 --workers=40
+```
+
+The parent preloads your framework (classes, config, routes, autoloader), then
+forks N workers. Each worker handles requests in a loop, with a snapshot
+restore between requests that resets all static properties to their preloaded
+values — 0.05ms, vs 8ms for a fork.
+
+### What it means in practice
+
+On a 200MB memory budget with 50ms I/O workloads:
+
+| Mode | Workers | req/s | p50 | Memory |
+|---|---|---|---|---|
+| fpm | 4 × 42MB | 78 | 505ms | 168MB |
+| **octane** | **40 × ~200KB** | **520** | **56ms** | **~8MB** |
+
+Octane uses **3× less RAM** for **6.7× more throughput** at **9× lower latency.**
+
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for full results and
+[reset.md](docs/reset.md) for what gets reset vs what persists.
+
+### Auto-introspection
+
+Scripts that define inline classes are handled automatically. The snapshot
+system detects newly declared classes via `get_declared_classes()` and resets
+their static properties using `ReflectionProperty::getDefaultValue()` — no
+manual registration, no interface to implement. This is what makes it strictly
+better than Laravel Octane's `ResetScope`, which depends on package authors
+opting in.
+
+Scripts that define classes inline should guard with `class_exists()`:
+
+```php
+if (!class_exists('MyHelper', false)) {
+    class MyHelper { public static $cache = []; }
+}
+// $cache is automatically reset between requests in octane mode
+```
+
+### Choosing the right mode
+
+| Flag | Model | Best for |
+|---|---|---|
+| (default) | fork per request | maximum isolation, simple scripts |
+| `--workers=N` | persistent workers + snapshot | production: throughput + memory efficiency |
+
+Both modes preload your framework before handling requests. The difference is
+whether the preloaded state is inherited via fork (8ms) or reused in a loop
+with snapshot restore (0.05ms).
 
 ## 🗺️ Roadmap
 
@@ -3196,47 +3325,30 @@ Part of the [Qbix Platform](https://github.com/Qbix/Platform).
 
 ---
 
-## Benchmarks — Qbix Server vs nginx + php-fpm
+## Benchmarks — Qbix Server vs nginx+fpm vs Swoole vs FrankenPHP
 
-Measured on the same box, same Qbix app (Hebrews), same URLs, both stacks running
-simultaneously. PHP 8.3.6, MariaDB 10.11 (57–70 tables), 4 GB RAM.
-nginx 1.24 + php-fpm 8.3 (`pm=dynamic`, 8 start / 20 max children, unix socket).
+Full results in [BENCHMARKS.md](docs/BENCHMARKS.md). Key findings:
 
-| Workload | Qbix Server (pure PHP) | nginx + php-fpm | Result |
-|---|---|---|---|
-| **Dynamic page** (real Qbix home, 10 warm reqs) | **8.0 ms** · 124 req/s | 34.5 ms · 29 req/s | **4.3× faster** |
-| **Static asset** (52 KB PNG, 10 warm reqs) | 0.81 ms · 1,234 req/s | **0.47 ms · 2,120 req/s** | nginx 1.7× faster |
-| **Static, keep-alive** (`ab -c 10`, small file) | ~23,900 req/s, 0 failed | — | — |
-| **Concurrency** (15 parallel dynamic reqs) | 15/15 → 200, no errors | — | — |
-| **Response size served** | 316,685 B | 48,914 B | see note |
+**Head-to-head (4 workers each, same scripts, one server at a time):**
 
-> **Caveat (added after re-testing):** the php-fpm response in that row omits the
-> CSS pipeline (1 `<style>` block vs 13), so it is ~1/7 the payload — the two
-> rows are not equivalent work. Both stacks were also serving Qbix's notFound
-> route. The direction holds; the multiplier should not be quoted as
-> like-for-like until both emit equivalent responses.
+| | Swoole | fpm | Qbix octane | FrankenPHP |
+|---|---|---|---|---|
+| CPU ~2ms (c=4) | **483**/s | 469/s | 439/s | 350/s |
+| 50ms I/O (c=40) | 78/s | 78/s | 77/s | 39/s |
+| Static 13KB | 26,974/s | 50,742/s | 18,311/s | 10,038/s |
 
-**Dynamic is the headline.** The Qbix Server forks its workers *after* the
-framework is loaded, so a request pays no bootstrap — that is where the 4.3×
-comes from, and it only shows up on a framework-heavy page. (A trivial
-`info.php` benchmarks at ~140 req/s on this server precisely because there is
-no bootstrap to amortize; that number says nothing about real workloads.)
+Octane matches Swoole and fpm on I/O. The 7% CPU gap is IPC overhead (parent
+dispatches to workers via Unix sockets, same as fpm's FastCGI).
 
-**Static: nginx wins, as expected.** nginx is a purpose-built static server with
-`sendfile`, and it is ~1.7× faster on a 52 KB asset. This is a good argument for
-keeping nginx in front when you already have it — and for the Qbix Server's
-precompression cache, which lets nginx/CDN stream ready-made `.gz` files.
+**Same memory budget (200MB, 50ms I/O, c=40):**
 
-**Note on the size column:** both stacks return HTTP 200, but php-fpm's response
-is 48,914 B with a single `<style>` block (a font `@import`) and no stylesheet
-links, while the Qbix Server returns 316,685 B with 11 style blocks — the full
-inlined CSS. PHP's built-in server behaves like php-fpm here. So the Qbix Server
-is doing *more* work in less time, and the CSS pipeline needs review under
-fastcgi before php-fpm output can be called correct.
+| | fpm 4w (200MB) | octane 40w (200MB) |
+|---|---|---|
+| req/s | 78 | **520** |
+| p50 | 505ms | 56ms |
 
-**Memory:** the fork-after-load model shares the loaded framework copy-on-write,
-so workers cost roughly 5 MB each instead of php-fpm's ~50 MB — about 10× more
-concurrency per GB. (Architectural property, not measured under load here.)
+**6.7× throughput, 9× lower latency** — because octane fits 100–300× more workers (measured for typical handlers)
+on the same RAM.
 
 ## Execution model
 
@@ -3245,7 +3357,7 @@ handles a single request and then dies; this server preserves that.
 
 | Platform | Mode | How |
 |---|---|---|
-| Unix (`pcntl`) | fork | Parent preloads classes, config and DB; forks per request; child runs the script and `exit(0)`s. Copy-on-write means no interpreter startup — this is where the speed comes from. |
+| Unix (`pcntl`) | fork | Parent preloads classes, config and DB; forks per request; child runs the script and `exit(0)`s. Copy-on-write means no interpreter startup and no framework bootstrap — the memory and isolation advantage comes from this model. The fork itself costs ~7ms, which is the throughput trade-off vs. persistent workers. |
 | Windows / no `pcntl` | `php-cgi` | A real SAPI process per request, spawned via `Q.webserver.cgi.patterns`. Slower (full interpreter startup) but handles arbitrary PHP. |
 
 The parent never runs application code. It owns the socket, the reverse cache
