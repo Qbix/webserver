@@ -17,7 +17,7 @@
  */
 class Q_WebSocket
 {
-	const GUID = '258EAFA5-E914-47DA-95CA-5AB5DC587B41';
+	const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 	/** Connected clients. socketKey => [socket, watcher, channels, buffer, onMessage] */
 	static $clients = array();

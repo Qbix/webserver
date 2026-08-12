@@ -62,7 +62,7 @@ class Q_WebServer_Pool
 			'Q', 'webserver', 'octane', true
 		);
 		$this->maxRequests = (int) Q_Config::get(
-			'Q', 'webserver', 'maxRequests', 0
+			'Q', 'webserver', 'maxRequests', 1000
 		);
 		// Take a snapshot BEFORE forking workers so they inherit clean state.
 		// restoreStatics() costs ~0.05ms vs ~8ms for pcntl_fork().

@@ -2888,6 +2888,67 @@ Servers authenticate each other at three levels:
 - **Public** — no fingerprint, just HTTPS. Read-only access via
   `/.well-known/qbix.json`. For open APIs.
 
+### Logging
+
+Access and error logs with buffered writes, daily rotation, gzip archiving, and
+retention management. Enable by adding a `log` section to config:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "log": {
+                "dir": "logs",
+                "access": true,
+                "error": true,
+                "bufferSize": 65536,
+                "flushInterval": 1,
+                "maxSize": 52428800,
+                "archiveAfterDays": 2,
+                "deleteAfterDays": 30
+            }
+        }
+    }
+}
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `dir` | `logs/` (relative to app root) | Log directory. Absolute paths work too. |
+| `access` | `true` | Write access.log in combined format + response time. |
+| `error` | `true` | Write error.log with timestamps. |
+| `bufferSize` | `65536` (64 KB) | Buffer log lines in memory, flush when full. 0 = write every line immediately. |
+| `flushInterval` | `1` | Seconds between timer flushes. Buffer contents hit disk at most this late. |
+| `maxSize` | `52428800` (50 MB) | Rotate mid-day if a log file exceeds this. |
+| `archiveAfterDays` | `2` | Compress rotated logs to .gz after this many days. |
+| `deleteAfterDays` | `30` | Delete archived logs older than this. |
+
+**Buffered writes** accumulate log lines in memory and flush them in a single
+`write()` syscall — either when the buffer fills or on the timer. This cuts the
+per-request overhead roughly in half vs writing every line:
+
+| Mode | Throughput | Overhead vs no logging |
+|---|---|---|
+| No logging | 9,276 req/s | — |
+| Buffered (64KB, 1s) | 8,671 req/s | 6.5% |
+| Unbuffered | 8,186 req/s | 11.7% |
+
+Error lines always flush immediately (they're rare and you want them on disk
+before a crash). Set `access` to `false` to skip access logging entirely.
+
+**Rotation:** Logs rotate daily at midnight. The current day's log is always
+`access.log` and `error.log`. Yesterday's becomes `access.2026-08-11.log`. After
+2 days that file is gzipped to `access.2026-08-11.log.gz`. After 30 days it's
+deleted. If a log exceeds 50 MB mid-day, it rotates early with a timestamp suffix.
+
+Access log format (nginx-compatible combined + response time):
+
+```
+192.168.1.1 - - [11/Aug/2026:14:30:00 +0000] "GET /api/users HTTP/1.1" 200 1234 "-" "Mozilla/5.0" 3.2ms
+```
+
+Errors also go to stderr, so `php qbixserver.php 2>err.log` works without config.
+
 ### Configuration
 
 ```json

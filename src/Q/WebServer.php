@@ -117,6 +117,7 @@ class Q_WebServer
 
 		// Initialize dashboard stats (uptime tracking)
 		Q_WebServer_Dashboard::init();
+		Q_WebServer_Log::init();
 
 		if ($ext = Q_Config::get('Q', 'webserver', 'extensions', null)) {
 			self::$allowedExtensions = $ext;
@@ -1187,6 +1188,28 @@ class Q_WebServer
 			if ($path === '/Q/ws') {
 				if (Q_Config::get('Q', 'dashboard', null) === false) {
 					self::sendResponse($client, 404, 'Not found');
+					return false;
+				}
+				// Authenticate: require panel session token or dashboard token
+				$qp = array();
+				if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
+				$wsToken = $qp['token'] ?? '';
+				$authed = false;
+				// Check against panel session tokens
+				if ($wsToken && Q_WebServer_Panel::validateToken($wsToken)) {
+					$authed = true;
+				}
+				// Check against static dashboard token
+				$dashToken = Q_Config::get('Q', 'dashboard', 'token', null);
+				if ($dashToken !== null && $wsToken === $dashToken) {
+					$authed = true;
+				}
+				// If no password is set yet (first run), allow unauthenticated
+				if (!Q_WebServer_Panel::hasPassword()) {
+					$authed = true;
+				}
+				if (!$authed) {
+					self::sendResponse($client, 403, 'Forbidden — token required');
 					return false;
 				}
 				$upgraded = Q_WebSocket::upgrade(
@@ -3744,7 +3767,7 @@ HTML;
 	static $clientWatchers = array();
 	private static $buffers = array();
 	private static $clientInfo = array();      // key => [ip, connectTime]
-	private static $keepAliveCount = array();   // key => int
+	static $keepAliveCount = array();   // key => int
 	private static $timeoutWatchers = array();  // key => evented timer id
 	private static $acceptWatcher = null;
 	private static $running = false;

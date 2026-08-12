@@ -21,9 +21,21 @@ class Q_WebServer_Dashboard
 	static $statusCodes = array(); // code => count
 	static $rpsHistory = array(); // [timestamp => count] for sparkline
 
-	static function init() { self::$stats['startTime'] = time(); }
+	static function init()
+	{
+		self::$stats['startTime'] = time();
 
-	static function recordRequest($method, $uri, $status, $ms, $bytes = 0, $isPhp = false)
+		// Push stats every 2 seconds so the dashboard stays live
+		// even when no requests are coming in
+		Q_Evented::repeat(2.0, function () {
+			if (empty(Q_WebSocket::$channels['dashboard'])) return;
+			Q_WebSocket::broadcastTo('dashboard', array(
+				'type' => 'heartbeat', 'stats' => Q_WebServer_Dashboard::getStats()
+			));
+		});
+	}
+
+	static function recordRequest($method, $uri, $status, $ms, $bytes = 0, $isPhp = false, $contentType = '')
 	{
 		self::$stats['requests']++;
 		self::$stats['totalMs'] += $ms;
@@ -41,36 +53,67 @@ class Q_WebServer_Dashboard
 		elseif ($status < 500) self::$stats['status4xx']++;
 		else self::$stats['status5xx']++;
 
-		// Per-status tracking
 		if (!isset(self::$statusCodes[$status])) self::$statusCodes[$status] = 0;
 		self::$statusCodes[$status]++;
 
-		// Top paths
 		$pathKey = $method . ' ' . strtok($uri, '?');
 		if (!isset(self::$topPaths[$pathKey])) self::$topPaths[$pathKey] = array(0, 0);
 		self::$topPaths[$pathKey][0]++;
 		self::$topPaths[$pathKey][1] += $ms;
 
-		// RPS history (per-second bucket)
 		$sec = time();
 		if (!isset(self::$rpsHistory[$sec])) self::$rpsHistory[$sec] = 0;
 		self::$rpsHistory[$sec]++;
-		// Keep last 60 seconds
 		$cutoff = $sec - 60;
 		foreach (self::$rpsHistory as $t => $c) {
 			if ($t < $cutoff) unset(self::$rpsHistory[$t]);
 			else break;
 		}
 
+		$kind = $isPhp ? 'php' : self::mimeKind($uri, $contentType);
 		$entry = array('time' => date('H:i:s'), 'method' => $method,
-			'uri' => $uri, 'status' => $status, 'ms' => $ms);
+			'uri' => $uri, 'status' => $status, 'ms' => $ms, 'kind' => $kind);
 		self::$recentRequests[] = $entry;
 		if (count(self::$recentRequests) > 200) array_shift(self::$recentRequests);
 
-		Q_WebSocket::broadcastTo('dashboard', array(
-			'type' => 'request', 'entry' => $entry, 'stats' => self::getStats()
-		));
+		// Only build stats + broadcast if a dashboard client is connected
+		if (!empty(Q_WebSocket::$channels['dashboard'])) {
+			Q_WebSocket::broadcastTo('dashboard', array(
+				'type' => 'request', 'entry' => $entry, 'stats' => self::getStats()
+			));
+		}
 	}
+
+	/**
+	 * Map URI extension or content-type to a kind for dashboard icons.
+	 * @return {string} php, html, css, js, img, font, json, xml, doc, media, file
+	 */
+	static function mimeKind($uri, $contentType = '')
+	{
+		$ext = strtolower(pathinfo(strtok($uri, '?') ?: '', PATHINFO_EXTENSION));
+		static $map = array(
+			'html' => 'html', 'htm' => 'html',
+			'css' => 'css', 'less' => 'css', 'scss' => 'css',
+			'js' => 'js', 'mjs' => 'js', 'ts' => 'js',
+			'png' => 'img', 'jpg' => 'img', 'jpeg' => 'img', 'gif' => 'img',
+			'svg' => 'img', 'webp' => 'img', 'ico' => 'img', 'avif' => 'img',
+			'woff' => 'font', 'woff2' => 'font', 'ttf' => 'font', 'otf' => 'font', 'eot' => 'font',
+			'json' => 'json', 'xml' => 'xml', 'rss' => 'xml',
+			'pdf' => 'doc', 'doc' => 'doc', 'docx' => 'doc', 'txt' => 'doc', 'md' => 'doc',
+			'mp4' => 'media', 'webm' => 'media', 'mp3' => 'media', 'ogg' => 'media',
+			'zip' => 'file', 'gz' => 'file', 'tar' => 'file',
+		);
+		if (isset($map[$ext])) return $map[$ext];
+		if ($contentType) {
+			if (strpos($contentType, 'html') !== false) return 'html';
+			if (strpos($contentType, 'css') !== false) return 'css';
+			if (strpos($contentType, 'javascript') !== false) return 'js';
+			if (strpos($contentType, 'image/') !== false) return 'img';
+			if (strpos($contentType, 'json') !== false) return 'json';
+		}
+		return 'file';
+	}
+
 
 	static function getStats()
 	{
@@ -108,6 +151,7 @@ class Q_WebServer_Dashboard
 		}
 
 		// Connection counts
+		$keepAlive = count(Q_WebServer::$keepAliveCount);
 		$wsConnections = count(Q_WebSocket::$workers);
 		$wsRooms = count(Q_WebSocket::$roomWorkers);
 		$activeRooms = array();
@@ -142,9 +186,11 @@ class Q_WebServer_Dashboard
 			'wsRooms' => $wsRooms,
 			'activeRooms' => $activeRooms,
 			'connections' => count(Q_WebServer::$clients),
+			'keepAlive' => $keepAlive,
 			'topPaths' => $topFormatted,
 			'sparkline' => $sparkline,
 			'cache' => Q_WebServer_Cache::stats(),
+			'log' => Q_WebServer_Log::stats(),
 			'components' => Q_WebServer_Cache_Components::enabled()
 				? Q_WebServer_Cache_Components::stats() : null,
 			'php' => PHP_VERSION,
@@ -186,8 +232,28 @@ class Q_WebServer_Dashboard
 	{
 		$stats = json_encode(self::getStats());
 		$recent = json_encode(array_slice(self::$recentRequests, -50));
-		$host = $parsed['headers']['host'] ?? 'localhost:8080';
-		$wsUrl = "ws://$host/Q/ws";
+		$host = $parsed['headers']['host'] ?? 'localhost';
+
+		// Get auth token for WebSocket connection
+		$wsToken = '';
+		// Try panel session cookie first
+		$cookie = $parsed['cookies']['Q_panel_token'] ?? '';
+		if ($cookie && Q_WebServer_Panel::validateToken($cookie)) {
+			$wsToken = $cookie;
+		}
+		// Try dashboard query token
+		if (!$wsToken) {
+			$qp = array();
+			if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
+			$wsToken = $qp['token'] ?? '';
+		}
+		// Try static dashboard token from config
+		if (!$wsToken) {
+			$wsToken = Q_Config::get('Q', 'dashboard', 'token', '');
+		}
+
+		$tokenParam = $wsToken ? "?token=$wsToken" : '';
+		$wsUrl = "ws://$host/Q/ws$tokenParam";
 		return <<<HTML
 <!DOCTYPE html>
 <html lang="en"><head>
@@ -219,6 +285,7 @@ display:flex;justify-content:space-between;align-items:center}
 .spark div{flex:1;background:var(--ac);border-radius:1px 1px 0 0;min-height:1px;opacity:.7;transition:height .3s}
 .le{padding:3px 14px;font-size:12px;display:flex;gap:10px;border-bottom:1px solid rgba(255,255,255,.03);font-family:'SF Mono','Fira Code',Consolas,monospace}
 .le:hover{background:rgba(255,255,255,.03)}
+.lk{min-width:18px;text-align:center;font-size:12px}
 .lt{color:var(--dim);min-width:58px}.ls{min-width:28px;font-weight:700;text-align:right}
 .lm{min-width:42px;color:var(--cyn)}.lu{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ld{color:var(--dim);min-width:54px;text-align:right}
@@ -247,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center}
 <div class="card"><div class="l">Memory</div><div class="v" id="sm">—</div><div class="s">peak <span id="smp">—</span></div></div>
 <div class="card"><div class="l">Workers</div><div class="v" id="sw">—</div><div class="s" id="phpn">0 PHP / 0 static</div></div>
 <div class="card"><div class="l">WebSocket</div><div class="v" id="wsc" style="color:var(--pur)">0</div><div class="s"><span id="wsr">0</span> rooms</div></div>
-<div class="card"><div class="l">Data out</div><div class="v" id="bout">0</div><div class="s" id="conn">0 connections</div></div>
+<div class="card"><div class="l">Data out</div><div class="v" id="bout">0</div><div class="s"><span id="conn">0</span> connections · <span id="ka">0</span> keep-alive</div></div>
 <div class="card"><div class="l">Status codes</div><div class="v" style="font-size:12px;line-height:1.8">
 <span class="s2" id="s2">0</span> ok · <span class="s3" id="s3">0</span> redir · <span class="s4" id="s4">0</span> 4xx · <span class="s5" id="s5">0</span> 5xx</div></div>
 </div>
@@ -274,7 +341,7 @@ el('sm',s.memory+' MB');el('smp',s.memoryPeak+' MB');
 el('sw',s.workers);el('wsc',s.wsConnections);el('wsr',s.wsRooms);
 el('s2',s.status2xx);el('s3',s.status3xx);el('s4',s.status4xx);el('s5',s.status5xx);
 el('up','up '+s.uptime);el('phpv',s.php);el('os',s.os);
-el('bout',s.bytesFormatted);el('conn',s.connections+' connections');
+el('bout',s.bytesFormatted);el('conn',s.connections);el('ka',s.keepAlive||0);
 el('srps',(s.rps)+' avg req/s');
 el('phpn',s.phpRequests+' PHP / '+s.staticRequests+' static');
 el('reqc',s.requests.toLocaleString()+' total');
@@ -293,16 +360,18 @@ return'<div class="room"><span class="n">'+esc(r.name)+'</span><span>'+r.members
 else{rm.innerHTML='<div style="color:var(--dim);padding:8px;font-size:12px">No active rooms</div>'}}
 function el(id,v){var e=document.getElementById(id);if(e)e.innerHTML=v}
 function esc(s){return s.replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+var K={php:'\u{1F418}',html:'\u{1F310}',css:'\u{1F3A8}',js:'\u26A1',img:'\u{1F5BC}',font:'\u{1F524}',json:'\u{1F4CB}',xml:'\u{1F4C4}',doc:'\u{1F4D1}',media:'\u{1F3AC}',file:'\u{1F4E6}'};
 function A(e){var d=document.createElement('div');d.className='le';
 var c=e.status<300?'s2':e.status<400?'s3':e.status<500?'s4':'s5';
-d.innerHTML='<span class="lt">'+e.time+'</span><span class="ls '+c+'">'+e.status+
+var k=K[e.kind]||'\u{1F4C2}';
+d.innerHTML='<span class="lk">'+k+'</span><span class="lt">'+e.time+'</span><span class="ls '+c+'">'+e.status+
 '</span><span class="lm">'+e.method+'</span><span class="lu">'+
 esc(e.uri)+'</span><span class="ld">'+e.ms+'ms</span>';
 L.appendChild(d);if(L.children.length>200)L.removeChild(L.firstChild);L.scrollTop=L.scrollHeight}
 U(S);R.forEach(A);
 var ws;function C(){ws=new WebSocket('$wsUrl');
 ws.onopen=function(){document.getElementById('wd').className='wd on';el('wl','live')};
-ws.onmessage=function(e){var m=JSON.parse(e.data);if(m.type==='request'){A(m.entry);U(m.stats)}};
+ws.onmessage=function(e){var m=JSON.parse(e.data);if(m.type==='request'){A(m.entry);U(m.stats)}else if(m.type==='heartbeat'){U(m.stats)}};
 ws.onclose=function(){document.getElementById('wd').className='wd';el('wl','reconnecting');setTimeout(C,2000)}}
 C();
 </script></body></html>

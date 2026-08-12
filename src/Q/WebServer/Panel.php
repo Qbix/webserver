@@ -221,6 +221,37 @@ class Q_WebServer_Panel
 		return array('ok' => true);
 	}
 
+	/**
+	 * Validate a session token (for WebSocket auth, etc.)
+	 * @method validateToken
+	 * @static
+	 * @param {string} $token
+	 * @return {boolean}
+	 */
+	static function validateToken($token)
+	{
+		if (empty($token)) return false;
+		$configPath = self::panelConfigPath();
+		if (!file_exists($configPath)) return false;
+		$config = json_decode(file_get_contents($configPath), true);
+		$sessions = $config['sessions'] ?? array();
+		return isset($sessions[$token]) && $sessions[$token] > time();
+	}
+
+	/**
+	 * Check whether a panel password has been set
+	 * @method hasPassword
+	 * @static
+	 * @return {boolean}
+	 */
+	static function hasPassword()
+	{
+		$configPath = self::panelConfigPath();
+		if (!file_exists($configPath)) return false;
+		$config = json_decode(file_get_contents($configPath), true);
+		return !empty($config['passwordHash']);
+	}
+
 	static function handleApi($path, $parsed)
 	{
 		$route = substr($path, 7); // strip /Q/api/
