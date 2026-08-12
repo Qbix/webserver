@@ -62,7 +62,7 @@ Octane users wait **212 milliseconds**. Same hardware, same code, same RAM.
 | 🚀 **Throughput** (same memory) | 78 req/s (4w) | **520 req/s** (40w) |
 | 🌐 **WebSocket** | Needs a separate server | Built in |
 | 🧩 **Cache invalidation** | Whole-page only | `X-Cache-Tree` — per-component |
-| ⚙️ **Setup** | nginx + fpm pools + sockets | `php qbixserver.php --port=8080` |
+| ⚙️ **Setup** | nginx + fpm pools + sockets | `php qbixserver.php` |
 
 See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
 [reset.md](docs/reset.md) for what gets reset between requests.
@@ -72,11 +72,19 @@ See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
 **Development** — one command, everything included:
 
 ```bash
-php qbixserver.php --app=/path/to/myapp --port=8080 --workers=40
+php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
-HTTP, HTTPS (built-in Let's Encrypt), static files, PHP, WebSocket, cron — one
-process, no external dependencies.
+Listens on port 80 by default. If TLS certificates exist (or Let's Encrypt is
+configured), HTTPS on port 443 starts automatically — no extra flags needed.
+
+```bash
+php qbixserver.php --app=/path/to/myapp --workers=40
+# → http on :80, https on :443 (if certs found)
+```
+
+HTTP, HTTPS, static files, PHP, WebSocket, cron — one process, no external
+dependencies.
 
 **Production** — put a CDN in front, no nginx needed:
 
@@ -101,7 +109,7 @@ Tasks fork child processes — they don't block the event loop or PHP workers.
 **With nginx** — optional, for access-controlled file downloads:
 
 ```nginx
-upstream qbix { server 127.0.0.1:8080; }
+upstream qbix { server 127.0.0.1:9000; }
 server {
     listen 443 ssl;
     location /files/ { internal; alias /path/to/myapp/files/; }
@@ -150,7 +158,7 @@ Every model uses `handlers/`, `classes/`, and `Q::event()`.
 Try it — one command, zero config:
 
 ```bash
-php qbixserver.php --root=./web --port=8080
+php qbixserver.php --root=./web
 ```
 
 ---
@@ -202,7 +210,7 @@ php qbixserver.php --root=./web --port=8080
 One PHP file. One command. One port.
 
 ```bash
-./qbixserver.php --port=443 --root=./web
+php qbixserver.php --root=./web  # HTTPS on 443 auto-starts if certs exist
 ```
 
 Static files, PHP execution, WebSocket, rooms, Socket.IO, TLS, auto-renewing
@@ -223,17 +231,17 @@ mkdir web
 echo '<h1>Hello World</h1>' > web/index.html
 
 # Run
-php qbixserver.php --port=8080
+php qbixserver.php --port=80
 ```
 
-Open [http://localhost:8080](http://localhost:8080). That's it.
+Open [http://localhost](http://localhost). That's it.
 
 ```bash
 # Or serve an existing directory
-php qbixserver.php --root=/var/www/mysite --port=80
+php qbixserver.php --root=/var/www/mysite
 
 # Or use the PHAR (single file, ~280KB)
-php bin/qbixserver.phar --root=./public --port=8080
+php bin/qbixserver.phar --root=./public
 ```
 
 ---
@@ -403,7 +411,7 @@ pecl install swoole             # compiles C, may fail on some systems
 # Then edit php.ini, restart php...
 
 # Qbix Server
-php qbixserver.php --port=8080  # done
+php qbixserver.php  # done
 ```
 
 ### When to choose what
@@ -729,7 +737,7 @@ the process dies — all state wiped.
 ### How it works
 
 ```
-Browser: connects to ws://localhost:8080/ws
+Browser: connects to ws://localhost/ws
   → Parent forks a child process for this connection
   → Every message the client sends goes to this child
   → Child runs Q::event('chat/message', ...) for each message
@@ -753,7 +761,7 @@ function counter_increment(&$params, &$result) {
 ```javascript
 // Client — standard socket.io-client
 import { io } from 'socket.io-client';
-const socket = io('http://localhost:8080', {transports: ['websocket']});
+const socket = io('http://localhost', {transports: ['websocket']});
 
 socket.emit('counter/increment', {}, (res) => {
     console.log(res.count); // 1
@@ -855,7 +863,7 @@ If no mapping is configured, the event name is used directly as the handler path
 
 ```javascript
 import { io } from 'socket.io-client';
-const socket = io('http://localhost:8080', {transports: ['websocket']});
+const socket = io('http://localhost', {transports: ['websocket']});
 
 socket.on('connect', () => {
     socket.emit('auth/login', {token: myToken}, (res) => {
@@ -924,7 +932,7 @@ The server bundles the client JS — no npm needed:
 ```html
 <script src="/socket.io/socket.io.js"></script>
 <script>
-var socket = io('http://localhost:8080', {transports: ['websocket']});
+var socket = io('http://localhost', {transports: ['websocket']});
 socket.emit('chat/message', {text: 'hello'});
 socket.on('chat/message', function(data) { console.log(data); });
 </script>
@@ -934,7 +942,7 @@ Or use the npm package:
 
 ```javascript
 import { io } from 'socket.io-client';
-const socket = io('http://localhost:8080', {transports: ['websocket']});
+const socket = io('http://localhost', {transports: ['websocket']});
 ```
 
 Acks work both directions. Server→client RPC uses native ack callbacks:
@@ -976,7 +984,7 @@ Same API as `socket.io-client` — `on()`, `emit()`, `handle()`. Auto-reconnect
 with backoff. Or use raw `WebSocket` directly:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/ws');
+const ws = new WebSocket('ws://localhost/ws');
 ws.send(JSON.stringify({event: 'chat/message', data: {text: 'hello'}}));
 ws.send(JSON.stringify({event: 'chat/message', data: {text: 'hi'}, ack: 1}));
 ```
@@ -985,7 +993,7 @@ ws.send(JSON.stringify({event: 'chat/message', data: {text: 'hi'}, ack: 1}));
 # Any language — just JSON over WebSocket
 import websocket, json
 ws = websocket.WebSocket()
-ws.connect("ws://localhost:8080/ws")
+ws.connect("ws://localhost/ws")
 ws.send(json.dumps({"event": "chat/message", "data": {"text": "hello"}}))
 ```
 
@@ -1007,9 +1015,9 @@ Namespace    Client emit              Handler path            Room "general"
 
 ```javascript
 // Client connects to namespaces
-const main = io('http://localhost:8080');          // default /
-const chat = io('http://localhost:8080/chat');     // /chat
-const admin = io('http://localhost:8080/admin');   // /admin
+const main = io('http://localhost');          // default /
+const chat = io('http://localhost/chat');     // /chat
+const admin = io('http://localhost/admin');   // /admin
 
 chat.emit('message', {text: 'hello'});   // → handlers/chat/message.php
 admin.emit('auth', {token: '...'});      // → handlers/admin/auth.php
@@ -1057,7 +1065,7 @@ Any method name that isn't `reply`, `send`, `broadcast`, `broadcastAll`,
 **With `socket.io-client`** — server→client RPC uses native ack callbacks:
 
 ```javascript
-const socket = io('http://localhost:8080', {transports: ['websocket']});
+const socket = io('http://localhost', {transports: ['websocket']});
 
 socket.on('getLocation', (data, callback) => {
     callback({lat: 40.7, lng: -74.0});
@@ -1618,7 +1626,7 @@ function chat_room_leave(&$params, &$result) {
 
 ```javascript
 import { io } from 'socket.io-client';
-const socket = io('http://localhost:8080', {transports: ['websocket']});
+const socket = io('http://localhost', {transports: ['websocket']});
 
 socket.on('connect', () => {
     socket.emit('auth/login', {token: myToken}, (res) => {
@@ -1658,7 +1666,7 @@ Room:           chat/room/join      → ChatRoom::$users, $names, $history
 ### Run it
 
 ```bash
-php qbixserver.php --root=./web --port=8080
+php qbixserver.php --root=./web
 ```
 
 One command. Static files, REST API, authentication, access-controlled rooms,
@@ -2015,7 +2023,7 @@ requests — classes are already there via copy-on-write:
 ```
 
 ```bash
-php qbixserver.php --root=./web --port=8080 --workers=4
+php qbixserver.php --root=./web --workers=4
 #  Autoloader: autoload.php
 #  Preloaded: 3 classes
 ```
@@ -2316,7 +2324,7 @@ respect the per-host root.
 Watch `classes/`, `handlers/`, and `config/` for file changes:
 
 ```bash
-php qbixserver.php --root=./web --port=8080 --hotreload
+php qbixserver.php --root=./web --hotreload
 ```
 
 Or via config:
@@ -2606,17 +2614,17 @@ php-cgi --version
 ### 1. From source (needs PHP 8.1+)
 
 ```bash
-php qbixserver.php --root=./web --port=8080
+php qbixserver.php --root=./web
 ```
 
 ### 2. PHAR — single ~280KB file (needs PHP)
 
 ```bash
-php bin/qbixserver.phar --root=./web --port=8080
+php bin/qbixserver.phar --root=./web --port=80
 
 # Or make it executable
 chmod +x bin/qbixserver.phar
-./bin/qbixserver.phar --port=8080
+./bin/qbixserver.phar --port=80
 ```
 
 ### 3. Static binary — no PHP needed
@@ -2624,7 +2632,7 @@ chmod +x bin/qbixserver.phar
 ```bash
 # Download from GitHub Releases
 chmod +x qbixserver-linux-x86_64
-./qbixserver-linux-x86_64 --root=./web --port=8080
+./qbixserver-linux-x86_64 --root=./web --port=80
 ```
 
 The binary bundles PHP 8.3 + extensions into a single ~15MB executable.  
@@ -2669,7 +2677,7 @@ framework for building social apps with real-time streams, user management, and 
 When you have a Qbix app, the server uses the full framework:
 
 ```bash
-php qbixserver.php --app=/path/to/myapp --port=8080
+php qbixserver.php --app=/path/to/myapp --port=80
 ```
 
 In this mode:
@@ -2732,7 +2740,7 @@ WebSocket, and access-controlled file serving.
 
 ## 📊 Live Dashboard
 
-Open `http://localhost:8080/Q/dashboard` in your browser for a real-time server
+Open `http://localhost/Q/dashboard` in your browser for a real-time server
 dashboard. Updates live via WebSocket — no polling, no page refreshes.
 
 **What it shows:**
@@ -3205,7 +3213,7 @@ Persistent workers with automatic state reset. Combines fpm's throughput with
 fork-per-request's memory efficiency.
 
 ```bash
-php qbixserver.php --app=/path/to/myapp --port=8080 --workers=40
+php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
 The parent preloads your framework (classes, config, routes, autoloader), then

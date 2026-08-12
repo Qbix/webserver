@@ -155,11 +155,25 @@ class Q_WebServer
 			self::$socket, array(__CLASS__, 'onAccept')
 		);
 
-		// ── HTTPS listener (if certs configured) ─────────
+		// ── HTTPS listener ─────────────────────────────────
+		// Starts automatically if:
+		//   1. Q.web.https is configured (explicit), OR
+		//   2. Cert files exist at the default location (auto-detect)
 		$httpsConfig = Q_Config::get('Q', 'web', 'https', array());
-		$httpsPort = (int) Q::ifset($httpsConfig, 'port', 0);
-		if ($httpsPort || Q::ifset($httpsConfig, 'mode', '')) {
-			if (!$httpsPort) $httpsPort = 443;
+		$httpsPort = (int) Q::ifset($httpsConfig, 'port', 443);
+		$explicitHttps = !empty($httpsConfig);
+
+		// Auto-detect: check for certs even without config
+		if (!$explicitHttps) {
+			$certsDir = Q_WebServer_Certs::certsDir();
+			$defaultCert = $certsDir . DS . 'fullchain.pem';
+			$defaultKey = $certsDir . DS . 'privkey.pem';
+			if (is_file($defaultCert) && is_file($defaultKey)) {
+				$explicitHttps = true; // certs found, enable HTTPS
+			}
+		}
+
+		if ($explicitHttps) {
 			self::$httpsPort = $httpsPort;
 
 			$domain = Q::ifset($httpsConfig, 'domain', '');
@@ -168,8 +182,8 @@ class Q_WebServer
 			if ($certsReady) {
 				self::startTls($host, $httpsPort);
 			} else {
-				echo "[HTTPS] No valid certs yet, HTTPS disabled. "
-					. "HTTP still running on port $port.\n";
+				fwrite(STDERR, "[HTTPS] No valid certs found, HTTPS disabled. "
+					. "HTTP still running on port $port.\n");
 			}
 		}
 

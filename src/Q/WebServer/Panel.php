@@ -1101,13 +1101,15 @@ class Q_WebServer_Panel
 		return <<<'HTML'
 <!DOCTYPE html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
 <title>Qbix Control Panel</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0a0b14;--sfc:rgba(22,24,40,.7);--sfc-solid:#161828;--bdr:rgba(255,255,255,.06);
 --txt:#e1e4ed;--dim:#6b7089;--ac:#7c5cfc;--ac2:#a78bfa;--grn:#4ade80;--yel:#fbbf24;
 --red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08)}
+@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);
+--txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05)}}
 body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
   background:var(--bg);color:var(--txt);font-size:14px;min-height:100vh;
   background-image:

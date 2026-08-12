@@ -191,12 +191,13 @@ class Q_WebServer_Dashboard
 		return <<<HTML
 <!DOCTYPE html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
 <title>Qbix Server Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0f1117;--sfc:#1a1d27;--sfc2:#222533;--bdr:#2a2d3a;--txt:#e1e4ed;--dim:#6b7089;
 --ac:#7c8aff;--grn:#4ade80;--yel:#fbbf24;--red:#f87171;--cyn:#22d3ee;--pur:#a78bfa}
+@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:#fff;--sfc2:#f0f1f3;--bdr:rgba(0,0,0,.1);--txt:#1a1a2e;--dim:#6b7089}}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:var(--bg);color:var(--txt);padding:24px;font-size:13px;max-width:1200px;margin:0 auto}
 h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--ac);display:flex;align-items:center;gap:10px}

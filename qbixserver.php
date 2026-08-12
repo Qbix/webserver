@@ -3,14 +3,14 @@
 /**
  * Qbix Server — pure PHP web server.
  *
- * Standalone: php qbixserver.php --root=./web --port=8080
- * With Qbix:  php qbixserver.php --app=/path/to/myapp --port=8080
+ * Standalone: php qbixserver.php --root=./web --port=80
+ * With Qbix:  php qbixserver.php --app=/path/to/myapp --port=80
  *
  * Options:
  *   --root=DIR       Document root (default: ./web)
  *   --app=DIR        Qbix app directory (loads full Q framework)
  *   --host=IP        Bind address (default: 0.0.0.0)
- *   --port=PORT      Listen port (default: 8080)
+ *   --port=PORT      Listen port (default: 80)
  *   --workers=N      Pre-fork PHP workers (default: 0 = in-process)
  *   --config=FILE    JSON config file to load
  *   --pid=PATH       Write PID file
@@ -27,7 +27,7 @@ $opts = array(
 	'root'    => null,
 	'app'     => null,
 	'host'    => '0.0.0.0',
-	'port'    => 8080,
+	'port'    => 80,
 	'workers' => 0,
 	'config'  => null,
 	'pid'     => null,
@@ -43,7 +43,7 @@ foreach ($argv as $i => $arg) {
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
 		echo "  --host=IP        Bind address (default: 0.0.0.0)\n";
-		echo "  --port=PORT      Listen port (default: 8080)\n";
+		echo "  --port=PORT      Listen port (default: 80)\n";
 		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
 		echo "  --config=FILE    JSON config file\n";
 		echo "  --pid=PATH       PID file path\n";
