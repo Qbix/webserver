@@ -732,8 +732,19 @@ class Q_WebSocket
 						'data'  => $msg['data'] ?? array(),
 					));
 					// Lifecycle events: _join → handler/join
-					// User events: message → handler/message
-					$eventPath = $handler . '/' . ltrim($event, '_');
+					// User events: chat/message → handler/message (strip shared prefix)
+					$shortEvent = ltrim($event, '_');
+					// If event shares a prefix with the handler path, strip it
+					// e.g. handler="chat/room", event="chat/message" → "message"
+					$hParts = explode('/', $handler);
+					$eParts = explode('/', $shortEvent);
+					while (count($hParts) > 0 && count($eParts) > 1
+						&& $hParts[0] === $eParts[0]) {
+						array_shift($hParts);
+						array_shift($eParts);
+					}
+					$shortEvent = implode('/', $eParts);
+					$eventPath = $handler . '/' . $shortEvent;
 					Q::event($eventPath, $p, false, false, $result);
 
 					if (Q_Socket::$_ack !== null && $result !== null) {

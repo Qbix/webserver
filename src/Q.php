@@ -263,7 +263,12 @@ class Q
 
 		// Main handler
 		if (!$pure) {
-			$result = self::handle($eventName, $params, $skipIncludes, $result);
+			$ret = self::handle($eventName, $params, $skipIncludes, $result);
+			// If the handler returned a value explicitly, use it.
+			// If not (null), keep whatever was set via &$result reference.
+			if ($ret !== null) {
+				$result = $ret;
+			}
 		}
 
 		// After hooks

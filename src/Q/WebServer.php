@@ -688,6 +688,11 @@ class Q_WebServer
 		$start = microtime(true);
 		$parsed = self::parseRequest($buf);
 
+		// Parse cookies into $parsed for auth checks in parent process
+		$parsed['cookies'] = self::parseCookieHeader(
+			$parsed['headers']['cookie'] ?? ''
+		);
+
 		// Reject malformed request lines
 		if (!empty($parsed['_malformed'])) {
 			self::sendResponse($client, 400, 'Bad Request');
@@ -889,6 +894,7 @@ class Q_WebServer
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
 				return array('status' => 404, 'body' => 'Not found');
 			}
+			// Static dashboard token (from config)
 			$token = Q_Config::get('Q', 'dashboard', 'token', null);
 			if ($token !== null) {
 				$qp = array();
@@ -897,6 +903,21 @@ class Q_WebServer
 				if ($given !== $token) {
 					return array('status' => 403, 'body' => 'Forbidden — token required',
 						'headers' => array('Content-Type' => 'text/plain'));
+				}
+			}
+			// Panel password — require a valid session cookie
+			if (Q_WebServer_Panel::hasPassword()) {
+				$cookie = $parsed['cookies']['Q_panel_token'] ?? '';
+				$qp = array();
+				if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
+				$qToken = $qp['token'] ?? '';
+				if (!Q_WebServer_Panel::validateToken($cookie)
+					&& !Q_WebServer_Panel::validateToken($qToken)
+					&& ($token === null || $qToken !== $token)
+				) {
+					// Redirect to panel (which has the login form)
+					return array('status' => 302, 'body' => '',
+						'headers' => array('Location' => '/Q/panel'));
 				}
 			}
 			return array('status'=>200, 'body'=>Q_WebServer_Dashboard::renderHtml($parsed),
@@ -1121,6 +1142,7 @@ class Q_WebServer
 		$assetMap['/Q/logo.png'] = array(__DIR__ . DS . 'logo.png', 'image/png');
 		$assetMap['/Q/prism.js'] = array(__DIR__ . DS . 'prism.js', 'application/javascript');
 		$assetMap['/Q/prism.css'] = array(__DIR__ . DS . 'prism.css', 'text/css');
+		$assetMap['/favicon.ico'] = array(__DIR__ . DS . 'logo.png', 'image/png');
 		if (isset($assetMap[$path])) {
 			list($assetFile, $assetType) = $assetMap[$path];
 			if (file_exists($assetFile)) {
@@ -1194,14 +1216,19 @@ class Q_WebServer
 				$qp = array();
 				if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
 				$wsToken = $qp['token'] ?? '';
+				$cookieToken = $parsed['cookies']['Q_panel_token'] ?? '';
 				$authed = false;
-				// Check against panel session tokens
+				// Check query token against panel sessions
 				if ($wsToken && Q_WebServer_Panel::validateToken($wsToken)) {
+					$authed = true;
+				}
+				// Check cookie against panel sessions
+				if (!$authed && $cookieToken && Q_WebServer_Panel::validateToken($cookieToken)) {
 					$authed = true;
 				}
 				// Check against static dashboard token
 				$dashToken = Q_Config::get('Q', 'dashboard', 'token', null);
-				if ($dashToken !== null && $wsToken === $dashToken) {
+				if ($dashToken !== null && ($wsToken === $dashToken || $cookieToken === $dashToken)) {
 					$authed = true;
 				}
 				// If no password is set yet (first run), allow unauthenticated
@@ -3434,9 +3461,11 @@ HTML;
 		@fwrite($client, $out . "\r\n" . $body);
 	}
 
-	private static function sendRedirect($client, $loc) {
-		@fwrite($client, "HTTP/1.1 301 Moved Permanently\r\nLocation: $loc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-		self::$lastStatus = 301;
+	static function sendRedirect($client, $loc, $permanent = false) {
+		$code = $permanent ? 301 : 302;
+		$text = $permanent ? 'Moved Permanently' : 'Found';
+		@fwrite($client, "HTTP/1.1 $code $text\r\nLocation: $loc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+		self::$lastStatus = $code;
 	}
 
 	private static function sendNotModified($client, $etag, $mtime, $keepAlive = false) {

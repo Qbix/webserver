@@ -202,6 +202,19 @@ class Q_WebServer_Dashboard
 	{
 		$p = $parsed['path'];
 		if ($p === '/Q/dashboard' || $p === '/Q/dashboard/') {
+			// If panel password is set, require auth (cookie or query token)
+			if (Q_WebServer_Panel::hasPassword()) {
+				$cookie = $parsed['cookies']['Q_panel_token'] ?? '';
+				$qp = array();
+				if (!empty($parsed['query'])) parse_str($parsed['query'], $qp);
+				$qToken = $qp['token'] ?? '';
+				if (!Q_WebServer_Panel::validateToken($cookie)
+					&& !Q_WebServer_Panel::validateToken($qToken)
+				) {
+					Q_WebServer::sendRedirect($client, '/Q/panel');
+					return true;
+				}
+			}
 			Q_WebServer::sendResponse($client, 200, self::renderHtml($parsed), 'text/html; charset=utf-8');
 			return true;
 		}
