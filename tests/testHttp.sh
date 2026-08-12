@@ -425,6 +425,31 @@ else
 fi
 
 # ══════════════════════════════════════════════════════
+# Q_Response::header() integration
+# ══════════════════════════════════════════════════════
+
+H=$(timeout 3 curl -sI "http://$HOST:$PORT/app-headers.php" 2>/dev/null)
+echo "$H" | grep -q "201" \
+    && ok "Q_Response::code(201) → HTTP 201" \
+    || fail "Q_Response::code" "$H"
+
+echo "$H" | grep -qi "X-App-Mode: platform-compat" \
+    && ok "Q_Response::header() custom header in response" \
+    || fail "Q_Response custom header" "$H"
+
+echo "$H" | grep -qi "X-Custom-Token: test123" \
+    && ok "Q_Response::header() second custom header" \
+    || fail "Q_Response second header" "$H"
+
+echo "$H" | grep -qi "Content-Type: application/json" \
+    && ok "Q_Response::header() Content-Type" \
+    || fail "Q_Response Content-Type" "$H"
+
+echo "$H" | grep -qi "Set-Cookie.*test_cookie=hello" \
+    && ok "Q_Response::setCookie() in response" \
+    || fail "Q_Response setCookie" "$H"
+
+# ══════════════════════════════════════════════════════
 # RESULTS
 # ══════════════════════════════════════════════════════
 

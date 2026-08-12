@@ -10,7 +10,8 @@
  *   --root=DIR       Document root (default: ./web)
  *   --app=DIR        Qbix app directory (loads full Q framework)
  *   --host=IP        Bind address (default: 0.0.0.0)
- *   --port=PORT      Listen port (default: 80)
+ *   --port=PORT      HTTP port (default: 80)
+ *   --https-port=PORT HTTPS port (default: 443, only if certs available)
  *   --workers=N      Pre-fork PHP workers (default: 0 = in-process)
  *   --config=FILE    JSON config file to load
  *   --pid=PATH       Write PID file
@@ -27,7 +28,8 @@ $opts = array(
 	'root'    => null,
 	'app'     => null,
 	'host'    => '0.0.0.0',
-	'port'    => 80,
+	'port'    => null,  // null = read from config, then default 80
+	'https-port' => null, // null = read from config, then default 443
 	'workers' => 0,
 	'config'  => null,
 	'pid'     => null,
@@ -43,7 +45,8 @@ foreach ($argv as $i => $arg) {
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
 		echo "  --host=IP        Bind address (default: 0.0.0.0)\n";
-		echo "  --port=PORT      Listen port (default: 80)\n";
+		echo "  --port=PORT      HTTP port (default: 80)\n";
+		echo "  --https-port=PORT HTTPS port (default: 443, if certs available)\n";
 		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
 		echo "  --config=FILE    JSON config file\n";
 		echo "  --pid=PATH       PID file path\n";
@@ -80,7 +83,7 @@ foreach ($argv as $i => $arg) {
 		$opts['hotreload'] = true;
 		continue;
 	}
-	if (preg_match('/^--(\w+)=(.+)$/', $arg, $m)) {
+	if (preg_match('/^--([\w-]+)=(.+)$/', $arg, $m)) {
 		$opts[$m[1]] = $m[2];
 	}
 }
@@ -242,6 +245,7 @@ if (file_exists($envFile)) {
 $defaultConfig = array(
 	'Q' => array(
 		'webserver' => array(
+			'port'      => 80,
 			'keepAlive' => array('max' => 100, 'timeout' => 15),
 			'timeout'   => array('read' => 30),
 			'maxConnections' => 1024,
@@ -312,6 +316,28 @@ if (!empty($opts['hotreload'])) {
 	Q_Config::set('Q', 'webserver', 'hotReload', true);
 }
 
+// ── Resolve ports: CLI overrides config, config overrides defaults ──
+// HTTP port: --port > Q.webserver.port > 80
+if ($opts['port'] !== null) {
+	$httpPort = (int) $opts['port'];
+} else {
+	$httpPort = (int) Q_Config::get('Q', 'webserver', 'port', 80);
+}
+$opts['port'] = $httpPort;
+
+// HTTPS port: --https-port > Q.web.https.port > 443
+if ($opts['https-port'] !== null) {
+	$httpsPort = (int) $opts['https-port'];
+	// CLI explicitly set — store into config so start() sees it
+	Q_Config::set('Q', 'web', 'https', 'port', $httpsPort);
+} else {
+	$httpsPort = (int) Q_Config::get('Q', 'web', 'https', 'port', 443);
+}
+$opts['https-port'] = $httpsPort;
+
+// Store HTTP port in config too (for anything that reads it)
+Q_Config::set('Q', 'webserver', 'port', $httpPort);
+
 // ── Signal commands (--stop, --reload) ──────────────
 
 if (!empty($opts['signal'])) {
@@ -344,7 +370,8 @@ if (!empty($opts['test'])) {
 	echo "Config: OK\n";
 	echo "  Root:       $webDir\n";
 	echo "  Host:       {$opts['host']}\n";
-	echo "  Port:       {$opts['port']}\n";
+	echo "  HTTP:       port {$opts['port']}\n";
+	echo "  HTTPS:      port {$opts['https-port']}\n";
 	$app = Q::app();
 	if ($app) echo "  App:        $app\n";
 	$ioPath = Q_Config::get('Q', 'socket', 'io', '/socket.io');
@@ -465,11 +492,29 @@ Q_WebServer::$onRequest = function ($method, $uri, $status, $ms) use ($colors, $
 
 $W = 38; // inner width of the box
 
+// Detect if HTTPS will be available (certs must actually exist)
+$httpsAvailable = false;
+$httpsConfig = Q_Config::get('Q', 'web', 'https', array());
+$certsDir = (defined('APP_DIR') ? APP_DIR : dirname($webDir))
+	. DIRECTORY_SEPARATOR . 'local' . DIRECTORY_SEPARATOR . 'certs';
+
+// Check explicit cert paths from config first
+$certFile = Q::ifset($httpsConfig, 'cert', $certsDir . DIRECTORY_SEPARATOR . 'fullchain.pem');
+$keyFile = Q::ifset($httpsConfig, 'key', $certsDir . DIRECTORY_SEPARATOR . 'privkey.pem');
+if (is_file($certFile) && is_file($keyFile)) {
+	$httpsAvailable = true;
+}
+
 fwrite(STDERR, "\n");
 fwrite(STDERR, "  ┌" . str_repeat('─', $W) . "┐\n");
 fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n");
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
-fwrite(STDERR, "  │" . str_pad("  http://{$opts['host']}:{$opts['port']}", $W) . "│\n");
+$httpLine = "  http://{$opts['host']}:{$opts['port']}";
+fwrite(STDERR, "  │" . str_pad($httpLine, $W) . "│\n");
+if ($httpsAvailable) {
+	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
+	fwrite(STDERR, "  │" . str_pad($httpsLine, $W) . "│\n");
+}
 fwrite(STDERR, "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n");

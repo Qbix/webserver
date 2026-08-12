@@ -178,10 +178,30 @@ class Q_WebServer_Pool
 				Q_WebServer_Snapshot::restoreStatics();
 			}
 
+			// Global variables: remove anything the script added.
+			// Keep superglobals and the server's own bookkeeping.
+			$keepGlobals = array('_GET','_POST','_COOKIE','_SERVER','_REQUEST',
+				'_FILES','_ENV','_SESSION','GLOBALS','argv','argc',
+				'_Q_RAW_INPUT');
+			foreach (array_keys($GLOBALS) as $gk) {
+				if (!in_array($gk, $keepGlobals, true)) {
+					unset($GLOBALS[$gk]);
+				}
+			}
+
 			// Superglobals: overwritten by executeScript() on next iteration.
 			// Output buffers: non-removable buffer in executeScript, read via ob_get_contents.
 			// Error state: clear it.
 			error_clear_last();
+
+			// Response headers: clear Q_WebServer_State's accumulated headers
+			// and any native header() calls from the previous request.
+			if (class_exists('Q_WebServer_State', false)) {
+				Q_WebServer_State::clear();
+			}
+			if (function_exists('header_remove')) {
+				@header_remove();
+			}
 
 			// DB connections: flush transaction state. A persistent worker that
 			// serves request A (which starts a transaction) and then request B
@@ -214,6 +234,30 @@ class Q_WebServer_Pool
 	 */
 	protected static function executeScript($req)
 	{
+		// ── Reset ALL superglobals to prevent cross-request leaks ──
+		// $_SERVER: strip all HTTP_* headers and app-injected keys from
+		// the previous request, then repopulate from this request only.
+		foreach (array_keys($_SERVER) as $k) {
+			if (strncmp($k, 'HTTP_', 5) === 0) unset($_SERVER[$k]);
+		}
+		unset($_SERVER['CONTENT_TYPE'], $_SERVER['CONTENT_LENGTH']);
+		// Remove any keys the previous script injected
+		$_serverKeep = array('PATH','HOME','LANG','USER','SHELL','TERM',
+			'SHLVL','_','SERVER_SOFTWARE','GATEWAY_INTERFACE',
+			'REQUEST_SCHEME','HTTPS','PHP_SELF','argv','argc');
+		foreach (array_keys($_SERVER) as $k) {
+			if (!in_array($k, $_serverKeep, true)
+				&& strncmp($k, 'REQUEST_', 8) !== 0
+				&& strncmp($k, 'SERVER_', 7) !== 0
+				&& strncmp($k, 'SCRIPT_', 7) !== 0
+				&& strncmp($k, 'DOCUMENT_', 9) !== 0
+				&& strncmp($k, 'REMOTE_', 7) !== 0
+				&& strncmp($k, 'QUERY_', 6) !== 0
+			) {
+				unset($_SERVER[$k]);
+			}
+		}
+
 		$_SERVER['REQUEST_METHOD'] = $req['method'];
 		$_SERVER['REQUEST_URI'] = $req['uri'];
 		$_SERVER['QUERY_STRING'] = $req['query'] ?? '';
@@ -245,8 +289,23 @@ class Q_WebServer_Pool
 			);
 		}
 
-		$_GET = $_POST = $_REQUEST = array();
+		// ── Clear and rebuild all input superglobals ──
+		$_GET = $_POST = $_REQUEST = $_FILES = array();
+		$_COOKIE = array();
 		if (!empty($req['query'])) parse_str($req['query'], $_GET);
+
+		// Parse cookies from the Cookie header
+		$cookieHeader = $req['headers']['cookie'] ?? '';
+		if ($cookieHeader !== '') {
+			foreach (explode(';', $cookieHeader) as $c) {
+				$c = trim($c);
+				if ($c === '') continue;
+				$eq = strpos($c, '=');
+				if ($eq !== false) {
+					$_COOKIE[urldecode(substr($c, 0, $eq))] = urldecode(substr($c, $eq + 1));
+				}
+			}
+		}
 
 		$ct = strtolower($req['headers']['content-type'] ?? '');
 		$raw = $req['body'] ?? '';

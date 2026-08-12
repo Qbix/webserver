@@ -81,6 +81,12 @@ configured), HTTPS on port 443 starts automatically — no extra flags needed.
 ```bash
 php qbixserver.php --app=/path/to/myapp --workers=40
 # → http on :80, https on :443 (if certs found)
+
+# Override ports via CLI
+php qbixserver.php --port=8080 --https-port=8443
+
+# Or via config/server.json (CLI overrides config)
+# { "Q": { "webserver": { "port": 8080 }, "web": { "https": { "port": 8443 } } } }
 ```
 
 HTTP, HTTPS, static files, PHP, WebSocket, cron — one process, no external
@@ -463,13 +469,13 @@ php qbixserver.php  # done
 
 Qbix Server understands special response headers from your PHP scripts. These are
 the same headers nginx understands (like `X-Accel-Redirect`) plus new ones for
-component-level caching. Your PHP sends them with `Q_WebServer_State::header()`, the server acts on them.
+component-level caching. Your PHP sends them with `Q_Response::header()`, the server acts on them.
 
-> **Use `Q_WebServer_State::header()`, not PHP's `header()`.** The server runs
-> PHP in the CLI SAPI, where the built-in `header()` and `http_response_code()`
-> are silently discarded. `Q::header()` and `Q_Response::header()` work
-> standalone but are **fatal in `--app` mode**. See
-> [Setting headers, status codes and cookies](#setting-headers-status-codes-and-cookies)
+> **Use `Q_Response::header()`, not PHP's `header()`.** The server runs PHP in
+> the CLI SAPI, where the built-in `header()` and `http_response_code()` are
+> silently discarded. `Q_Response::header()`, `Q::header()`, and
+> `Q_WebServer_State::header()` all work in both standalone and `--app` mode.
+> See [Setting headers, status codes and cookies](#setting-headers-status-codes-and-cookies)
 > for the full table.
 
 ### Quick reference
@@ -2205,6 +2211,12 @@ This is safer than php-fpm, which reuses workers across requests and relies on
 gets a clean process. The fork cost (~0.5ms) is negligible compared to the
 bootstrap savings (~10–50ms).
 
+For higher throughput, switch to [Octane Mode](#-octane-mode---workersn) with
+`--workers=N`. Octane reuses workers across requests but resets all statics,
+globals, superglobals, and response headers between requests via a snapshot
+restore (~0.05ms). See that section for what resets, what doesn't, and how to
+write scripts that work in both modes.
+
 ### How PHP requests are handled
 
 On Linux and macOS (where `pcntl_fork` is available), **every PHP request
@@ -3271,16 +3283,99 @@ the full 100–300× concurrent capacity (measured) advantage, use Linux or macO
 ## ⚡ Octane Mode (`--workers=N`)
 
 Persistent workers with automatic state reset. Combines fpm's throughput with
-fork-per-request's memory efficiency.
+fork-per-request's memory isolation.
 
 ```bash
 php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
-The parent preloads your framework (classes, config, routes, autoloader), then
-forks N workers. Each worker handles requests in a loop, with a snapshot
-restore between requests that resets all static properties to their preloaded
-values — 0.05ms, vs 8ms for a fork.
+The parent preloads your framework (classes, config, routes, autoloader), takes
+a snapshot of every static property on every user-defined class, then forks N
+workers. Each worker handles requests in a loop. Between requests, the snapshot
+is restored — all statics, globals, superglobals, and response state are reset
+to their preloaded values. Cost: ~0.05ms, vs ~8ms for a full fork.
+
+### What gets reset between requests
+
+| Category | Reset method | Cost |
+|---|---|---|
+| Class static properties | `ReflectionProperty::setValue()` from snapshot | 0.05ms |
+| `$GLOBALS` (user-defined) | Removed entirely | < 0.01ms |
+| `$_GET`, `$_POST`, `$_REQUEST` | Cleared, repopulated from new request | 0ms |
+| `$_COOKIE` | Cleared, repopulated from `Cookie:` header | 0ms |
+| `$_SERVER` | All `HTTP_*` keys stripped, core keys repopulated | 0ms |
+| `$_FILES` | Cleared | 0ms |
+| `php://input` | Rewired to new request body | 0ms |
+| Response headers (`Q_WebServer_State`) | Cleared via `State::clear()` | 0ms |
+| `error_get_last()` | Cleared via `error_clear_last()` | 0ms |
+| DB transactions | `ROLLBACK` on all connections (safe no-op if none active) | 0ms |
+| Output buffers | Non-removable buffer drained by `executeScript()` | 0ms |
+
+After reset, the next request sees exactly the same state as the first
+request this worker ever handled — the same static values, the same empty
+globals, the same clean superglobals. Secrets from request A (cookies,
+Authorization headers, POST passwords, session tokens) are guaranteed
+invisible to request B.
+
+### What does NOT reset
+
+These are inherent PHP limitations, not something the snapshot can work around:
+
+| Category | Why | Mitigation |
+|---|---|---|
+| **Class declarations** | PHP has no `unclass()` — once a class is loaded, it stays in the class table for the lifetime of the process | Guard inline classes with `class_exists()` (see below) |
+| **`require`/`include` state** | A file included once stays in `get_included_files()` | Use `require_once` — it's already idempotent |
+| **C extension internals** | Redis connections, libcurl handles, ext-level caches | Close/reset in destructors or shutdown functions |
+| **Closures capturing references** | A closure that captured `&$static` holds a live reference that bypasses the snapshot | Rare in practice; avoid capturing statics by reference |
+| **File descriptors** | An opened file handle persists in the process | Close file handles when done — same as fpm |
+
+For anything the snapshot can't reach, `maxRequests` (default 1000) recycles
+the worker after N requests — the process exits and a clean one is forked.
+This is the same safety net fpm uses via `pm.max_requests`.
+
+### ⚠️ The class declaration gotcha
+
+This is the most common octane pitfall. In fork-per-request mode, every
+request gets a fresh process, so inline class declarations always work:
+
+```php
+// WORKS in fork mode (process dies after each request)
+// FATAL in octane mode on the SECOND request to this script:
+//   "Cannot declare class Counter, because the name is already in use"
+class Counter {
+    public static $n = 0;
+}
+Counter::$n++;
+echo Counter::$n;
+```
+
+The fix is a one-line guard:
+
+```php
+// WORKS in both modes
+if (!class_exists('Counter', false)) {
+    class Counter {
+        public static $n = 0;
+    }
+}
+Counter::$n++;  // always 1 — the snapshot resets $n to 0 between requests
+echo Counter::$n;
+```
+
+The `false` parameter prevents autoloading — it checks only whether the
+class is already declared in this process. On the first request, the class
+is declared. On the second request in the same worker, `class_exists` returns
+true and the declaration is skipped. The snapshot still resets `$n` to its
+default value (`0`) between requests, so the counter always reads 1.
+
+**Classes in `classes/` are fine.** The autoloader loads each class file
+via `require_once`, which is already idempotent. This gotcha only affects
+classes declared inline inside scripts (e.g. in `web/` PHP files or
+handler files).
+
+**The Qbix Platform is octane-safe.** All Platform classes live in `classes/`
+and are autoloaded with `require_once`. Inline classes in handlers are rare
+and already guarded.
 
 ### What it means in practice
 
@@ -3293,25 +3388,45 @@ On a 200MB memory budget with 50ms I/O workloads:
 
 Octane uses **3× less RAM** for **6.7× more throughput** at **9× lower latency.**
 
-See [BENCHMARKS.md](docs/BENCHMARKS.md) for full results and
-[reset.md](docs/reset.md) for what gets reset vs what persists.
-
 ### Auto-introspection
 
-Scripts that define inline classes are handled automatically. The snapshot
-system detects newly declared classes via `get_declared_classes()` and resets
-their static properties using `ReflectionProperty::getDefaultValue()` — no
-manual registration, no interface to implement. This is what makes it strictly
+Scripts that define inline classes (with the `class_exists` guard) are handled
+automatically. The snapshot system detects newly declared classes via
+`get_declared_classes()` after each request and adds their static properties
+to the snapshot using `ReflectionProperty::getDefaultValue()`. No manual
+registration, no interface to implement. This is what makes it strictly
 better than Laravel Octane's `ResetScope`, which depends on package authors
 opting in.
 
-Scripts that define classes inline should guard with `class_exists()`:
+### Writing octane-safe scripts
+
+A few rules of thumb:
 
 ```php
-if (!class_exists('MyHelper', false)) {
-    class MyHelper { public static $cache = []; }
+// ✅ DO: guard inline class declarations
+if (!class_exists('MyCache', false)) {
+    class MyCache { public static $data = []; }
 }
-// $cache is automatically reset between requests in octane mode
+
+// ✅ DO: use statics for per-request state — they reset automatically
+MyCache::$data['key'] = compute();
+
+// ✅ DO: close resources when done
+$fh = fopen('/tmp/report.csv', 'w');
+fwrite($fh, $csv);
+fclose($fh);  // don't leave it open
+
+// ❌ DON'T: declare classes without the guard
+class Foo {}  // fatal on second request
+
+// ❌ DON'T: store secrets in $GLOBALS expecting them to persist
+$GLOBALS['api_key'] = getenv('API_KEY');  // cleared between requests
+
+// ❌ DON'T: rely on static accumulators across requests
+// MyCounter::$total++ will always be 1, not 1, 2, 3...
+
+// ✅ DO: use external storage for cross-request state
+// Redis, memcached, database, files — same as fpm
 ```
 
 ### Choosing the right mode
@@ -3324,6 +3439,24 @@ if (!class_exists('MyHelper', false)) {
 Both modes preload your framework before handling requests. The difference is
 whether the preloaded state is inherited via fork (8ms) or reused in a loop
 with snapshot restore (0.05ms).
+
+### Configuration
+
+```json
+{
+  "Q": {
+    "webserver": {
+      "workers": 40,
+      "octane": true,
+      "maxRequests": 1000
+    }
+  }
+}
+```
+
+- `workers` — number of persistent workers (0 = fork per request)
+- `octane` — enable snapshot restore in the worker loop (default: true when workers > 0)
+- `maxRequests` — recycle workers after this many requests (default: 1000, 0 = unlimited)
 
 ## 🗺️ Roadmap
 
@@ -3480,16 +3613,20 @@ workaround.
 
 ## Setting headers, status codes and cookies
 
-**Use `Q_WebServer_State`.** It is the only response API that works in both
-standalone and `--app` mode:
+**Use `Q_Response`.** It works in both standalone and `--app` mode and has the
+same signature as PHP's built-in `header()`:
 
 ```php
-Q_WebServer_State::header('Content-Type: application/json');
-Q_WebServer_State::header('X-Custom: hello');
-Q_WebServer_State::header('HTTP/1.1 201 Created');   // status line form
-Q_WebServer_State::responseCode(201);                 // or set it directly
-Q_WebServer_State::setHeader('X-Other', 'value');     // name/value form
+Q_Response::header('Content-Type: application/json');
+Q_Response::header('X-Custom: hello');
+Q_Response::header('HTTP/1.1 201 Created');   // status line form
+Q_Response::code(201);                         // or set it directly
+Q_Response::setCookie('session', $token, 0, '/');
+Q_Response::redirect('/dashboard');
 ```
+
+`Q_WebServer_State::header()` also works — `Q_Response::header()` delegates to
+it — but `Q_Response` is the higher-level API that scripts should prefer.
 
 ### Why not `header()`?
 
@@ -3503,23 +3640,13 @@ with none of its headers, and no error to explain why.
 
 | API | standalone | `--app` | notes |
 |---|---|---|---|
-| `Q_WebServer_State::header()` | ✅ | ✅ | **use this** — webserver-owned, present in both modes |
-| `Q_WebServer_State::responseCode()` | ✅ | ✅ | **use this** |
-| `Q_WebServer_State::setHeader()` | ✅ | ✅ | **use this** |
-| `header()` (built-in) | ❌ | ❌ | discarded by the CLI SAPI |
-| `http_response_code()` | ❌ | ❌ | discarded by the CLI SAPI |
-| `Q::header()` | ✅ | ❌ **fatal** | only on the standalone shim |
-| `Q_Response::header()` | ✅ | ❌ **fatal** | only on the standalone shim |
-| `Q_Response::code()` | ✅ | ⚠️ | exists on both, but the Platform's version ends in `header()` — so the status is lost |
-
-The two ❌ **fatal** rows are the trap. `Q::header()` and `Q_Response::header()`
-exist on the standalone shim in `src/Q.php`, but that file is *not loaded* in
-`--app` mode — the Platform's `Q` and `Q_Response` win, and neither declares
-those methods. Code using them passes every standalone test and then dies with
-`Call to undefined method` against a real app.
-
-`tests/platform-compat.php` exists to catch exactly this, and scans the test
-fixtures as well as `src/`.
+| `Q_Response::header()` | ✅ | ✅ | **recommended** — delegates to `Q_WebServer_State`, same signature as PHP's `header()` |
+| `Q_Response::code()` | ✅ | ✅ | get or set the HTTP status code |
+| `Q_Response::setCookie()` | ✅ | ✅ | cookies are assembled into `Set-Cookie` headers by the server |
+| `Q_WebServer_State::header()` | ✅ | ✅ | low-level — `Q_Response::header()` delegates here |
+| `Q::header()` | ✅ | ✅ | alias for `Q_Response::header()` |
+| `header()` (built-in) | ❌ | ❌ | silently discarded by the CLI SAPI |
+| `http_response_code()` | ❌ | ❌ | silently discarded by the CLI SAPI |
 
 ### Scripts you don't control
 
@@ -3541,14 +3668,30 @@ implementations — and emits the `Set-Cookie` headers itself.
 
 ## Tests
 
-```
-php tests/testSapi.php
+Five test suites, 152 tests total:
+
+```bash
+# Core — static files, MIME, PHP dispatch, superglobals, POST/JSON, cookies, auth, stress
+bash tests/run.sh --quick                    # 72 tests
+
+# SAPI — superglobal population, output capture, status codes, sessions, shutdown ordering
+php tests/testSapi.php                       # 19 tests
+
+# HTTP protocol — keep-alive, path traversal, ETags, encoding, logging, panel auth
+bash tests/testHttp.sh [port]                # 37 tests
+
+# WebSocket — RFC 6455, Socket.IO handshake, events+acks, rooms, dashboard broadcast
+node tests/testWebSocket.js [port]           # 12 tests
+
+# Snapshot reset — octane state isolation, memory leaks, secret leaks
+bash tests/testSnapshot.sh [port]            # 12 tests
 ```
 
-19 assertions covering superglobal population, JSON bodies, header and status
-capture, `Set-Cookie` emission, shutdown-callback output, `exit()` mid-script,
-idempotent capture, and — the important one — that a second request inherits
-none of the first request's `$_GET`, headers or cookies.
+The snapshot tests start both a fork-mode server and an octane-mode server,
+then verify that statics, globals, `$_COOKIE`, `$_SERVER`, `$_POST`,
+Authorization headers, and response headers from request A are invisible to
+request B. The fork-mode server acts as a control group. See
+[Octane Mode](#-octane-mode---workersn) for what the snapshot resets.
 
 ## Class ownership in `--app` mode
 

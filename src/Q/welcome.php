@@ -110,7 +110,7 @@ p code{background:var(--code-bg);padding:1px 5px;border-radius:3px;color:var(--c
 <p>Any file in <code>web/</code> is served. PHP files are executed in a forked process.</p>
 <pre class="language-php"><code class="language-php">&lt;?php
 // web/api/hello.php — visit /api/hello.php?name=Alice
-header('Content-Type: application/json');
+Q_WebServer_State::header('Content-Type: application/json');
 echo json_encode([
     'message' =&gt; 'Hello, ' . ($_GET['name'] ?? 'world')
 ]);</code></pre>

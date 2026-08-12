@@ -61,7 +61,7 @@ class Q_WebServer
 	 * @static
 	 * @param {string} $dir Document root
 	 * @param {string} [$host='0.0.0.0']
-	 * @param {int} [$port=8080]
+	 * @param {int} [$port=80]
 	 * @param {int} [$workers=0] 0=in-process, N=prefork pool
 	 */
 	/**
@@ -94,7 +94,7 @@ class Q_WebServer
 		exit(1);
 	}
 
-	static function start($dir, $host = '0.0.0.0', $port = 8080, $workers = 0)
+	static function start($dir, $host = '0.0.0.0', $port = 80, $workers = 0)
 	{
 		self::requireIsolation();
 		if (self::$running) {
@@ -747,6 +747,7 @@ class Q_WebServer
 
 		try {
 			$savedRoot = self::$rootDir;
+			$memBefore = memory_get_usage();
 			$keepOpen = self::handleRequest($client, $parsed);
 		} catch (\Throwable $e) {
 			// Never let a request crash the event loop
@@ -784,8 +785,10 @@ class Q_WebServer
 		// Skip if request was delegated to a forked child (-1)
 		// The child's exit status is recorded in the SIGCHLD handler
 		if (self::$lastStatus !== -1) {
+			$memUsed = max(0, memory_get_usage() - $memBefore);
 			Q_WebServer_Dashboard::recordRequest(
-				$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes
+				$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes,
+				false, '', $memUsed, $parsed['cookies'] ?? array()
 			);
 			self::$lastBytes = 0;
 			if (self::$onRequest) {

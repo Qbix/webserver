@@ -1558,6 +1558,9 @@ async function doAuth(isSetup) {
   }
   if (data.token) {
     setToken(data.token);
+    // If we were redirected here from another page, go back
+    var next = new URLSearchParams(window.location.search).get('next');
+    if (next) { window.location.href = next; return; }
     document.getElementById('auth-screen').remove();
     document.querySelector('.tabs').style.display = '';
     document.getElementById('main-content').style.display = '';
