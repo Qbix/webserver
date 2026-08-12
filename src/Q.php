@@ -1032,6 +1032,8 @@ class Q_Response
 		Q_WebServer_State::clearHeaders();
 		self::$_code = 200;
 		self::$cookies = array();
+		self::$cookiesToRemove = array();
+		self::$errors = array();
 		self::$redirected = null;
 	}
 

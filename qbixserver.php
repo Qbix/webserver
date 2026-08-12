@@ -543,4 +543,14 @@ try {
 	exit(1);
 }
 
-Q_WebServer::run();
+// Issue #15: wrap the event loop so any uncaught exception or TypeError
+// exits non-zero — a supervisor (Docker, systemd) can then restart us.
+// Without this, the process exits 0 and looks like a clean shutdown.
+try {
+	Q_WebServer::run();
+} catch (\Throwable $e) {
+	fwrite(STDERR, "\n  FATAL: " . get_class($e) . ": " . $e->getMessage() . "\n");
+	fwrite(STDERR, "  in " . $e->getFile() . ":" . $e->getLine() . "\n");
+	fwrite(STDERR, "  " . $e->getTraceAsString() . "\n\n");
+	exit(1);
+}

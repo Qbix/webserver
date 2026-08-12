@@ -199,6 +199,12 @@ class Q_WebServer_Pool
 			if (class_exists('Q_WebServer_State', false)) {
 				Q_WebServer_State::clear();
 			}
+			// Issue #16: also clear Q_Response accumulated state (scripts,
+			// styles, cookies, errors) so they don't leak between requests.
+			if (class_exists('Q_Response', false)
+				&& method_exists('Q_Response', 'clear')) {
+				Q_Response::clear();
+			}
 			if (function_exists('header_remove')) {
 				@header_remove();
 			}
@@ -525,11 +531,13 @@ class Q_WebServer_Pool
 				@fclose($c);
 			}
 		} elseif (isset($this->workerClients[$index])) {
-			@fclose($this->workerClients[$index]);
+			$c = $this->workerClients[$index];
+			if (is_resource($c)) @fclose($c);
 		}
 
 		if (isset($this->workers[$index])) {
-			@fclose($this->workers[$index]['socket']);
+			$sock = $this->workers[$index]['socket'];
+			if (is_resource($sock)) @fclose($sock);
 			pcntl_waitpid($this->workers[$index]['pid'], $st, WNOHANG);
 		}
 		unset($this->workers[$index], $this->workerClients[$index],
@@ -578,7 +586,7 @@ class Q_WebServer_Pool
 			if (isset($this->watchers[$i])) {
 				Q_Evented::cancel($this->watchers[$i]);
 			}
-			@fclose($w['socket']);
+			if (is_resource($w['socket'])) @fclose($w['socket']);
 		}
 
 		// Send SIGTERM to all workers

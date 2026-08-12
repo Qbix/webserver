@@ -419,7 +419,7 @@ class Q_WebServer
 		self::$timeoutWatchers = array();
 		foreach (self::$clientWatchers as $id) Q_Evented::cancel($id);
 		self::$clientWatchers = array();
-		foreach (self::$clients as $c) @fclose($c);
+		foreach (self::$clients as $c) { if (is_resource($c)) @fclose($c); }
 		self::$clients = array();
 		self::$buffers = array();
 		self::$clientInfo = array();
@@ -1490,7 +1490,8 @@ class Q_WebServer
 		$_SERVER['REQUEST_URI'] = $parsed['uri'];
 		$_SERVER['QUERY_STRING'] = $parsed['query'];
 		$_SERVER['SERVER_NAME'] = explode(':', $parsed['headers']['host'] ?? 'localhost')[0];
-		$_SERVER['SERVER_PORT'] = self::$port;
+		$_hostPort = explode(':', $parsed['headers']['host'] ?? 'localhost');
+		$_SERVER['SERVER_PORT'] = isset($_hostPort[1]) ? $_hostPort[1] : '80';
 		$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
 		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
 		$_SERVER['DOCUMENT_ROOT'] = rtrim(self::$rootDir, DS);
@@ -1985,9 +1986,15 @@ WORKER;
 		if (strpos($cfVisitor, '"https"') !== false) $isHttps = true;
 
 		// Compute SCRIPT_NAME and PATH_INFO (frameworks need correct PATH_INFO)
+		// Issue #14: realpath-normalise both sides to prevent segment loss.
 		$requestPath = parse_url($parsed['uri'], PHP_URL_PATH) ?: '/';
-		$docRoot = rtrim(self::$rootDir, DS);
-		$scriptRel = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen($docRoot))), '/');
+		$docRoot = rtrim(realpath(self::$rootDir) ?: self::$rootDir, DS);
+		$scriptReal = realpath($scriptPath) ?: $scriptPath;
+		if (strncmp($scriptReal, $docRoot, strlen($docRoot)) === 0) {
+			$scriptRel = '/' . ltrim(str_replace(DS, '/', substr($scriptReal, strlen($docRoot))), '/');
+		} else {
+			$scriptRel = $requestPath;
+		}
 		$pathInfo = '';
 		if (strlen($requestPath) > strlen($scriptRel)) {
 			$pathInfo = substr($requestPath, strlen($scriptRel));
@@ -2000,7 +2007,7 @@ WORKER;
 			'SERVER_SOFTWARE'    => 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0'),
 			'SERVER_PROTOCOL'    => 'HTTP/' . ($parsed['httpVersion'] ?? '1.1'),
 			'SERVER_NAME'        => $hostParts[0],
-			'SERVER_PORT'        => isset($hostParts[1]) ? $hostParts[1] : (string) self::$port,
+			'SERVER_PORT'        => isset($hostParts[1]) ? $hostParts[1] : '80',
 			'SERVER_ADDR'        => self::$host === '0.0.0.0' ? '127.0.0.1' : self::$host,
 			'REQUEST_METHOD'     => $parsed['method'],
 			'REQUEST_URI'        => $parsed['uri'],
@@ -2924,6 +2931,25 @@ HTML;
 	static function dispatchToQ($parsed)
 	{
 		$saved = array($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE);
+
+		// Issue #16: clear accumulated response state from the previous request.
+		// In in-process mode (no workers), Q_Response statics like $scripts,
+		// $stylesheets, $cookies etc. accumulate across requests. In worker/
+		// octane mode, the snapshot resets statics, but classes loaded lazily
+		// after the snapshot was taken use getDefaultValue() which may not
+		// reflect the correct preload state. Clearing here ensures each
+		// request starts clean regardless of execution mode.
+		self::clearResponseState();
+		if (class_exists('Q_WebServer_State', false)) {
+			Q_WebServer_State::clear();
+		}
+		if (class_exists('Q_Response', false)) {
+			// Standalone shim has clear(); Platform's Q_Response may not,
+			// but its statics are reset by the snapshot or by Q_Dispatcher.
+			if (method_exists('Q_Response', 'clear')) {
+				Q_Response::clear();
+			}
+		}
 		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
 		$host = $parsed['headers']['host'] ?? 'localhost';
 		$hostParts = explode(':', $host);
@@ -2936,9 +2962,19 @@ HTML;
 		// included) route off PATH_INFO for action.php/{route}-style URLs and off
 		// a correct SCRIPT_NAME when the app is served under a subpath — hardcoding
 		// PATH_INFO to '' breaks both.
-		$docRoot     = rtrim(self::$rootDir, DS);
+		//
+		// Issue #14: $scriptPath may be realpath()-resolved (symlinks expanded)
+		// while self::$rootDir is not, causing substr() to eat a segment.
+		// Normalise both sides via realpath() before computing the relative path.
+		$docRoot     = rtrim(realpath(self::$rootDir) ?: self::$rootDir, DS);
+		$scriptReal  = realpath($scriptPath) ?: $scriptPath;
 		$requestPath = parse_url($parsed['uri'], PHP_URL_PATH) ?: '/';
-		$scriptRel   = '/' . ltrim(str_replace(DS, '/', substr($scriptPath, strlen($docRoot))), '/');
+		if (strncmp($scriptReal, $docRoot, strlen($docRoot)) === 0) {
+			$scriptRel = '/' . ltrim(str_replace(DS, '/', substr($scriptReal, strlen($docRoot))), '/');
+		} else {
+			// Fallback: derive from REQUEST_URI (strip query string)
+			$scriptRel = $requestPath;
+		}
 		$pathInfo    = '';
 		if (isset($parsed['_pathInfo'])) {
 			// Precomputed by splitPathInfo() (BUG #37) — authoritative.
@@ -2955,7 +2991,15 @@ HTML;
 		$_SERVER['DOCUMENT_ROOT']     = $docRoot;
 		$_SERVER['DOCUMENT_URI']      = $scriptRel;
 		$_SERVER['SERVER_NAME']       = $hostParts[0];
-		$_SERVER['SERVER_PORT']       = isset($hostParts[1]) ? $hostParts[1] : self::$port;
+		// Issue #14: When the Host header has no port, use the scheme default
+		// (80 for HTTP, 443 for HTTPS), not the listen port. Behind a proxy or
+		// container-published port, the listen port is internal and wrong.
+		if (isset($hostParts[1])) {
+			$_SERVER['SERVER_PORT'] = $hostParts[1];
+		} else {
+			$scheme = $parsed['_scheme'] ?? (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http');
+			$_SERVER['SERVER_PORT'] = ($scheme === 'https') ? '443' : '80';
+		}
 		$_SERVER['SERVER_ADDR']       = self::$host === '0.0.0.0' ? '127.0.0.1' : self::$host;
 		$_SERVER['SERVER_PROTOCOL']   = 'HTTP/' . ($parsed['httpVersion'] ?? '1.1');
 		$_SERVER['SERVER_SOFTWARE']   = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');

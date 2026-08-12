@@ -425,6 +425,30 @@ else
 fi
 
 # ══════════════════════════════════════════════════════
+# Issue #14: SCRIPT_NAME + SERVER_PORT
+# ══════════════════════════════════════════════════════
+
+R=$(timeout 3 curl -s "http://$HOST:$PORT/Q/srv.php" 2>/dev/null)
+SN=$(echo "$R" | python3 -c "import json,sys; print(json.load(sys.stdin).get('SCRIPT_NAME',''))" 2>/dev/null)
+[ "$SN" = "/Q/srv.php" ] \
+    && ok "SCRIPT_NAME preserves path segments (/Q/srv.php)" \
+    || fail "SCRIPT_NAME" "got $SN"
+
+SP=$(timeout 3 curl -s -H "Host: myapp.example.com" \
+    "http://$HOST:$PORT/Q/srv.php" 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('SERVER_PORT',''))" 2>/dev/null)
+[ "$SP" = "80" ] \
+    && ok "SERVER_PORT defaults to 80 when Host has no port" \
+    || fail "SERVER_PORT default" "got $SP"
+
+SP2=$(timeout 3 curl -s -H "Host: myapp.example.com:8092" \
+    "http://$HOST:$PORT/Q/srv.php" 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('SERVER_PORT',''))" 2>/dev/null)
+[ "$SP2" = "8092" ] \
+    && ok "SERVER_PORT from Host header port (8092)" \
+    || fail "SERVER_PORT Host port" "got $SP2"
+
+# ══════════════════════════════════════════════════════
 # Q_Response::header() integration
 # ══════════════════════════════════════════════════════
 

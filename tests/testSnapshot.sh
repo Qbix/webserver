@@ -323,6 +323,29 @@ fi
 echo ""
 echo "  ── Interleaved sessions (octane) ──"
 
+# ── Issue #16: Q_Response accumulated state ──
+
+# Set cookies, errors, headers via Q_Response
+jget "http://127.0.0.1:$OPORT/accum-set.php" > /dev/null
+
+# Check that nothing leaked to the next request (try multiple workers)
+ACCUM_CLEAN=true
+for i in 1 2 3 4; do
+    R=$(jget "http://127.0.0.1:$OPORT/accum-check.php")
+    IS_CLEAN=$(echo "$R" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('clean',''))" 2>/dev/null)
+    if [ "$IS_CLEAN" != "True" ]; then
+        LEAKS=$(echo "$R" | python3 -c "import json,sys; d=json.load(sys.stdin); print(', '.join(d.get('leaks',[])))" 2>/dev/null)
+        ACCUM_CLEAN=false
+        break
+    fi
+done
+
+if [ "$ACCUM_CLEAN" = true ]; then
+    ok "Q_Response state isolation: cookies/errors/headers don't accumulate"
+else
+    fail "Q_Response state leaked: $LEAKS"
+fi
+
 # Rapidly alternate between two "users" with different cookies
 INTERLEAVE_OK=true
 for i in $(seq 1 10); do
