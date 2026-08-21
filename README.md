@@ -164,7 +164,7 @@ Every model uses `handlers/`, `classes/`, and `Q::event()`.
 Try it — one command, zero config:
 
 ```bash
-php qbixserver.php --root=./web
+php qbixserver.php
 ```
 
 ---
@@ -216,7 +216,7 @@ php qbixserver.php --root=./web
 One PHP file. One command. One port.
 
 ```bash
-php qbixserver.php --root=./web  # HTTPS on 443 auto-starts if certs exist
+php qbixserver.php  # HTTPS on 443 auto-starts if certs exist
 ```
 
 Static files, PHP execution, WebSocket, rooms, Socket.IO, TLS, auto-renewing
@@ -366,8 +366,8 @@ If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. He
 |---|---|---|---|
 | **Language** | Go + C (embeds PHP) | C extension for PHP | Pure PHP |
 | **Install** | Download Go binary or Docker | `pecl install swoole` (compiles C) | `php qbixserver.php` — nothing to install |
-| **Architecture** | Worker mode (persistent) | Coroutine-based (persistent) | Shared-nothing with fork-after-preload |
-| **State leaks** | ⚠️ Possible — workers persist between requests | ⚠️ Possible — must manage globals carefully | ✅ Impossible — each request gets a clean fork |
+| **Architecture** | Worker mode (persistent) | Coroutine-based (persistent) | Two modes: fork-per-request (shared-nothing) or octane (persistent workers with snapshot restore) |
+| **State leaks** | ⚠️ Possible — workers persist, must audit statics | ⚠️ Possible — must manage globals carefully | ✅ Fork mode: impossible (process dies). Octane: snapshot restores all statics/globals/superglobals between requests |
 | **PHP compatibility** | Most code works, some edge cases | Many extensions incompatible, blocking I/O breaks coroutines | ✅ 100% — standard PHP, nothing unusual |
 | **Memory safety** | Go runtime + PHP = complex interaction | C extension = segfault risk | PHP only = memory-safe by default |
 | **Access control** | No X-Accel-Redirect equivalent | Manual implementation | ✅ Built-in X-Accel-Redirect |
@@ -380,7 +380,7 @@ If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. He
 | **Static throughput** | 10,038 req/s | 26,974 req/s | **18,311 req/s** |
 | **Concurrent capacity** | Limited by worker memory | Limited by worker memory | **100–300× more** (COW, measured) |
 
-### The shared-nothing advantage
+### The state isolation advantage
 
 FrankenPHP and Swoole keep PHP workers alive across requests. This is fast, but it means global state, static variables, database connections, and in-memory caches **persist between unrelated requests**. This causes subtle bugs:
 
@@ -400,7 +400,19 @@ class UserService {
 
 Every PHP framework, library, and snippet that uses static variables, singletons, or global state becomes a potential security hole. You have to audit everything.
 
-Qbix Server avoids this entirely. Workers fork from a preloaded parent, so they inherit loaded classes and parsed config (read-only, shared via copy-on-write). But each request runs in its own process — when it's done, everything is gone. No state leaks. No audit needed. Your existing PHP code works exactly as it does on php-fpm.
+Qbix Server offers two modes, both of which avoid this:
+
+**Fork mode (default):** each request forks from the preloaded parent, inherits
+loaded classes and config (read-only, shared via COW), runs in its own process,
+and dies when done. No state leaks. No audit needed. Your existing PHP code works
+exactly as it does on php-fpm.
+
+**Octane mode (`--workers=N`):** persistent workers handle multiple requests, but
+a snapshot restore resets all class statics, `$GLOBALS`, `$_GET`, `$_POST`,
+`$_COOKIE`, `$_SERVER`, `$_FILES`, response headers, and error state between
+every request — verified by 13 dedicated snapshot isolation tests. The code above
+would work correctly because `$cached` is restored to `null` between requests.
+See [Octane Mode](#-octane-mode---workersn) for the full reset table.
 
 ### The "just PHP" advantage
 
@@ -482,16 +494,16 @@ component-level caching. Your PHP sends them with `Q_Response::header()`, the se
 
 | Header | What it does | Example |
 |---|---|---|
-| `Cache-Control` | Server caches the response, serves without running PHP | `Q_WebServer_State::header('Cache-Control: public, max-age=300');` |
-| `X-Accel-Redirect` | Server streams a file after PHP checks access | `Q_WebServer_State::header('X-Accel-Redirect: /uploads/private/doc.pdf');` |
-| `X-Cache-Tree` | Registers page components with content hashes | `Q_WebServer_State::header('X-Cache-Tree: ' . json_encode([...]));` |
-| `X-Cache-Deps` | Maps components to data dependency keys | `Q_WebServer_State::header('X-Cache-Deps: ' . json_encode([...]));` |
-| `X-Cache-Invalidate` | Marks dependency keys as stale | `Q_WebServer_State::header('X-Cache-Invalidate: ' . json_encode([...]));` |
-| `X-Cache-Stale` | Invalidates cached pages containing these components | `Q_WebServer_State::header('X-Cache-Stale: feed,sidebar');` |
+| `Cache-Control` | Server caches the response, serves without running PHP | `Q_Response::header('Cache-Control: public, max-age=300');` |
+| `X-Accel-Redirect` | Server streams a file after PHP checks access | `Q_Response::header('X-Accel-Redirect: /uploads/private/doc.pdf');` |
+| `X-Cache-Tree` | Registers page components with content hashes | `Q_Response::header('X-Cache-Tree: ' . json_encode([...]));` |
+| `X-Cache-Deps` | Maps components to data dependency keys | `Q_Response::header('X-Cache-Deps: ' . json_encode([...]));` |
+| `X-Cache-Invalidate` | Marks dependency keys as stale | `Q_Response::header('X-Cache-Invalidate: ' . json_encode([...]));` |
+| `X-Cache-Stale` | Invalidates cached pages containing these components | `Q_Response::header('X-Cache-Stale: feed,sidebar');` |
 
-All of these use `Q_WebServer_State::header()` instead of PHP's `header()`. This is because
+All of these use `Q_Response::header()` instead of PHP's `header()`. This is because
 the server runs in CLI SAPI where `header()` calls are silently discarded —
-same as FrankenPHP worker mode and Workerman. `Q_WebServer_State::header()` has the same
+same as FrankenPHP worker mode and Workerman. `Q_Response::header()` has the same
 signature as `header()` but captures the values for the server to send.
 The server strips internal headers before sending the response to the client.
 
@@ -529,8 +541,8 @@ if (!$userId || !userCanAccess($userId, $fileId)) {
 
 // Tell the server to serve from files/ directory.
 // The client never sees the real path.
-Q_WebServer_State::header("X-Accel-Redirect: /files/private/{$fileId}");
-Q_WebServer_State::header("Content-Disposition: attachment; filename=\"document.pdf\"");
+Q_Response::header("X-Accel-Redirect: /files/private/{$fileId}");
+Q_Response::header("Content-Disposition: attachment; filename=\"document.pdf\"");
 ```
 
 No config needed — `files/` is resolved automatically. For custom mappings:
@@ -562,7 +574,7 @@ Control how the server caches your PHP responses:
 
 // The server caches this response and serves it without
 // running PHP again for the next 300 seconds.
-Q_WebServer_State::header('Cache-Control: public, max-age=300');
+Q_Response::header('Cache-Control: public, max-age=300');
 
 echo renderFeed();
 ```
@@ -574,7 +586,7 @@ echo renderFeed();
 // The server generates an ETag from the response body.
 // Browsers send If-None-Match on next request.
 // Server returns 304 (no body) if nothing changed.
-Q_WebServer_State::header('Cache-Control: public, max-age=0, must-revalidate');
+Q_Response::header('Cache-Control: public, max-age=0, must-revalidate');
 
 echo renderProfile($userId);
 ```
@@ -583,7 +595,7 @@ echo renderProfile($userId);
 <?php
 // web/admin.php — never cache
 
-Q_WebServer_State::header('Cache-Control: no-store');
+Q_Response::header('Cache-Control: no-store');
 
 echo renderAdminPanel();
 ```
@@ -610,7 +622,7 @@ $sidebarHtml = renderSidebar($communityId);
 $membersHtml = renderMembers($communityId);
 
 // Tell the server about the component tree and what data each depends on
-Q_WebServer_State::header('X-Cache-Tree: ' . json_encode([
+Q_Response::header('X-Cache-Tree: ' . json_encode([
     'l' => [
         'feed'    => md5($feedHtml),
         'sidebar' => md5($sidebarHtml),
@@ -618,13 +630,13 @@ Q_WebServer_State::header('X-Cache-Tree: ' . json_encode([
     ]
 ]));
 
-Q_WebServer_State::header('X-Cache-Deps: ' . json_encode([
+Q_Response::header('X-Cache-Deps: ' . json_encode([
     'feed'    => ["community/{$communityId}/feed"],
     'sidebar' => ["community/{$communityId}/about"],
     'members' => ["community/{$communityId}/participants"],
 ]));
 
-Q_WebServer_State::header('Cache-Control: public, max-age=300');
+Q_Response::header('Cache-Control: public, max-age=300');
 echo $feedHtml . $sidebarHtml . $membersHtml;
 ```
 
@@ -636,7 +648,7 @@ echo $feedHtml . $sidebarHtml . $membersHtml;
 saveNewPost($communityId, $content);
 
 // Tell the server which dependency key changed
-Q_WebServer_State::header('X-Cache-Invalidate: ' . json_encode([
+Q_Response::header('X-Cache-Invalidate: ' . json_encode([
     "community/{$communityId}/feed"
 ]));
 
@@ -656,7 +668,7 @@ the in-memory cache without hitting PHP.
 
 ### Even more powerful with Qbix Platform
 
-These headers work with `Q_WebServer_State::header()` calls as shown above. But with the
+These headers work with `Q_Response::header()` calls as shown above. But with the
 [Qbix Platform](https://github.com/Qbix/Platform), it becomes automatic:
 
 ```php
@@ -700,7 +712,7 @@ PHP files in `web/` execute as scripts — same as Apache or nginx + php-fpm:
 ```php
 <?php
 // web/api/users.php — GET /api/users.php
-Q_WebServer_State::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 $users = MyApp\Users::recent(20);
 echo json_encode($users);
 ```
@@ -714,7 +726,7 @@ map to clean URLs:
 <?php
 // handlers/api/users/get.php — GET /api/users
 function api_users_get(&$params, &$result) {
-    Q_WebServer_State::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode(MyApp\Users::recent(20));
 }
 ```
@@ -1672,7 +1684,7 @@ Room:           chat/room/join      → ChatRoom::$users, $names, $history
 ### Run it
 
 ```bash
-php qbixserver.php --root=./web
+php qbixserver.php
 ```
 
 One command. Static files, REST API, authentication, access-controlled rooms,
@@ -1747,7 +1759,7 @@ function api_users_validate(&$params, &$result) {
 <?php
 // handlers/api/users/get.php — handles GET /api/users
 function api_users_get(&$params, &$result) {
-    Q_WebServer_State::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode(MyApp\Users::list($_GET));
 }
 ```
@@ -1758,7 +1770,7 @@ function api_users_get(&$params, &$result) {
 function api_users_post(&$params, &$result) {
     $user = MyApp\Users::create($_POST);
     http_response_code(201);
-    Q_WebServer_State::header('Content-Type: application/json');
+    Q_Response::header('Content-Type: application/json');
     echo json_encode($user);
 }
 ```
@@ -1799,8 +1811,8 @@ Three options:
 <?php
 // handlers/app/notfound/get.php
 function app_notfound_get(&$params, &$result) {
-    Q_WebServer_State::responseCode(404);
-    Q_WebServer_State::header('Content-Type: text/html');
+    Q_Response::code(404);
+    Q_Response::header('Content-Type: text/html');
     echo Q::view('app/404.php', ['path' => $_SERVER['REQUEST_URI']]);
 }
 ```
@@ -1881,7 +1893,7 @@ use MyApp\User;
 $user = User::find($_GET['id']);
 $feed = Q::event('MyApp/feed/get', ['userId' => $user->id]);
 
-Q_WebServer_State::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 echo json_encode($feed);
 ```
 
@@ -1894,7 +1906,7 @@ what you get:
 |---|---|
 | `Q::event($name, $params)` | Fire an event — runs the handler from `handlers/` |
 | `Q::canHandle($name)` | Check if a handler exists for an event |
-| `Q_WebServer_State::header($str, $replace, $code)` | Set a response header (use instead of `header()`) |
+| `Q_Response::header($str, $replace, $code)` | Set a response header (use instead of `header()`) |
 | `Q::view($name, $params)` | Render a PHP template from `views/` |
 | `Q::ifset($arr, 'key1', 'key2', $default)` | Safe nested array/object access without isset chains |
 | `Q::getObject($data, ['path', 'to', 'key'], $default)` | Deep access into nested arrays/objects |
@@ -1914,7 +1926,7 @@ what you get:
 | `Q_Request::isJson()` | True if Content-Type is application/json |
 | `Q_Request::isInternal()` | True if genuine CLI, false if server-dispatched |
 | `Q_Response::setHeader($name, $value)` | Set a response header |
-| `Q_WebServer_State::responseCode(201)` | Set HTTP status code |
+| `Q_Response::code(201)` | Set HTTP status code |
 | `Q_Response::setCookie($name, $val, ...)` | Set a cookie (prevents duplicates) |
 | `Q_Response::redirect($url)` | 302 redirect (or 301 with `permanently`) |
 
@@ -1941,19 +1953,19 @@ echo Q::view('MyApp/settings/page.php', [
 ]);
 ```
 
-### Why `Q_WebServer_State::header()` instead of `header()`?
+### Why `Q_Response::header()` instead of `header()`?
 
 The server runs PHP in CLI SAPI (same as FrankenPHP worker mode and Workerman).
-PHP's built-in `header()` is silently discarded in CLI mode. `Q_WebServer_State::header()` has
+PHP's built-in `header()` is silently discarded in CLI mode. `Q_Response::header()` has
 the exact same signature but captures headers so the server can send them:
 
 ```php
-Q_WebServer_State::header('Content-Type: application/json');   // same as header() but works
-Q_WebServer_State::header('HTTP/1.1 201 Created');             // status line
-Q_WebServer_State::responseCode(201);                                  // or set status directly
+Q_Response::header('Content-Type: application/json');   // same as header() but works
+Q_Response::header('HTTP/1.1 201 Created');             // status line
+Q_Response::code(201);                                  // or set status directly
 
 Q_Response::setHeader('X-Custom', 'value');    // named method
-Q_WebServer_State::responseCode(201);                         // status code
+Q_Response::code(201);                         // status code
 Q_Response::setCookie('session', $id);         // cookies
 Q_Response::redirect('/login');                // redirect
 ```
@@ -2029,7 +2041,7 @@ requests — classes are already there via copy-on-write:
 ```
 
 ```bash
-php qbixserver.php --root=./web --workers=4
+php qbixserver.php --workers=4
 #  Autoloader: autoload.php
 #  Preloaded: 3 classes
 ```
@@ -2070,7 +2082,7 @@ $result = Q::event('MyApp/feed/post', [
     'userId' => $_SESSION['user_id'],
 ]);
 
-Q_WebServer_State::header('Content-Type: application/json');
+Q_Response::header('Content-Type: application/json');
 echo json_encode($result);
 ```
 
@@ -2219,13 +2231,17 @@ write scripts that work in both modes.
 
 ### How PHP requests are handled
 
-On Linux and macOS (where `pcntl_fork` is available), **every PHP request
-is forked** — even without `--workers`. The server forks a child, the child
+**Fork mode (default, no `--workers`):** On Linux and macOS (where `pcntl_fork`
+is available), every PHP request is forked — the server forks a child, the child
 handles the request and exits, the parent continues serving. This means:
 
 - `exit()` / `die()` in a script only kills the child — the server survives
 - Long-running scripts don't block static file serving
 - Each request is truly isolated
+
+**Octane mode (`--workers=N`):** Persistent workers handle requests in a loop
+with snapshot restore between them. See [Octane Mode](#-octane-mode---workersn)
+for what resets, what persists, and how to write scripts for both modes.
 
 The `--workers=N` flag pre-forks N idle workers for faster dispatch (no fork
 latency per request). Without it, the server forks on demand. Both modes are
@@ -2336,7 +2352,7 @@ respect the per-host root.
 Watch `classes/`, `handlers/`, and `config/` for file changes:
 
 ```bash
-php qbixserver.php --root=./web --hotreload
+php qbixserver.php --hotreload
 ```
 
 Or via config:
@@ -2454,7 +2470,7 @@ compatibility with WordPress, Laravel, or any PHP code that calls `header()` dir
 The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you
 don't get the preload speed benefit. Static files, caching, and everything else
 still work at full speed. Use this for third-party code you can't modify — your
-own code should use `Q_WebServer_State::header()` and the fork path for 100–300× concurrent capacity (measured).
+own code should use `Q_Response::header()` and the fork path for 100–300× concurrent capacity (measured).
 
 The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
 
@@ -2594,7 +2610,7 @@ in CGI mode.
 
 In your PHP files, replace:
 ```
-header(       →  Q_WebServer_State::header(
+header(       →  Q_Response::header(
 setcookie(    →  Q_Response::setCookie(
 ```
 
@@ -2626,13 +2642,13 @@ php-cgi --version
 ### 1. From source (needs PHP 8.1+)
 
 ```bash
-php qbixserver.php --root=./web
+php qbixserver.php
 ```
 
 ### 2. PHAR — single ~280KB file (needs PHP)
 
 ```bash
-php bin/qbixserver.phar --root=./web --port=80
+php bin/qbixserver.phar --port=80
 
 # Or make it executable
 chmod +x bin/qbixserver.phar
@@ -2644,7 +2660,7 @@ chmod +x bin/qbixserver.phar
 ```bash
 # Download from GitHub Releases
 chmod +x qbixserver-linux-x86_64
-./qbixserver-linux-x86_64 --root=./web --port=80
+./qbixserver-linux-x86_64 --port=80
 ```
 
 The binary bundles PHP 8.3 + extensions into a single ~15MB executable.  
@@ -3606,7 +3622,7 @@ to `STDOUT` so a child run standalone behaves like an ordinary PHP script.
 
 Native `header()` cannot be intercepted: in the CLI SAPI it does nothing, and
 PHP offers no hook. Fork mode therefore fully supports code that goes through
-`Q_WebServer_State::header()` / `Q::header()`. Third-party or legacy scripts that call
+`Q_Response::header()` / `Q::header()`. Third-party or legacy scripts that call
 `header()` directly should be routed to `php-cgi` with
 `Q.webserver.cgi.patterns` — that config is the supported escape hatch, not a
 workaround.
@@ -3625,7 +3641,7 @@ Q_Response::setCookie('session', $token, 0, '/');
 Q_Response::redirect('/dashboard');
 ```
 
-`Q_WebServer_State::header()` also works — `Q_Response::header()` delegates to
+`Q_Response::header()` also works — `Q_Response::header()` delegates to
 it — but `Q_Response` is the higher-level API that scripts should prefer.
 
 ### Why not `header()`?
@@ -3643,7 +3659,7 @@ with none of its headers, and no error to explain why.
 | `Q_Response::header()` | ✅ | ✅ | **recommended** — delegates to `Q_WebServer_State`, same signature as PHP's `header()` |
 | `Q_Response::code()` | ✅ | ✅ | get or set the HTTP status code |
 | `Q_Response::setCookie()` | ✅ | ✅ | cookies are assembled into `Set-Cookie` headers by the server |
-| `Q_WebServer_State::header()` | ✅ | ✅ | low-level — `Q_Response::header()` delegates here |
+| `Q_Response::header()` | ✅ | ✅ | low-level — `Q_Response::header()` delegates here |
 | `Q::header()` | ✅ | ✅ | alias for `Q_Response::header()` |
 | `header()` (built-in) | ❌ | ❌ | silently discarded by the CLI SAPI |
 | `http_response_code()` | ❌ | ❌ | silently discarded by the CLI SAPI |
@@ -3763,7 +3779,7 @@ Platform's versions win and these methods do not exist:
 | `Q_Response::getHeaders()` | `src/Q/WebServer.php`, `src/Q.php` |
 | `Q_Response::cookieHeaders()` | `src/Q/WebServer/Headers.php`, `src/Q.php` |
 | `Q_Response::clear()` | `src/Q/WebServer.php` |
-| `Q_WebServer_State::header()` | `src/Q.php` |
+| `Q_Response::header()` | `src/Q.php` |
 | `Q_Response::responseCode()` | `src/Q.php` |
 
 Observed effect: `GET /index.php` in app mode returns **500 — Call to undefined
@@ -3885,7 +3901,7 @@ under `--app`.
 **Native `header()` is discarded under the CLI SAPI.** `headers_list()` always
 returns empty and `http_response_code()` returns `false`; PHP offers no hook to
 intercept the builtin. Scripts written for Qbix should use
-`Q_WebServer_State::header()`, which works in both modes. Scripts that must use
+`Q_Response::header()`, which works in both modes. Scripts that must use
 native `header()` — WordPress, third-party code — are routed to `php-cgi` via
 `Q.webserver.cgi.patterns`; `tests/run-cgi.sh` proves that path preserves both
 status and headers.
