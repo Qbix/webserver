@@ -1207,7 +1207,11 @@ class Q_WebServer
 		$assetMap['/Q/logo.png'] = array(__DIR__ . DS . 'logo.png', 'image/png');
 		$assetMap['/Q/prism.js'] = array(__DIR__ . DS . 'prism.js', 'application/javascript');
 		$assetMap['/Q/prism.css'] = array(__DIR__ . DS . 'prism.css', 'text/css');
-		$assetMap['/favicon.ico'] = array(__DIR__ . DS . 'logo.png', 'image/png');
+		// Issue #17: only fall back to built-in favicon when the app has none
+		$appFavicon = self::$rootDir . 'favicon.ico';
+		if (!file_exists($appFavicon)) {
+			$assetMap['/favicon.ico'] = array(__DIR__ . DS . 'logo.png', 'image/png');
+		}
 		if (isset($assetMap[$path])) {
 			list($assetFile, $assetType) = $assetMap[$path];
 			if (file_exists($assetFile)) {

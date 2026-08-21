@@ -3,8 +3,8 @@
 /**
  * Qbix Server — pure PHP web server.
  *
- * Standalone: php qbixserver.php --root=./web --port=80
- * With Qbix:  php qbixserver.php --app=/path/to/myapp --port=80
+ * Standalone: php qbixserver.php
+ * With Qbix:  php qbixserver.php --app=/path/to/myapp
  *
  * Options:
  *   --root=DIR       Document root (default: ./web)
