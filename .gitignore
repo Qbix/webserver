@@ -1,2 +1,17 @@
-files
-local
+# Runtime state — created by the server, never committed
+files/
+local/
+tests/local/
+
+# Build artifacts
+bin/qbixserver.phar
+qbixserver.phar
+node_modules/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+
+# Compiled binary only — bin/uwebserver.c and bin/u_*.h are SOURCE and tracked
+bin/uwebserver

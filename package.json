@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "jsdom": "^30.0.1"
+    "socket.io-client": "^4.8.3",
+    "ws": "^7.5.10"
   }
 }

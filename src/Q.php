@@ -243,10 +243,21 @@ class Q
 		if (!is_string($eventName) || !$eventName) return null;
 		if (!is_array($params)) $params = array();
 
-		// Check if this event should be handled by a remote server
-		$remoteUrl = Q_Config::get('Q', 'handlersRemote', $eventName, null);
-		if ($remoteUrl) {
-			return self::handleRemote($remoteUrl, $eventName, $params, $result);
+		// Check if this event should be handled by a remote server.
+		// Uses the same config key as the Platform: Q/handlersUsingRemote.
+		// Also checks Q/handlersRemote (simple URL string) for backward compat.
+		$remote = Q_Config::get('Q', 'handlersUsingRemote', $eventName, null);
+		if (!$remote) {
+			// Backward compat: handlersRemote accepts a bare URL string
+			$remoteUrl = Q_Config::get('Q', 'handlersRemote', $eventName, null);
+			if ($remoteUrl) {
+				$remote = is_string($remoteUrl)
+					? array('baseUrl' => $remoteUrl)
+					: $remoteUrl;
+			}
+		}
+		if (is_array($remote)) {
+			return self::handleUsingRemote($eventName, $params, $remote, $result);
 		}
 
 		// Before hooks
@@ -287,23 +298,41 @@ class Q
 	}
 
 	/**
-	 * Forward an event to a remote Qbix server via HTTP POST.
-	 * The remote server receives it as a normal Q::event() call.
-	 * @method handleRemote
+	 * Executes a particular event handler remotely, if configured via Q_Config.
+	 * Compatible with the Platform's Q::handleUsingRemote — same method name,
+	 * same config key (Q/handlersUsingRemote), same $remote array shape.
+	 *
+	 * Supports Unix domain sockets for the chokepoint microservices pattern:
+	 * set $remote['socket'] to a UDS path (e.g. "/run/qbix/authority.sock").
+	 *
+	 * @method handleUsingRemote
 	 * @static
-	 * @param {string} $baseUrl Remote server URL
-	 * @param {string} $eventName Event name (e.g. "Users/login")
+	 * @param {string} $eventName Event name (e.g. "Streams/Stream/save")
 	 * @param {array} $params Parameters to forward
+	 * @param {array} $remote Configuration array:
+	 * @param {string} [$remote.baseUrl] Remote server URL (default: http://localhost)
+	 * @param {string} [$remote.socket] Optional Unix domain socket path
+	 * @param {integer} [$remote.timeout] Request timeout in seconds (default: 10)
+	 * @param {string} [$remote.returnType] Cast return: bool, int, array, object, raw, or class name
 	 * @param {mixed} &$result Result from remote
 	 * @return {mixed}
 	 */
-	static function handleRemote($baseUrl, $eventName, $params = array(), &$result = null)
+	static function handleUsingRemote($eventName, $params = array(), $remote = array(), &$result = null)
 	{
+		$baseUrl = $remote['baseUrl'] ?? 'http://localhost';
+		$socketPath = $remote['socket'] ?? null;
+		$timeout = (int) ($remote['timeout']
+			?? Q_Config::get('Q', 'handlersRemote', '_timeout', 10));
+
 		$url = rtrim($baseUrl, '/') . '/Q/event';
 
 		// Generate unique message ID for loop prevention
-		// Format: serverFingerprint.microtime.random — globally unique
-		$identity = Q_WebServer_Identity::serverIdentity();
+		$identity = null;
+		try {
+			if (class_exists('Q_WebServer_Identity', false)) {
+				$identity = Q_WebServer_Identity::serverIdentity();
+			}
+		} catch (\Throwable $e) { /* not in server context */ }
 		$msgId = substr($identity ? $identity['fingerprint'] : gethostname(), 0, 8)
 			. '.' . str_replace('.', '', (string) microtime(true))
 			. '.' . bin2hex(random_bytes(4));
@@ -319,37 +348,85 @@ class Q
 		$payload = Q_Utils::sign($payload);
 		$json = json_encode($payload);
 
-		// Also send X-Q-HMAC header (Platform convention for quick verification)
+		// HMAC header (Platform convention for quick verification)
 		$hmac = hash_hmac('sha1', $json, Q_Config::get('Q', 'internal', 'secret', '')
 			?: Q_Utils::generateLocalSecret());
 
-		$headers = "Content-Type: application/json\r\n"
-			. "Content-Length: " . strlen($json) . "\r\n"
-			. "X-Q-HMAC: " . $hmac . "\r\n"
-			. "User-Agent: QbixServer/1.0\r\n";
+		$httpHeaders = array(
+			'Content-Type: application/json',
+			'Content-Length: ' . strlen($json),
+			'X-Q-HMAC: ' . $hmac,
+			'User-Agent: QbixServer/1.0',
+		);
 
 		// Add server fingerprint for identification
-		$identity = Q_WebServer_Identity::serverIdentity();
 		if ($identity) {
-			$headers .= "X-Q-Fingerprint: " . $identity['fingerprint'] . "\r\n";
+			$httpHeaders[] = 'X-Q-Fingerprint: ' . $identity['fingerprint'];
 		}
 
-		$ctx = stream_context_create(array('http' => array(
-			'method' => 'POST',
-			'header' => $headers,
-			'content' => $json,
-			'timeout' => Q_Config::get('Q', 'handlersRemote', '_timeout', 10),
-			'ignore_errors' => true,
-		)));
+		// Use curl for the HTTP call — supports Unix domain sockets
+		// via CURLOPT_UNIX_SOCKET_PATH, which file_get_contents cannot do
+		if (function_exists('curl_init')) {
+			$ch = curl_init($url);
+			$curlOpts = array(
+				CURLOPT_RETURNTRANSFER => true,
+				CURLOPT_POST => true,
+				CURLOPT_HTTPHEADER => $httpHeaders,
+				CURLOPT_POSTFIELDS => $json,
+				CURLOPT_TIMEOUT => $timeout,
+			);
+			if ($socketPath) {
+				$curlOpts[CURLOPT_UNIX_SOCKET_PATH] = $socketPath;
+			}
+			curl_setopt_array($ch, $curlOpts);
 
-		$response = @file_get_contents($url, false, $ctx);
-		if ($response === false) {
-			$result = array('error' => 'Remote handler unreachable: ' . $url);
-			return $result;
+			$response = curl_exec($ch);
+			if ($response === false) {
+				$err = curl_error($ch);
+				curl_close($ch);
+				$result = array('error' => 'Remote handler unreachable: ' . $url
+					. ($socketPath ? " (socket: $socketPath)" : '') . " — $err");
+				return $result;
+			}
+			curl_close($ch);
+		} else {
+			// Fallback: file_get_contents (no UDS support)
+			if ($socketPath) {
+				$result = array('error' => 'curl extension required for Unix socket remote calls');
+				return $result;
+			}
+			$ctx = stream_context_create(array('http' => array(
+				'method' => 'POST',
+				'header' => implode("\r\n", $httpHeaders) . "\r\n",
+				'content' => $json,
+				'timeout' => $timeout,
+				'ignore_errors' => true,
+			)));
+			$response = @file_get_contents($url, false, $ctx);
+			if ($response === false) {
+				$result = array('error' => 'Remote handler unreachable: ' . $url);
+				return $result;
+			}
 		}
 
 		$decoded = json_decode($response, true);
 		$result = $decoded ?? $response;
+
+		// Platform-compatible returnType casting
+		if (is_array($result) && isset($result['data']) && isset($remote['returnType'])) {
+			switch ($remote['returnType']) {
+				case 'bool': return (bool) $result['data'];
+				case 'int': return (int) $result['data'];
+				case 'array': return (array) $result['data'];
+				case 'object': return (object) $result['data'];
+				case 'raw': return $result['data'];
+				default:
+					if (class_exists($remote['returnType'])) {
+						return new $remote['returnType']($result['data']);
+					}
+			}
+		}
+
 		return $result;
 	}
 

@@ -51,6 +51,12 @@ class Q_WebServer
 	public static $host;
 	/** @property $port Bound port */
 	public static $port;
+	/** @property $udsPath Unix domain socket path, if listening on UDS */
+	public static $udsPath = null;
+	/** @var resource UDS listener socket */
+	private static $udsSocket = null;
+	/** @var mixed UDS accept watcher ID */
+	private static $udsWatcher = null;
 	/** @property $onRequest Logging callback(method, uri, status, ms) */
 	static $onRequest = null;
 
@@ -144,6 +150,9 @@ class Q_WebServer
 
 		// ── HTTP listener ────────────────────────────────
 		$errno = $errstr = 0;
+		$socketPath = Q_Config::get('Q', 'webserver', 'socket', null);
+
+		// TCP listener — always bind unless port is explicitly 0
 		self::$socket = stream_socket_server(
 			"tcp://{$host}:{$port}", $errno, $errstr,
 			STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
@@ -155,6 +164,37 @@ class Q_WebServer
 		self::$acceptWatcher = Q_Evented::onReadable(
 			self::$socket, array(__CLASS__, 'onAccept')
 		);
+
+		// UDS listener — in addition to TCP, for the proxy hop
+		if ($socketPath) {
+			// Validate sun_path length (108 on Linux, 104 on macOS)
+			$maxPath = PHP_OS_FAMILY === 'Darwin' ? 104 : 108;
+			if (strlen($socketPath) >= $maxPath) {
+				throw new Exception("Socket path too long (" . strlen($socketPath)
+					. " >= $maxPath): $socketPath");
+			}
+			@unlink($socketPath); // clear stale socket from a prior run
+			$socketDir = dirname($socketPath);
+			if (!is_dir($socketDir)) {
+				@mkdir($socketDir, 0755, true);
+			}
+			self::$udsSocket = stream_socket_server(
+				"unix://{$socketPath}", $errno, $errstr,
+				STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
+			);
+			if (!self::$udsSocket) {
+				throw new Exception("Could not bind UDS {$socketPath} — $errstr");
+			}
+			stream_set_blocking(self::$udsSocket, false);
+			self::$udsWatcher = Q_Evented::onReadable(
+				self::$udsSocket, array(__CLASS__, 'onAccept')
+			);
+			// Set explicit permissions (default: 0660 — owner + group only)
+			$mode = Q_Config::get('Q', 'webserver', 'socketMode', '0660');
+			@chmod($socketPath, intval($mode, 8));
+			self::$udsPath = $socketPath;
+			echo "[HTTP] Listening on unix:{$socketPath}\n";
+		}
 
 		// ── HTTPS listener ─────────────────────────────────
 		// Starts automatically if:
@@ -405,8 +445,19 @@ class Q_WebServer
 			Q_Evented::cancel(self::$tlsWatcher);
 			self::$tlsWatcher = null;
 		}
-		if (self::$socket) { @fclose(self::$socket); self::$socket = null; }
-		if (self::$tlsSocket) { @fclose(self::$tlsSocket); self::$tlsSocket = null; }
+		if (self::$socket) { if (is_resource(self::$socket)) @fclose(self::$socket); self::$socket = null; }
+		if (self::$tlsSocket) { if (is_resource(self::$tlsSocket)) @fclose(self::$tlsSocket); self::$tlsSocket = null; }
+
+		// Close UDS listener and clean up socket file
+		if (self::$udsWatcher) {
+			Q_Evented::cancel(self::$udsWatcher);
+			self::$udsWatcher = null;
+		}
+		if (self::$udsSocket) { if (is_resource(self::$udsSocket)) @fclose(self::$udsSocket); self::$udsSocket = null; }
+		if (self::$udsPath && file_exists(self::$udsPath)) {
+			@unlink(self::$udsPath);
+			self::$udsPath = null;
+		}
 
 		// 2. Wait for in-flight connections to drain (up to timeout)
 		$deadline = microtime(true) + $drainTimeout;
@@ -542,11 +593,16 @@ class Q_WebServer
 		$client = @stream_socket_accept($socket, 0);
 		if (!$client) return;
 		stream_set_blocking($client, false);
+
+		// Detect if this connection came from the UDS listener
+		$isUds = (self::$udsSocket && $socket === self::$udsSocket);
+
 		// Disable Nagle's algorithm — eliminates 40ms delayed ACK on keep-alive
-		if (function_exists('socket_import_stream')) {
+		// Skip on UDS: TCP socket options are meaningless on Unix domain sockets
+		if (!$isUds && function_exists('socket_import_stream')) {
 			$rawSocket = socket_import_stream($client);
 			if ($rawSocket) {
-				socket_set_option($rawSocket, SOL_TCP, TCP_NODELAY, 1);
+				@socket_set_option($rawSocket, SOL_TCP, TCP_NODELAY, 1);
 			}
 		}
 		$key = (int) $client;
@@ -556,7 +612,13 @@ class Q_WebServer
 
 		// Store remote IP for logging + proxy resolution
 		$peer = stream_socket_get_name($client, true);
-		$ip = $peer ? explode(':', $peer)[0] : '0.0.0.0';
+		if ($isUds || !$peer) {
+			// UDS: no peer IP — will be resolved from X-Forwarded-For/X-Real-IP
+			// in parseRequest(), defaulting to 127.0.0.1
+			$ip = '127.0.0.1';
+		} else {
+			$ip = $peer ? explode(':', $peer)[0] : '0.0.0.0';
+		}
 		self::$clientInfo[$key] = array(
 			'ip' => $ip,
 			'connectTime' => microtime(true)

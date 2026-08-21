@@ -30,6 +30,8 @@ $opts = array(
 	'host'    => '0.0.0.0',
 	'port'    => null,  // null = read from config, then default 80
 	'https-port' => null, // null = read from config, then default 443
+	'socket'  => null,  // Unix domain socket path (e.g. /run/qbix/app.sock)
+	'socket-mode' => null, // Permissions for the socket file (e.g. 0660)
 	'workers' => 0,
 	'config'  => null,
 	'pid'     => null,
@@ -47,6 +49,8 @@ foreach ($argv as $i => $arg) {
 		echo "  --host=IP        Bind address (default: 0.0.0.0)\n";
 		echo "  --port=PORT      HTTP port (default: 80)\n";
 		echo "  --https-port=PORT HTTPS port (default: 443, if certs available)\n";
+		echo "  --socket=PATH    Unix domain socket (e.g. /run/qbix/app.sock)\n";
+		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
 		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
 		echo "  --config=FILE    JSON config file\n";
 		echo "  --pid=PATH       PID file path\n";
@@ -338,6 +342,15 @@ $opts['https-port'] = $httpsPort;
 // Store HTTP port in config too (for anything that reads it)
 Q_Config::set('Q', 'webserver', 'port', $httpPort);
 
+// Unix domain socket: --socket > Q.webserver.socket > null (TCP only)
+$socketPath = $opts['socket'] ?: Q_Config::get('Q', 'webserver', 'socket', null);
+if ($socketPath) {
+	Q_Config::set('Q', 'webserver', 'socket', $socketPath);
+	$socketMode = $opts['socket-mode']
+		?: Q_Config::get('Q', 'webserver', 'socketMode', '0660');
+	Q_Config::set('Q', 'webserver', 'socketMode', $socketMode);
+}
+
 // ── Signal commands (--stop, --reload) ──────────────
 
 if (!empty($opts['signal'])) {
@@ -511,6 +524,9 @@ fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . 
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
 $httpLine = "  http://{$opts['host']}:{$opts['port']}";
 fwrite(STDERR, "  │" . str_pad($httpLine, $W) . "│\n");
+if ($socketPath) {
+	fwrite(STDERR, "  │" . str_pad("  unix:" . $socketPath, $W) . "│\n");
+}
 if ($httpsAvailable) {
 	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
 	fwrite(STDERR, "  │" . str_pad($httpsLine, $W) . "│\n");
