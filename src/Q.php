@@ -1067,6 +1067,19 @@ class Q_Response
 	}
 
 	/**
+	 * Enable streaming mode (SSE, chunked responses).
+	 * When enabled, the webserver writes output to the client incrementally
+	 * instead of buffering the full response body.
+	 * @method setStreaming
+	 * @static
+	 * @param {boolean} $enable true to enable streaming
+	 */
+	static function setStreaming($enable = true)
+	{
+		Q_WebServer_State::setStreaming($enable);
+	}
+
+	/**
 	 * Build Set-Cookie header strings from stored cookies.
 	 * Called by the server when assembling the response.
 	 * @method cookieHeaders

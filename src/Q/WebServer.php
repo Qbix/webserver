@@ -1770,6 +1770,7 @@ class Q_WebServer
 			} elseif ($pid === 0) {
 				// ── CHILD: handle request, write response to client, exit ──
 				$parsed['_scriptPath'] = $scriptPath;
+				$parsed['_client'] = $client; // for SSE/streaming in dispatchToQ
 
 				// Populate getallheaders() for PHP scripts
 				if (class_exists('Q_WebServer_GetAllHeaders', false)) {
@@ -1790,6 +1791,13 @@ class Q_WebServer
 				$emit = function ($response) use (&$emitted, $client, $parsed) {
 					if ($emitted) return;      // exactly once
 					$emitted = true;
+					// If streaming already sent headers, just terminate and close
+					if (Q_WebServer_State::isStreaming()
+						&& !empty($parsed['_streamingSent'])) {
+						@fwrite($client, "0\r\n\r\n"); // chunked terminator
+						@fclose($client);
+						return;
+					}
 					Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 					@fclose($client);
 				};
@@ -3158,7 +3166,7 @@ HTML;
 		Q_WebServer::clearResponseState();
 		if (class_exists('Q_Response', false)) Q_WebServer_State::clear();
 
-		// Capture in a NON-REMOVABLE buffer.
+		// Capture in a NON-REMOVABLE buffer for Platform mode.
 		//
 		// Q_Dispatcher::dispatch() unwinds through Q_OutputBuffer::endFlush(),
 		// which calls @ob_end_flush() down to and including our level. A normal
@@ -3171,7 +3179,64 @@ HTML;
 		// ob_end_flush()/ob_end_clean() fail on this buffer instead, so it
 		// survives however the Platform chooses to unwind. We read it with
 		// ob_get_contents(), which works on a protected buffer.
-		ob_start(null, 0, 0);
+		//
+		// For standalone mode (no Q_Dispatcher), use a FLUSHABLE buffer
+		// so SSE/streaming scripts can call flush() and have output reach
+		// the client incrementally.
+		$isStandalone = !class_exists('Q_Dispatcher', false);
+		$_streamingClient = $parsed['_client'] ?? null; // set by handlePhp fork child
+		$_streamingHeadersSent = false;
+
+		if ($isStandalone && $_streamingClient) {
+			// Standalone fork child: use a buffer that can detect streaming.
+			// When the script calls flush(), PHP calls ob_flush() which triggers
+			// the callback with PHP_OUTPUT_HANDLER_FLUSH flag.
+			// With chunk_size=4096, output accumulates until flush() is called.
+			ob_start(function ($chunk, $phase) use (
+				$_streamingClient, &$_streamingHeadersSent, $parsed
+			) {
+				// PHP_OUTPUT_HANDLER_FLUSH = 4, PHP_OUTPUT_HANDLER_FINAL = 8
+				$isFlushing = ($phase & PHP_OUTPUT_HANDLER_FLUSH)
+					|| ($phase & PHP_OUTPUT_HANDLER_FINAL);
+
+				if (!Q_WebServer_State::isStreaming()) {
+					// Not streaming — if this is a flush or final, return content
+					// to be accumulated in the buffer
+					return $chunk;
+				}
+
+				// Streaming mode active
+				if (!$_streamingHeadersSent && strlen($chunk) > 0) {
+					$_streamingHeadersSent = true;
+					$parsed['_streamingSent'] = true;
+					$status = Q_WebServer::responseCode() ?: 200;
+					$hdrs = Q_WebServer::getResponseHeaders();
+					$hdrs['Transfer-Encoding'] = 'chunked';
+					if (!isset($hdrs['Cache-Control'])) $hdrs['Cache-Control'] = 'no-cache';
+					$hdrs['Connection'] = 'keep-alive';
+					if (!isset($hdrs['X-Accel-Buffering'])) $hdrs['X-Accel-Buffering'] = 'no';
+					foreach (Q_WebServer_State::cookieHeaders() as $ch) {
+						$hdrs['Set-Cookie'] = $ch;
+					}
+					$out = "HTTP/1.1 $status " . Q_WebServer::statusText($status) . "\r\n";
+					foreach ($hdrs as $k => $v) $out .= "$k: $v\r\n";
+					$out .= "\r\n";
+					@fwrite($_streamingClient, $out);
+				}
+				if (strlen($chunk) > 0) {
+					@fwrite($_streamingClient, dechex(strlen($chunk)) . "\r\n" . $chunk . "\r\n");
+				}
+				if ($phase & PHP_OUTPUT_HANDLER_FINAL) {
+					@fwrite($_streamingClient, "0\r\n\r\n");
+				}
+				return ''; // consume
+			}, 4096, PHP_OUTPUT_HANDLER_FLUSHABLE | PHP_OUTPUT_HANDLER_CLEANABLE
+				| PHP_OUTPUT_HANDLER_REMOVABLE);
+		} else {
+			// Platform mode or no client socket: non-removable buffer
+			ob_start(null, 0, 0);
+		}
+
 		$status = 200;
 		$headers = array();
 		try {
@@ -4956,5 +5021,26 @@ HTML;
 		}
 		// Use \x01 as delimiter — won't appear in URL patterns
 		return "\x01" . $pattern . "\x01";
+	}
+
+	/**
+	 * Return the standard HTTP reason phrase for a status code.
+	 * @method statusText
+	 * @static
+	 * @param {integer} $code HTTP status code
+	 * @return {string} Reason phrase (e.g. "OK", "Not Found")
+	 */
+	static function statusText($code)
+	{
+		static $reasons = array(
+			200=>'OK', 201=>'Created', 204=>'No Content',
+			301=>'Moved Permanently', 302=>'Found', 304=>'Not Modified',
+			400=>'Bad Request', 401=>'Unauthorized', 403=>'Forbidden',
+			404=>'Not Found', 405=>'Method Not Allowed',
+			413=>'Payload Too Large', 429=>'Too Many Requests',
+			500=>'Internal Server Error', 502=>'Bad Gateway',
+			503=>'Service Unavailable',
+		);
+		return $reasons[$code] ?? 'OK';
 	}
 }

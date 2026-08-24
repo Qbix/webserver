@@ -18,6 +18,7 @@ class Q_WebServer_State
 	protected static $savedInput = null;
 	protected static $headers = array();
 	protected static $code = 200;
+	protected static $streaming = false;
 
 	protected static $inputRegistered = false;
 
@@ -78,9 +79,41 @@ class Q_WebServer_State
 	{
 		self::$headers = array();
 		self::$code = 200;
+		self::$streaming = false;
 		if (method_exists('Q_Response', 'clearAllCookies')) {
 			try { Q_Response::clearAllCookies(); } catch (Exception $e) { /* non-fatal */ }
 		}
+	}
+
+	/**
+	 * Enable or check streaming mode (SSE, chunked transfer).
+	 * When streaming is on, the webserver writes output to the client socket
+	 * incrementally instead of buffering the full response.
+	 *
+	 * Triggers: calling setStreaming(true), or setting Content-Type to
+	 * text/event-stream, or setting X-Accel-Buffering: no.
+	 *
+	 * @param bool|null $enable  true to enable, false to disable, null to query
+	 * @return bool current streaming state
+	 */
+	static function setStreaming($enable = null)
+	{
+		if ($enable !== null) {
+			self::$streaming = (bool) $enable;
+		}
+		return self::$streaming;
+	}
+
+	/** Check if streaming should be active based on headers. */
+	static function isStreaming()
+	{
+		if (self::$streaming) return true;
+		// Auto-detect from headers
+		$ct = self::getHeader('Content-Type');
+		if ($ct && strpos($ct, 'text/event-stream') !== false) return true;
+		$xab = self::getHeader('X-Accel-Buffering');
+		if ($xab && strtolower($xab) === 'no') return true;
+		return false;
 	}
 
 	/** Set a header by name/value (what Q_Response::setHeader() did). */
