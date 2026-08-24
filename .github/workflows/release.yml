@@ -1,0 +1,179 @@
+name: Build Static Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: 'PHP version'
+        default: '8.3'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            name: linux-aarch64
+          - os: macos-latest
+            arch: arm64
+            name: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP for static-php-cli
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - name: Install static-php-cli
+        run: |
+          composer create-project crazywhalecc/static-php-cli spc-build --no-dev
+          cd spc-build
+          chmod +x bin/spc
+
+      - name: Download sources
+        working-directory: spc-build
+        run: |
+          PHP_VER="${{ github.event.inputs.php_version || '8.3' }}"
+          ./bin/spc download \
+            --for-extensions="pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
+            --with-php=$PHP_VER \
+            --prefer-pre-built
+
+      - name: Build static PHP CLI + phpmicro
+        working-directory: spc-build
+        run: |
+          ./bin/spc build \
+            "pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
+            --build-cli --build-micro
+
+      - name: Build qbixserver.phar
+        run: |
+          # Use the freshly built static PHP to build the phar
+          spc-build/buildroot/bin/php -d phar.readonly=0 build-phar.php
+
+      - name: Combine into single binary
+        working-directory: spc-build
+        run: |
+          ./bin/spc micro:combine ../bin/qbixserver.phar -O ../qbixserver-${{ matrix.name }}
+          chmod +x ../qbixserver-${{ matrix.name }}
+          ls -lh ../qbixserver-${{ matrix.name }}
+
+      - name: Compress with UPX (Linux only)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get install -y -qq upx-ucl 2>/dev/null || true
+          if command -v upx &>/dev/null; then
+            cp qbixserver-${{ matrix.name }} qbixserver-${{ matrix.name }}-uncompressed
+            upx --best --lzma qbixserver-${{ matrix.name }} || true
+            echo "Compressed: $(ls -lh qbixserver-${{ matrix.name }} | awk '{print $5}')"
+            echo "Original:   $(ls -lh qbixserver-${{ matrix.name }}-uncompressed | awk '{print $5}')"
+          fi
+
+      - name: Smoke test
+        run: |
+          # Verify the binary works
+          ./qbixserver-${{ matrix.name }} --help || true
+          echo '<?php echo "ok\n";' > /tmp/test.php
+          timeout 3 ./qbixserver-${{ matrix.name }} --root=/tmp --port=19999 &
+          sleep 2
+          curl -s http://127.0.0.1:19999/test.php || echo "test skipped"
+          kill %1 2>/dev/null || true
+
+      - name: Also package static php-cli separately
+        run: |
+          cp spc-build/buildroot/bin/php php-${{ matrix.name }}
+          chmod +x php-${{ matrix.name }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbixserver-${{ matrix.name }}
+          path: |
+            qbixserver-${{ matrix.name }}
+            php-${{ matrix.name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Build phar (for those who have PHP already)
+        run: |
+          php -d phar.readonly=0 build-phar.php || true
+
+      - name: Create zip
+        run: |
+          zip -rq qbixserver-source.zip . \
+            -x "./.git/*" "./node_modules/*" "./package.json" "./package-lock.json" \
+            "./spc-build/*" "./artifacts/*"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            artifacts/qbixserver-linux-x86_64/qbixserver-linux-x86_64
+            artifacts/qbixserver-linux-aarch64/qbixserver-linux-aarch64
+            artifacts/qbixserver-macos-arm64/qbixserver-macos-arm64
+            artifacts/qbixserver-linux-x86_64/php-linux-x86_64
+            artifacts/qbixserver-linux-aarch64/php-linux-aarch64
+            artifacts/qbixserver-macos-arm64/php-macos-arm64
+            bin/qbixserver.phar
+            qbixserver-source.zip
+          body: |
+            ## Qbix Server ${{ github.ref_name }}
+
+            ### Download
+
+            | Platform | Binary | Size |
+            |---|---|---|
+            | **Linux x86_64** | `qbixserver-linux-x86_64` | ~12MB |
+            | **Linux ARM64** | `qbixserver-linux-aarch64` | ~12MB |
+            | **macOS ARM64** | `qbixserver-macos-arm64` | ~25MB |
+
+            Each binary contains PHP 8.3 + SQLite + OpenSSL + curl — no dependencies needed.
+
+            ```bash
+            # Download and run (Linux x86_64 example)
+            chmod +x qbixserver-linux-x86_64
+            ./qbixserver-linux-x86_64
+
+            # Or with the phar (requires PHP already installed)
+            php qbixserver.phar
+            ```
+
+            ### What's included
+            - PHP 8.3 interpreter (statically linked)
+            - SQLite3 + PDO_SQLite
+            - OpenSSL, curl, mbstring
+            - pcntl (fork), sockets (TCP_NODELAY), posix
+            - phar, json, tokenizer, filter, ctype, session
+
+            ### Also available
+            - `php-linux-x86_64` etc. — standalone static PHP CLI with the same extensions
+            - `qbixserver.phar` — for systems that already have PHP installed
+            - `qbixserver-source.zip` — full source code

@@ -1,0 +1,104 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  standalone:
+    name: standalone mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, posix, gd, zip, mbstring, sockets
+          coverage: none
+
+      - name: Syntax check every source file
+        run: |
+          set -e
+          find src qbixserver.php -name '*.php' -print0 \
+            | xargs -0 -n1 php -l > /dev/null
+          echo "all files parse"
+
+      - name: Main suite
+        run: bash tests/run.sh --quick
+
+      - name: SAPI suite
+        run: php tests/testSapi.php
+
+      - name: End-to-end probe (standalone only)
+        run: bash tests/run-probe.sh
+
+  cgi:
+    name: php-cgi carveout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP (with CGI binary)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, posix, mbstring, sockets
+          coverage: none
+
+      - name: Install php-cgi
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq php8.3-cgi
+
+      # Native header() is discarded under the CLI SAPI, so scripts relying on
+      # it are routed to php-cgi. That escape hatch is the documented answer to
+      # a real limitation, so it must stay tested.
+      - name: CGI carveout suite
+        run: bash tests/run-cgi.sh
+
+  platform:
+    name: --app mode (against real Platform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, posix, gd, zip, mbstring, sockets
+          coverage: none
+
+      - name: Check out the Qbix Platform
+        uses: actions/checkout@v4
+        with:
+          repository: Qbix/Platform
+          path: .platform
+
+      # platform-compat.php and routing-parity.php SKIP with exit 0 when no
+      # Platform is present, which in CI is indistinguishable from passing.
+      # Assert on their output so a missing Platform fails the job loudly.
+      - name: Platform compatibility audit
+        run: |
+          set -e
+          out=$(php tests/platform-compat.php "$GITHUB_WORKSPACE/.platform/platform")
+          echo "$out"
+          echo "$out" | grep -q '^PASS:' \
+            || { echo "::error::compat audit did not PASS"; exit 1; }
+
+      - name: Routing parity
+        run: |
+          set -e
+          bash tests/fixtures/make-app.sh \
+            "$GITHUB_WORKSPACE/.platform/platform" /tmp/TestApp 20099 >/dev/null
+          out=$(QBIX_APP_DIR=/tmp/TestApp \
+            php tests/routing-parity.php "$GITHUB_WORKSPACE/.platform/platform")
+          echo "$out"
+          echo "$out" | grep -q ' 0 failed' \
+            || { echo "::error::routing parity failed"; exit 1; }
+
+      - name: Dual-mode end-to-end probe
+        run: bash tests/run-probe.sh "$GITHUB_WORKSPACE/.platform/platform"
+
+      - name: Dual-mode acceptance suite
+        run: bash tests/run-modes.sh /tmp/TestApp "$GITHUB_WORKSPACE/.platform/platform"
