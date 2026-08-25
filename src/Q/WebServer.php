@@ -1589,8 +1589,11 @@ class Q_WebServer
 		}
 		$_REQUEST = array_merge($_GET, $_POST);
 
-		// Make raw body available
+		// Make raw body available via Q_Request::input() and php://input
 		Q_WebServer_State::setInput($rawBody);
+		if (class_exists('Q_Request', false)) {
+			Q_Request::$input = $rawBody;
+		}
 
 		// If pcntl available, fork to isolate
 		if (function_exists('pcntl_fork')) {
@@ -3154,8 +3157,11 @@ HTML;
 		}
 		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
 
-		// Make raw body available
+		// Make raw body available via Q_Request::input() and php://input
 		Q_WebServer_State::setInput($rawBody);
+		if (class_exists('Q_Request', false)) {
+			Q_Request::$input = $rawBody;
+		}
 
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
@@ -3200,9 +3206,10 @@ HTML;
 					|| ($phase & PHP_OUTPUT_HANDLER_FINAL);
 
 				if (!Q_WebServer_State::isStreaming()) {
-					// Not streaming — if this is a flush or final, return content
-					// to be accumulated in the buffer
-					return $chunk;
+					// Not streaming — return false to leave buffer unmodified.
+					// Returning the $chunk would REPLACE the buffer on every
+					// 4096-byte trigger, losing all previous output.
+					return false;
 				}
 
 				// Streaming mode active
@@ -3230,7 +3237,7 @@ HTML;
 					@fwrite($_streamingClient, "0\r\n\r\n");
 				}
 				return ''; // consume
-			}, 4096, PHP_OUTPUT_HANDLER_FLUSHABLE | PHP_OUTPUT_HANDLER_CLEANABLE
+			}, 0, PHP_OUTPUT_HANDLER_FLUSHABLE | PHP_OUTPUT_HANDLER_CLEANABLE
 				| PHP_OUTPUT_HANDLER_REMOVABLE);
 		} else {
 			// Platform mode or no client socket: non-removable buffer
@@ -3343,6 +3350,15 @@ HTML;
 		$headerEnd = strpos($raw, "\r\n\r\n");
 		$headerBlock = substr($raw, 0, $headerEnd);
 		$body = substr($raw, $headerEnd + 4);
+
+		// Trim body to Content-Length if present (prevents pipelined
+		// request data from bleeding into this request's body)
+		if (preg_match('/content-length:\s*(\d+)/i', $headerBlock, $_clm)) {
+			$cl = (int) $_clm[1];
+			if (strlen($body) > $cl) {
+				$body = substr($body, 0, $cl);
+			}
+		}
 
 		// Fast request line parse
 		$rlEnd = strpos($headerBlock, "\r\n");
