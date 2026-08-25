@@ -33,6 +33,11 @@ jobs:
 
       - name: End-to-end probe (standalone only)
         run: bash tests/run-probe.sh
+        timeout-minutes: 2
+        continue-on-error: false
+        env:
+          CI_PROBE_RETRIES: 5
+          CI_PROBE_DELAY: 3
 
   cgi:
     name: php-cgi carveout
@@ -74,6 +79,7 @@ jobs:
         with:
           repository: Qbix/Platform
           path: .platform
+          submodules: recursive
 
       # platform-compat.php and routing-parity.php SKIP with exit 0 when no
       # Platform is present, which in CI is indistinguishable from passing.
