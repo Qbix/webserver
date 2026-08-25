@@ -34,6 +34,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install build dependencies
+        run: |
+          if command -v apt-get &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq pkg-config autoconf automake build-essential
+          elif command -v brew &>/dev/null; then
+            brew install pkg-config autoconf automake
+          fi
+
       - name: Set up PHP for static-php-cli
         uses: shivammathur/setup-php@v2
         with:
@@ -44,6 +53,7 @@ jobs:
           composer create-project crazywhalecc/static-php-cli spc-build --no-dev
           cd spc-build
           chmod +x bin/spc
+          ./bin/spc doctor --auto-fix || true
 
       - name: Download sources
         working-directory: spc-build
