@@ -39,13 +39,19 @@ jobs:
         run: |
           if command -v apt-get &>/dev/null; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq pkg-config pkgconf autoconf automake build-essential cmake
-            # Ensure pkg-config is in PATH (some ARM images need this)
-            which pkg-config || sudo ln -sf "$(which pkgconf)" /usr/bin/pkg-config
+            sudo apt-get install -y -qq \
+              pkg-config pkgconf autoconf automake build-essential cmake \
+              musl-tools musl-dev libmusl-dev
+            # Ensure pkg-config is findable (ARM runners sometimes miss the symlink)
+            if ! command -v pkg-config &>/dev/null; then
+              sudo ln -sf "$(which pkgconf)" /usr/local/bin/pkg-config
+            fi
           elif command -v brew &>/dev/null; then
             brew install pkg-config autoconf automake cmake
           fi
-          echo "pkg-config at: $(which pkg-config 2>/dev/null || echo 'NOT FOUND')"
+          echo "pkg-config: $(which pkg-config 2>/dev/null || echo 'NOT FOUND')"
+          echo "musl-gcc: $(which musl-gcc 2>/dev/null || echo 'NOT FOUND')"
+          pkg-config --version 2>/dev/null || echo "pkg-config not working"
 
       - name: Set up PHP for static-php-cli
         uses: shivammathur/setup-php@v2
