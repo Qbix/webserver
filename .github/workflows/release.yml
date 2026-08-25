@@ -16,6 +16,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -57,12 +58,13 @@ jobs:
 
       - name: Download sources
         working-directory: spc-build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PHP_VER="${{ github.event.inputs.php_version || '8.3' }}"
           ./bin/spc download \
             --for-extensions="pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
-            --with-php=$PHP_VER \
-            --prefer-pre-built
+            --with-php=$PHP_VER
 
       - name: Build static PHP CLI + phpmicro
         working-directory: spc-build
