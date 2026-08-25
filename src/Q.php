@@ -1050,6 +1050,18 @@ class Q_Response
 	}
 
 	/**
+	 * Clear all stored cookies and cookie-removal entries.
+	 * Called by Q_WebServer_State::clear() between requests.
+	 * @method clearAllCookies
+	 * @static
+	 */
+	static function clearAllCookies()
+	{
+		self::$cookies = array();
+		self::$cookiesToRemove = array();
+	}
+
+	/**
 	 * Set redirect. Compatible with Q_Response::redirect() from the Platform.
 	 * @method redirect
 	 * @static

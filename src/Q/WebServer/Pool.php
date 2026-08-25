@@ -203,7 +203,7 @@ class Q_WebServer_Pool
 			// styles, cookies, errors) so they don't leak between requests.
 			if (class_exists('Q_Response', false)
 				&& method_exists('Q_Response', 'clear')) {
-				Q_Response::clear();
+				Q_WebServer_State::clear();
 			}
 			if (function_exists('header_remove')) {
 				@header_remove();

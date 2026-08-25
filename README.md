@@ -1,55 +1,8 @@
 # ⚡ Qbix Server
 
-### Run your PHP scripts over 100× faster than nginx + php-fpm
+### Run your PHP scripts [over 100×](#three-things-we-measured) faster than nginx + php-fpm
 
-A pure PHP web server. No nginx, no Apache, no php-fpm.
-One process serves static files, PHP scripts, WebSocket connections, and a
-live dashboard. With `--workers=N`, persistent workers match fpm's per-request
-speed at over 100× the concurrent capacity.
-
-## Three things we measured
-
-**1. Over 100× more concurrent capacity.** Each fpm worker loads the framework
-independently (~42MB). Our workers fork after loading, sharing the framework
-via copy-on-write. A typical handler adds only ~200KB of private pages
-(measured via `/proc/smaps_rollup`). On 1GB of RAM:
-
-```
-php-fpm:       1GB ÷ 42MB per worker  =      24 concurrent PHP requests
-Qbix Server:   1GB ÷ 200KB per child  =   5,000 concurrent PHP requests
-```
-
-Measured across Qbix (380 classes), Laravel-sim (761), Symfony-sim (761):
-
-| Request type | Private delta | Ratio |
-|---|---|---|
-| Typical handler | 150–236 KB | **182–306×** |
-| Heavy response (1K items) | 772 KB–1.0 MB | **41–52×** |
-| Bulk data (10K rows) | ~8.6 MB | **5×** |
-
-**2. PHP reuses the parent's heap.** Children do not allocate new memory
-chunks. The parent pre-allocates a 4MB heap; children use it via COW. Only the
-specific 4KB pages the child writes to are copied by the kernel. This is why
-the per-child cost is ~200KB, not the ~5MB you'd expect from PHP's allocator.
-
-**3. Same speed as Swoole and fpm.** Head-to-head at 4 workers each: octane
-439 req/s vs fpm 469 vs Swoole 483. Within 7% — the gap is IPC overhead, same
-as fpm's FastCGI socket. But with 100× more workers on the same RAM, the
-effective throughput under load is dramatically higher.
-
-### Under real load
-
-200 concurrent requests, I/O increasing as the database gets busier:
-
-| I/O latency | fpm (4w) | octane (200w, same RAM) | Throughput | Latency |
-|---|---|---|---|---|
-| 10ms | 382/s, p50: 516ms | **1,316/s, p50: 18ms** | **3.4×** | **29×** |
-| 50ms | 79/s, p50: 2.5s | **358/s, p50: 58ms** | **4.5×** | **44×** |
-| 100ms | 40/s, p50: 5.0s | **318/s, p50: 226ms** | **8.0×** | **22×** |
-| 200ms | 20/s, p50: 10.0s | **105/s, p50: 212ms** | **5.3×** | **47×** |
-
-At 200ms I/O (a database under contention), fpm users wait **10 seconds**.
-Octane users wait **212 milliseconds**. Same hardware, same code, same RAM.
+A pure PHP web server. No nginx, no Apache, no php-fpm. One process serves static files, PHP scripts, WebSocket connections, and a live dashboard. With `--workers=N`, persistent workers match fpm's per-request speed at over 100× the concurrent capacity.
 
 ### What it replaces
 
@@ -64,8 +17,79 @@ Octane users wait **212 milliseconds**. Same hardware, same code, same RAM.
 | 🧩 **Cache invalidation** | Whole-page only | `X-Cache-Tree` — per-component |
 | ⚙️ **Setup** | nginx + fpm pools + sockets | `php qbixserver.php` |
 
-See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
-[reset.md](docs/reset.md) for what gets reset between requests.
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and [reset.md](docs/reset.md) for what gets reset between requests.
+
+
+## ✨ Features
+
+| Category | What you get |
+|---|---|
+| **Static files** | ETag, 304 Not Modified, Last-Modified, MIME type detection, in-memory response cache |
+| **Keep-alive** | HTTP/1.0 and 1.1, TCP_NODELAY, configurable limits |
+| **HTTP/2** | Via amphp — multiplexed streams, header compression, TLS (optional) |
+| **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
+| **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
+| **WebSocket** | Socket.IO v5 compatible + bare WebSocket. Server→client RPC. Client JS served at `/Q/socket.js` and `/socket.io/socket.io.js`. |
+| **Rooms** | Process-per-room shared state, tick timers, broadcasting. Members join/leave, room state in PHP arrays. |
+| **SSE / Streaming** | `Content-Type: text/event-stream` auto-detected, chunked transfer encoding, `X-Accel-Buffering: no` support |
+| **Unix domain socket** | `--socket=/run/qbix/app.sock` for nginx proxy hop, simultaneous TCP+UDS listeners |
+| **Images** | On-the-fly resize (`?w=300`), auto format conversion (JPEG→WebP), `Save-Data` support, disk-cached with LRU eviction |
+| **Directory listing** | Grid/list toggle, lazy thumbnails, lightbox with download-at-size, multi-select, bulk ZIP download. Overridable with `listing.php` |
+| **Q.js frontend** | Bundled Q.min.js (187KB), jQuery shim (5.7KB), minimal Handlebars (6.1KB), 43 UI tools, 107 languages + translations — served at `/Q/plugins/` |
+| **Dashboard** | Live at `/Q/dashboard` — request log, throughput, top paths, response times, memory, WebSocket connections, active rooms |
+| **Health check** | JSON at `/Q/health` — stats for load balancers and monitoring |
+| **Control panel** | Password-protected at `/Q/panel` — six tabs: Apps, Scripts, Plugins, Playground, System, Servers |
+| **Deploy** | `--deploy=production` CLI or one-click from Panel. rsync to remote servers via SSH. |
+| **Federation** | `Q::event()` forwarding between servers. HMAC-signed (Platform-compatible), per-message loop prevention, fingerprint pinning |
+| **API discovery** | `/.well-known/openapi.json` (Swagger/Postman), `/.well-known/mcp.json` (Claude/AI tools), `/.well-known/qbix.json` (server-to-server) |
+| **PHPDoc→API specs** | Handlers auto-documented from PHPDoc and YUIDoc blocks. `@private`/`@internal` to hide. |
+| **OpenClaiming** | Auto-generated ES256-signed server identity. Claims-in-folders: JSON templates auto-signed, PHP dynamic, pre-signed static. OCP wire format. |
+| **Shortcuts** | Windows `.lnk` files and Mac aliases resolved transparently. Platform plugin symlinks just work. |
+| **Self-signed certs** | Auto-generated P-256 key pair + TLS cert for server identity and inter-server trust |
+| **Rate limiting** | Per-IP with configurable windows and burst limits |
+| **Security** | Path traversal blocked, dotfiles blocked (except `.well-known/`), 431 for oversized headers, upload limits enforced |
+| **Graceful shutdown** | SIGTERM/SIGINT drain in-flight requests before closing |
+| **TLS** | Optional HTTPS with auto-certbot or manual certs |
+| **Logging** | Colored terminal output + file-based access logs |
+| **Access control** | X-Accel-Redirect support — PHP enforces access, server serves the file |
+| **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
+| **Platform compatible** | `Q_Utils::sign()`, `Q::event()`, handler conventions, config paths — all match Qbix Platform. Upgrade without code changes. |
+
+---
+
+## Three things we measured
+
+**1. Over 100× more concurrent capacity.** Each fpm worker loads the framework independently (~42MB). Our workers fork after loading, sharing the framework via copy-on-write. A typical handler adds only ~200KB of private pages (measured via `/proc/smaps_rollup`). On 1GB of RAM:
+
+```
+php-fpm:       1GB ÷ 42MB per worker  =      24 concurrent PHP requests
+Qbix Server:   1GB ÷ 200KB per child  =   5,000 concurrent PHP requests
+```
+
+Measured across Qbix (380 classes), Laravel-sim (761), Symfony-sim (761):
+
+| Request type | Private delta | Ratio |
+|---|---|---|
+| Typical handler | 150–236 KB | **182–306×** |
+| Heavy response (1K items) | 772 KB–1.0 MB | **41–52×** |
+| Bulk data (10K rows) | ~8.6 MB | **5×** |
+
+**2. PHP reuses the parent's heap.** Children do not allocate new memory chunks. The parent pre-allocates a 4MB heap; children use it via COW. Only the specific 4KB pages the child writes to are copied by the kernel. This is why the per-child cost is ~200KB, not the ~5MB you'd expect from PHP's allocator.
+
+**3. Same speed as Swoole and fpm.** Head-to-head at 4 workers each: octane 439 req/s vs fpm 469 vs Swoole 483. Within 7% — the gap is IPC overhead, same as fpm's FastCGI socket. But with 100× more workers on the same RAM, the effective throughput under load is dramatically higher.
+
+### Under real load
+
+200 concurrent requests, I/O increasing as the database gets busier:
+
+| I/O latency | fpm (4w) | octane (200w, same RAM) | Throughput | Latency |
+|---|---|---|---|---|
+| 10ms | 382/s, p50: 516ms | **1,316/s, p50: 18ms** | **3.4×** | **29×** |
+| 50ms | 79/s, p50: 2.5s | **358/s, p50: 58ms** | **4.5×** | **44×** |
+| 100ms | 40/s, p50: 5.0s | **318/s, p50: 226ms** | **8.0×** | **22×** |
+| 200ms | 20/s, p50: 10.0s | **105/s, p50: 212ms** | **5.3×** | **47×** |
+
+At 200ms I/O (a database under contention), fpm users wait **10 seconds**. Octane users wait **212 milliseconds**. Same hardware, same code, same RAM.
 
 ### Deployment
 
@@ -75,8 +99,7 @@ See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
 php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
-Listens on port 80 by default. If TLS certificates exist (or Let's Encrypt is
-configured), HTTPS on port 443 starts automatically — no extra flags needed.
+Listens on port 80 by default. If TLS certificates exist (or Let's Encrypt is configured), HTTPS on port 443 starts automatically — no extra flags needed.
 
 ```bash
 php qbixserver.php --app=/path/to/myapp --workers=40
@@ -89,8 +112,7 @@ php qbixserver.php --port=8080 --https-port=8443
 # { "Q": { "webserver": { "port": 8080 }, "web": { "https": { "port": 8443 } } } }
 ```
 
-HTTP, HTTPS, static files, PHP, WebSocket, cron — one process, no external
-dependencies.
+HTTP, HTTPS, static files, PHP, WebSocket, cron — one process, no external dependencies.
 
 **Production** — put a CDN in front, no nginx needed:
 
@@ -98,9 +120,7 @@ dependencies.
   Client → CDN (Cloudflare / CloudFront) → Qbix Server
 ```
 
-The CDN caches static files at the edge, terminates HTTPS, and handles
-HTTP/2+3. Qbix is the origin for PHP execution with `--workers=N` giving
-100× more concurrent capacity than fpm. The built-in scheduler replaces cron:
+The CDN caches static files at the edge, terminates HTTPS, and handles HTTP/2+3. Qbix is the origin for PHP execution with `--workers=N` giving 100× more concurrent capacity than fpm. The built-in scheduler replaces cron:
 
 ```json
 { "Q": { "scheduler": {
@@ -127,13 +147,11 @@ server {
 { "Q": { "webserver": { "accel": { "passthrough": true } } } }
 ```
 
-PHP checks permissions, sends `X-Accel-Redirect: /files/report.pdf`, and
-nginx serves the file with `sendfile()` — zero-copy, never enters PHP memory.
+PHP checks permissions, sends `X-Accel-Redirect: /files/report.pdf`, and nginx serves the file with `sendfile()` — zero-copy, never enters PHP memory.
 
 ### 🎯 Drop files in folders. Get a real-time server.
 
-Three execution models — HTTP, WebSocket, and rooms — all shared-nothing,
-all just PHP files in folders:
+Three execution models — HTTP, WebSocket, and rooms — all shared-nothing, all just PHP files in folders:
 
 ```
 handlers/
@@ -159,9 +177,7 @@ classes/
 | **WebSocket** | Fork → handle all messages from one user → die on disconnect | `static` vars persist across messages | Automatic — process exits |
 | **Room** | Fork → handle messages from all users in room → die when empty | `static` vars shared across all members | Automatic — process exits |
 
-No cleanup code. No memory leaks. No state leaking between users.
-Every model uses `handlers/`, `classes/`, and `Q::event()`.
-Try it — one command, zero config:
+No cleanup code. No memory leaks. No state leaking between users. Every model uses `handlers/`, `classes/`, and `Q::event()`. Try it — one command, zero config:
 
 ```bash
 php qbixserver.php
@@ -179,6 +195,7 @@ php qbixserver.php
 - [Server Headers](#-server-headers--what-your-php-can-send)
 - [HTTP — Fork Per Request](#-http--fork-per-request)
 - [WebSocket — Process Per Connection](#-websocket--process-per-connection)
+- [Server-Sent Events (SSE)](#-server-sent-events-sse)
 - [Rooms — Process Per Room](#-rooms--process-per-room)
 - [Complete Example: Chat App With Rooms](#-complete-example-chat-app-with-rooms)
 - [Clean URL Routing](#️-clean-url-routing-optional)
@@ -195,33 +212,6 @@ php qbixserver.php
 - [Roadmap](#️-roadmap)
 - [The mental model](#-the-mental-model)
 - [License](#-license)
-
----
-
-## 🧹 What it replaces
-
-| You used to need | Now |
-|---|---|
-| **nginx** | Built in — static files, keep-alive, ETag, gzip, directory listing |
-| **php-fpm** | Built in — fork-per-request from preloaded parent, no framework bootstrap |
-| **Node.js + socket.io** | Built in — Socket.IO v5 wire protocol, per-connection workers |
-| **Redis** (pub/sub, shared state) | Built in — room processes with shared PHP arrays |
-| **certbot + cron** | Built in — ACME auto-renewal, hot-swaps certs, no restart |
-| **Supervisor / systemd** | Built in — graceful shutdown, `--stop`, `--reload`, PID file |
-| **Cron** (scheduled tasks) | Built in — scheduler with `every`, `times`, `weekdays`, `monthdays` |
-| **Separate WebSocket server** | Built in — same handlers, same deploy, same process |
-| **Load balancer config** | Works behind nginx/HAProxy/Cloudflare, or standalone |
-| **Process manager** | Built in — request timeout, worker tracking, crash isolation |
-
-One PHP file. One command. One port.
-
-```bash
-php qbixserver.php  # HTTPS on 443 auto-starts if certs exist
-```
-
-Static files, PHP execution, WebSocket, rooms, Socket.IO, TLS, auto-renewing
-certs, scheduled tasks, live dashboard, hot reload — all from a single process
-that fits in a 300KB PHAR.
 
 ---
 
@@ -254,8 +244,7 @@ php bin/qbixserver.phar --root=./public
 
 ## 📊 Performance
 
-Benchmarked on a single-core container, PHP 8.3, Ubuntu 24. Each server ran
-alone. Zero failed requests.
+Benchmarked on a single-core container, PHP 8.3, Ubuntu 24. Each server ran alone. Zero failed requests.
 
 ### Head-to-head (4 workers each)
 
@@ -266,9 +255,7 @@ alone. Zero failed requests.
 | **Static 13KB** (c=100) | 26,974 | 50,742 | **18,311** | 10,038 |
 | **Memory / worker** | ~42 MB | ~42 MB | **~200 KB** (typical) | ~42 MB |
 
-Octane matches Swoole and fpm on I/O workloads — within 7% on CPU. The
-advantage is memory: on the same 200MB budget, octane runs 40 workers where
-the others run 4.
+Octane matches Swoole and fpm on I/O workloads — within 7% on CPU. The advantage is memory: on the same 200MB budget, octane runs 40 workers where the others run 4.
 
 ### Same memory budget (200MB, 50ms I/O, c=40)
 
@@ -279,17 +266,13 @@ the others run 4.
 
 **6.7× throughput, 9× lower latency** — same RAM.
 
-See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and
-[reset.md](docs/reset.md) for what gets reset between requests.
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and [reset.md](docs/reset.md) for what gets reset between requests.
 
 ---
 
 ## 🏎️ Why Not php-fpm?
 
-php-fpm is the standard PHP execution model, and it has a real throughput
-advantage: persistent workers handle requests without forking, so a lightweight
-API call that takes 5ms of actual work costs 5ms total. The same call under Qbix
-Server costs ~12ms (5ms work + 7ms fork overhead).
+php-fpm is the standard PHP execution model, and it has a real throughput advantage: persistent workers handle requests without forking, so a lightweight API call that takes 5ms of actual work costs 5ms total. The same call under Qbix Server costs ~12ms (5ms work + 7ms fork overhead).
 
 **The trade-off is throughput for capacity and safety.**
 
@@ -314,10 +297,7 @@ Qbix Server:
                    → run your code → die (no state leaks)
 ```
 
-The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so
-forked workers share the parent's memory pages for all those preloaded classes.
-Each worker starts with ~30MB shared (read-only) and allocates only the
-per-request data.
+The key insight is **fork after preload**. Unix `fork()` uses copy-on-write, so forked workers share the parent's memory pages for all those preloaded classes. Each worker starts with ~30MB shared (read-only) and allocates only the per-request data.
 
 ### The numbers, honestly
 
@@ -330,9 +310,7 @@ per-request data.
 | Per-request overhead | 0.002ms | 8ms (fork) | **0.05ms** (restore) |
 | Same budget, 50ms I/O | 78 req/s (4w) | 115 req/s | **520 req/s** (40w) |
 
-With octane mode, Qbix matches fpm's per-request speed while using 1/10th the
-memory and resetting statics between requests (which fpm doesn't do). Fork
-mode is still available for scripts that need bulletproof isolation.
+With octane mode, Qbix matches fpm's per-request speed while using 1/10th the memory and resetting statics between requests (which fpm doesn't do). Fork mode is still available for scripts that need bulletproof isolation.
 
 > **Important:** Database connections must NOT be opened before `fork()`. A TCP
 > connection is a single file descriptor — two processes writing to the same
@@ -343,18 +321,14 @@ mode is still available for scripts that need bulletproof isolation.
 
 ### Why it's actually better in practice
 
-The throughput gap narrows significantly for real applications. A framework like
-Qbix with 20 loaded plugins spends 10–50ms on bootstrap per fpm request — time
-that Qbix Server eliminates entirely because the forked child inherits all
-loaded classes. For a request that does 5ms of actual work:
+The throughput gap narrows significantly for real applications. A framework like Qbix with 20 loaded plugins spends 10–50ms on bootstrap per fpm request — time that Qbix Server eliminates entirely because the forked child inherits all loaded classes. For a request that does 5ms of actual work:
 
 ```
 nginx + fpm:    30ms bootstrap + 5ms work           =  35ms  (29 req/s per worker)
 Qbix Server:    7ms fork      + 0ms bootstrap + 5ms =  12ms  (83 req/s per fork)
 ```
 
-The heavier the framework, the more the fork model catches up. And the memory
-savings let you run 100× more of them simultaneously.
+The heavier the framework, the more the fork model catches up. And the memory savings let you run 100× more of them simultaneously.
 
 ---
 
@@ -402,17 +376,9 @@ Every PHP framework, library, and snippet that uses static variables, singletons
 
 Qbix Server offers two modes, both of which avoid this:
 
-**Fork mode (default):** each request forks from the preloaded parent, inherits
-loaded classes and config (read-only, shared via COW), runs in its own process,
-and dies when done. No state leaks. No audit needed. Your existing PHP code works
-exactly as it does on php-fpm.
+**Fork mode (default):** each request forks from the preloaded parent, inherits loaded classes and config (read-only, shared via COW), runs in its own process, and dies when done. No state leaks. No audit needed. Your existing PHP code works exactly as it does on php-fpm.
 
-**Octane mode (`--workers=N`):** persistent workers handle multiple requests, but
-a snapshot restore resets all class statics, `$GLOBALS`, `$_GET`, `$_POST`,
-`$_COOKIE`, `$_SERVER`, `$_FILES`, response headers, and error state between
-every request — verified by 13 dedicated snapshot isolation tests. The code above
-would work correctly because `$cached` is restored to `null` between requests.
-See [Octane Mode](#-octane-mode---workersn) for the full reset table.
+**Octane mode (`--workers=N`):** persistent workers handle multiple requests, but a snapshot restore resets all class statics, `$GLOBALS`, `$_GET`, `$_POST`, `$_COOKIE`, `$_SERVER`, `$_FILES`, response headers, and error state between every request — verified by 13 dedicated snapshot isolation tests. The code above would work correctly because `$cached` is restored to `null` between requests. See [Octane Mode](#-octane-mode---workersn) for the full reset table.
 
 ### The "just PHP" advantage
 
@@ -442,46 +408,9 @@ php qbixserver.php  # done
 
 ---
 
-## ✨ Features
-
-| Category | What you get |
-|---|---|
-| **Static files** | ETag, 304 Not Modified, Last-Modified, MIME type detection, in-memory response cache |
-| **Keep-alive** | HTTP/1.0 and 1.1, TCP_NODELAY, configurable limits |
-| **HTTP/2** | Via amphp — multiplexed streams, header compression, TLS (optional) |
-| **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
-| **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
-| **WebSocket** | Socket.IO v5 compatible + bare WebSocket. Server→client RPC. Client JS served at `/Q/socket.js` and `/socket.io/socket.io.js`. |
-| **Rooms** | Process-per-room shared state, tick timers, broadcasting. Members join/leave, room state in PHP arrays. |
-| **Images** | On-the-fly resize (`?w=300`), auto format conversion (JPEG→WebP), `Save-Data` support, disk-cached with LRU eviction |
-| **Directory listing** | Grid/list toggle, lazy thumbnails, lightbox with download-at-size, multi-select, bulk ZIP download. Overridable with `listing.php` |
-| **Q.js frontend** | Bundled Q.min.js (187KB), jQuery shim (5.7KB), minimal Handlebars (6.1KB), 43 UI tools, 107 languages + translations — served at `/Q/plugins/` |
-| **Dashboard** | Live at `/Q/dashboard` — request log, throughput, top paths, response times, memory, WebSocket connections, active rooms |
-| **Health check** | JSON at `/Q/health` — stats for load balancers and monitoring |
-| **Control panel** | Password-protected at `/Q/panel` — six tabs: Apps, Scripts, Plugins, Playground, System, Servers |
-| **Deploy** | `--deploy=production` CLI or one-click from Panel. rsync to remote servers via SSH. |
-| **Federation** | `Q::event()` forwarding between servers. HMAC-signed (Platform-compatible), per-message loop prevention, fingerprint pinning |
-| **API discovery** | `/.well-known/openapi.json` (Swagger/Postman), `/.well-known/mcp.json` (Claude/AI tools), `/.well-known/qbix.json` (server-to-server) |
-| **PHPDoc→API specs** | Handlers auto-documented from PHPDoc and YUIDoc blocks. `@private`/`@internal` to hide. |
-| **OpenClaiming** | Auto-generated ES256-signed server identity. Claims-in-folders: JSON templates auto-signed, PHP dynamic, pre-signed static. OCP wire format. |
-| **Shortcuts** | Windows `.lnk` files and Mac aliases resolved transparently. Platform plugin symlinks just work. |
-| **Self-signed certs** | Auto-generated P-256 key pair + TLS cert for server identity and inter-server trust |
-| **Rate limiting** | Per-IP with configurable windows and burst limits |
-| **Security** | Path traversal blocked, dotfiles blocked (except `.well-known/`), 431 for oversized headers, upload limits enforced |
-| **Graceful shutdown** | SIGTERM/SIGINT drain in-flight requests before closing |
-| **TLS** | Optional HTTPS with auto-certbot or manual certs |
-| **Logging** | Colored terminal output + file-based access logs |
-| **Access control** | X-Accel-Redirect support — PHP enforces access, server serves the file |
-| **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
-| **Platform compatible** | `Q_Utils::sign()`, `Q::event()`, handler conventions, config paths — all match Qbix Platform. Upgrade without code changes. |
-
----
-
 ## 🔒 Server Headers — What Your PHP Can Send
 
-Qbix Server understands special response headers from your PHP scripts. These are
-the same headers nginx understands (like `X-Accel-Redirect`) plus new ones for
-component-level caching. Your PHP sends them with `Q_Response::header()`, the server acts on them.
+Qbix Server understands special response headers from your PHP scripts. These are the same headers nginx understands (like `X-Accel-Redirect`) plus new ones for component-level caching. Your PHP sends them with `Q_Response::header()`, the server acts on them.
 
 > **Use `Q_Response::header()`, not PHP's `header()`.** The server runs PHP in
 > the CLI SAPI, where the built-in `header()` and `http_response_code()` are
@@ -501,20 +430,13 @@ component-level caching. Your PHP sends them with `Q_Response::header()`, the se
 | `X-Cache-Invalidate` | Marks dependency keys as stale | `Q_Response::header('X-Cache-Invalidate: ' . json_encode([...]));` |
 | `X-Cache-Stale` | Invalidates cached pages containing these components | `Q_Response::header('X-Cache-Stale: feed,sidebar');` |
 
-All of these use `Q_Response::header()` instead of PHP's `header()`. This is because
-the server runs in CLI SAPI where `header()` calls are silently discarded —
-same as FrankenPHP worker mode and Workerman. `Q_Response::header()` has the same
-signature as `header()` but captures the values for the server to send.
-The server strips internal headers before sending the response to the client.
+All of these use `Q_Response::header()` instead of PHP's `header()`. This is because the server runs in CLI SAPI where `header()` calls are silently discarded — same as FrankenPHP worker mode and Workerman. `Q_Response::header()` has the same signature as `header()` but captures the values for the server to send. The server strips internal headers before sending the response to the client.
 
 ### Access-controlled static files
 
-With a typical server, your uploaded files sit at public URLs. Anyone with the link can
-access them — and share the link with others. The usual workaround is "unguessable" URLs,
-which are just security through obscurity.
+With a typical server, your uploaded files sit at public URLs. Anyone with the link can access them — and share the link with others. The usual workaround is "unguessable" URLs, which are just security through obscurity.
 
-`X-Accel-Redirect` lets your PHP check access, then tells the server to serve the file.
-By convention, private files live in `files/` — a sibling of `web/`, outside the document root:
+`X-Accel-Redirect` lets your PHP check access, then tells the server to serve the file. By convention, private files live in `files/` — a sibling of `web/`, outside the document root:
 
 ```
 myproject/
@@ -602,16 +524,11 @@ echo renderAdminPanel();
 
 ### Component-level cache invalidation
 
-Most caching systems cache whole pages. When anything changes, you throw away the
-entire page and re-render everything. Qbix Server tracks which data each page
-depends on, so when data changes, only the affected pages are invalidated — not
-every page on the site.
+Most caching systems cache whole pages. When anything changes, you throw away the entire page and re-render everything. Qbix Server tracks which data each page depends on, so when data changes, only the affected pages are invalidated — not every page on the site.
 
 **Step 1: Register components when rendering a page**
 
-When PHP renders a page, it tells the server what data the page depends on.
-The server hashes each component and maps them to dependency keys. This lets
-the server know exactly which pages to invalidate when specific data changes.
+When PHP renders a page, it tells the server what data the page depends on. The server hashes each component and maps them to dependency keys. This lets the server know exactly which pages to invalidate when specific data changes.
 
 ```php
 <?php
@@ -661,15 +578,11 @@ Q_Response::header('X-Cache-Invalidate: ' . json_encode([
 echo json_encode(['ok' => true]);
 ```
 
-The server tracks which pages depend on which data keys. When a dependency
-key is invalidated, it finds exactly which pages are affected and removes
-them from the cache. Pages with no stale dependencies continue serving from
-the in-memory cache without hitting PHP.
+The server tracks which pages depend on which data keys. When a dependency key is invalidated, it finds exactly which pages are affected and removes them from the cache. Pages with no stale dependencies continue serving from the in-memory cache without hitting PHP.
 
 ### Even more powerful with Qbix Platform
 
-These headers work with `Q_Response::header()` calls as shown above. But with the
-[Qbix Platform](https://github.com/Qbix/Platform), it becomes automatic:
+These headers work with `Q_Response::header()` calls as shown above. But with the [Qbix Platform](https://github.com/Qbix/Platform), it becomes automatic:
 
 ```php
 // Tools call this during rendering — the framework handles the rest
@@ -683,16 +596,13 @@ Q_Response::redirect(['uri' => $internalPath, 'accel' => true]);
 Q_Response::cacheFor(300);
 ```
 
-The Platform's Streams plugin automatically invalidates cache dependencies when
-stream data changes — posts, relations, participant joins — so cached pages
-update themselves without any manual invalidation calls.
+The Platform's Streams plugin automatically invalidates cache dependencies when stream data changes — posts, relations, participant joins — so cached pages update themselves without any manual invalidation calls.
 
 ---
 
 ## 🌐 HTTP — Fork Per Request
 
-Every PHP request forks from the preloaded parent, handles the request, and dies.
-No cleanup needed — the OS reclaims everything.
+Every PHP request forks from the preloaded parent, handles the request, and dies. No cleanup needed — the OS reclaims everything.
 
 ### Static files
 
@@ -719,8 +629,7 @@ echo json_encode($users);
 
 ### Clean URL handlers
 
-With [routing configured](#️-clean-url-routing-optional), handlers in `handlers/`
-map to clean URLs:
+With [routing configured](#️-clean-url-routing-optional), handlers in `handlers/` map to clean URLs:
 
 ```php
 <?php
@@ -741,16 +650,13 @@ Browser: GET /api/users
   → OS reclaims all memory
 ```
 
-No memory leaks. No state from one request bleeding into the next.
-`exit()` only kills the child — the server keeps running.
+No memory leaks. No state from one request bleeding into the next. `exit()` only kills the child — the server keeps running.
 
 ---
 
 ## 🔌 WebSocket — Process Per Connection
 
-Each WebSocket connection gets **one PHP process**. It stays alive for the entire
-connection. Static variables persist across messages. When the client disconnects,
-the process dies — all state wiped.
+Each WebSocket connection gets **one PHP process**. It stays alive for the entire connection. Static variables persist across messages. When the client disconnects, the process dies — all state wiped.
 
 ### How it works
 
@@ -791,8 +697,7 @@ socket.emit('counter/increment', {}, (res) => {
 
 ### Authentication
 
-The per-connection process is the natural place for auth. Validate once,
-store in a static variable, use for every subsequent message:
+The per-connection process is the natural place for auth. Validate once, store in a static variable, use for every subsequent message:
 
 ```php
 <?php
@@ -817,8 +722,7 @@ function auth_login(&$params, &$result) {
 
 ### Joining rooms
 
-A per-connection handler decides when to join a room. This is your access control —
-the client can't join a room directly, only ask:
+A per-connection handler decides when to join a room. This is your access control — the client can't join a room directly, only ask:
 
 ```php
 <?php
@@ -845,12 +749,9 @@ function chat_join(&$params, &$result) {
 }
 ```
 
-The third argument to `$socket->join()` is forwarded to the room's `join`
-handler as `$params['data']`. This is how the per-connection handler (which did
-auth) passes identity to the room process (which doesn't know who anyone is).
+The third argument to `$socket->join()` is forwarded to the room's `join` handler as `$params['data']`. This is how the per-connection handler (which did auth) passes identity to the room process (which doesn't know who anyone is).
 
-Leaving works the same way — call `$socket->leave()` from a handler, or it
-happens automatically on disconnect:
+Leaving works the same way — call `$socket->leave()` from a handler, or it happens automatically on disconnect:
 
 ### Config
 
@@ -874,8 +775,7 @@ Map WebSocket event names to handler files:
 }
 ```
 
-If no mapping is configured, the event name is used directly as the handler path.
-`_connect` and `_disconnect` are lifecycle events fired automatically.
+If no mapping is configured, the event name is used directly as the handler path. `_connect` and `_disconnect` are lifecycle events fired automatically.
 
 ### The client
 
@@ -901,8 +801,7 @@ socket.emit('chat/message', {text: 'hello'}, (res) => {
 ```
 ### Context objects
 
-Every handler receives context objects in `$params`. Use `extract($params)` to
-get clean variables:
+Every handler receives context objects in `$params`. Use `extract($params)` to get clean variables:
 
 ```php
 function chat_message(&$params, &$result) {
@@ -936,16 +835,13 @@ function chat_message(&$params, &$result) {
 | `$room->reply($data)` | Send to the member who sent the current message |
 | `$room->send($socketId, $data)` | Send to a specific member |
 
-All send methods (`reply`, `broadcast`, `send`, `broadcastAll`) are **fire and
-forget** — they queue the message and return immediately. Only `__call` (RPC)
-blocks.
+All send methods (`reply`, `broadcast`, `send`, `broadcastAll`) are **fire and forget** — they queue the message and return immediately. Only `__call` (RPC) blocks.
 
 ### Protocol
 
 Two wire formats, auto-detected by path:
 
-**Socket.IO** (connect to `/socket.io/`) — full Socket.IO v5 wire protocol.
-The server bundles the client JS — no npm needed:
+**Socket.IO** (connect to `/socket.io/`) — full Socket.IO v5 wire protocol. The server bundles the client JS — no npm needed:
 
 ```html
 <script src="/socket.io/socket.io.js"></script>
@@ -970,14 +866,11 @@ socket.emit('game/score', {id: 42}, (response) => console.log(response.rank));
 socket.on('getLocation', (data, callback) => callback({lat: 40.7, lng: -74.0}));
 ```
 
-Supported: events, acks (both directions), namespaces, ping/pong.
-Not supported: HTTP long-polling, binary attachments.
+Supported: events, acks (both directions), namespaces, ping/pong. Not supported: HTTP long-polling, binary attachments.
 
-**Bare WebSocket** (connect to any other path) — plain JSON, no framing.
-Works with any language's WebSocket library.
+**Bare WebSocket** (connect to any other path) — plain JSON, no framing. Works with any language's WebSocket library.
 
-The server serves a minimal client at `/Q/socket.js` (~100 lines, no
-dependencies). Drop it in a `<script>` tag:
+The server serves a minimal client at `/Q/socket.js` (~100 lines, no dependencies). Drop it in a `<script>` tag:
 
 ```html
 <script src="/Q/socket.js"></script>
@@ -998,8 +891,7 @@ socket.handle('getLocation', function() {
 </script>
 ```
 
-Same API as `socket.io-client` — `on()`, `emit()`, `handle()`. Auto-reconnect
-with backoff. Or use raw `WebSocket` directly:
+Same API as `socket.io-client` — `on()`, `emit()`, `handle()`. Auto-reconnect with backoff. Or use raw `WebSocket` directly:
 
 ```javascript
 const ws = new WebSocket('ws://localhost/ws');
@@ -1015,13 +907,11 @@ ws.connect("ws://localhost/ws")
 ws.send(json.dumps({"event": "chat/message", "data": {"text": "hello"}}))
 ```
 
-Handlers don't know which protocol the client is using — the server
-translates at the wire level. Same handlers, same rooms, same everything.
+Handlers don't know which protocol the client is using — the server translates at the wire level. Same handlers, same rooms, same everything.
 
 ### Namespaces
 
-Socket.IO namespaces map to handler path prefixes. The default namespace `/`
-maps to the root `handlers/` directory:
+Socket.IO namespaces map to handler path prefixes. The default namespace `/` maps to the root `handlers/` directory:
 
 ```
 Namespace    Client emit              Handler path            Room "general"
@@ -1041,8 +931,7 @@ chat.emit('message', {text: 'hello'});   // → handlers/chat/message.php
 admin.emit('auth', {token: '...'});      // → handlers/admin/auth.php
 ```
 
-Namespace connect/disconnect handlers are optional. If you define one, it runs
-as access control. If you don't, the namespace auto-accepts:
+Namespace connect/disconnect handlers are optional. If you define one, it runs as access control. If you don't, the namespace auto-accepts:
 
 ```php
 <?php
@@ -1058,8 +947,7 @@ function MyApp_admin_connect(&$params, &$result) {
 
 ### Server→Client RPC
 
-PHP handlers can call methods on the client using `$socket->methodName()`.
-The call blocks until the client responds (5s timeout):
+PHP handlers can call methods on the client using `$socket->methodName()`. The call blocks until the client responds (5s timeout):
 
 ```php
 <?php
@@ -1077,8 +965,7 @@ function MyApp_location_check(&$params, &$result) {
 }
 ```
 
-Any method name that isn't `reply`, `send`, `broadcast`, `broadcastAll`,
-`join`, or `leave` goes through `__call` → IPC → WebSocket → client → response.
+Any method name that isn't `reply`, `send`, `broadcast`, `broadcastAll`, `join`, or `leave` goes through `__call` → IPC → WebSocket → client → response.
 
 **With `socket.io-client`** — server→client RPC uses native ack callbacks:
 
@@ -1112,13 +999,11 @@ socket.handle('getPosition', async function() {
 });
 ```
 
-**With bare WebSocket** — the client receives `{"event":"getLocation","data":{},"ack":7}`
-and responds with `{"ack":7,"data":{"lat":40.7}}`.
+**With bare WebSocket** — the client receives `{"event":"getLocation","data":{},"ack":7}` and responds with `{"ack":7,"data":{"lat":40.7}}`.
 
 ### App namespacing
 
-When building an app, prefix your handler functions with your app name to
-avoid collisions. Set the app name in config:
+When building an app, prefix your handler functions with your app name to avoid collisions. Set the app name in config:
 
 ```json
 {
@@ -1134,8 +1019,7 @@ handlers/chat/message.php →  function Chess_chat_message(&$params, &$result)
 handlers/connect.php      →  function Chess_connect(&$params, &$result)
 ```
 
-Handler file paths stay the same — the app prefix is only on the function name.
-Read it at runtime with `Q::app()`. Same for classes — use PHP namespaces:
+Handler file paths stay the same — the app prefix is only on the function name. Read it at runtime with `Q::app()`. Same for classes — use PHP namespaces:
 
 ```php
 <?php
@@ -1144,13 +1028,11 @@ namespace Chess;
 class Game { /* ... */ }
 ```
 
-If `Q.app` is not set, functions use no prefix: `game_move`, `chat_message`.
-Small standalone projects don't need it.
+If `Q.app` is not set, functions use no prefix: `game_move`, `chat_message`. Small standalone projects don't need it.
 
 ### Autoloading
 
-Classes in `classes/` are autoloaded by default — `Chess\Game` or `Chess_Game`
-both resolve to `classes/Chess/Game.php`. No config needed.
+Classes in `classes/` are autoloaded by default — `Chess\Game` or `Chess_Game` both resolve to `classes/Chess/Game.php`. No config needed.
 
 For PSR-4 compliant layouts, configure the namespace mapping:
 
@@ -1167,14 +1049,9 @@ For PSR-4 compliant layouts, configure the namespace mapping:
 }
 ```
 
-`App\Http\Controller` → `src/Http/Controller.php`. Underscores are literal
-(PSR-4 compliant). Paths are relative to the project root.
+`App\Http\Controller` → `src/Http/Controller.php`. Underscores are literal (PSR-4 compliant). Paths are relative to the project root.
 
-If you use Composer, its autoloader is loaded automatically —
-`vendor/autoload.php` is included at startup if it exists. Composer's own
-PSR-4, classmap, and files entries all work. The `Q.autoload` config and
-Composer coexist: Q's autoloader runs first, Composer catches anything it
-misses.
+If you use Composer, its autoloader is loaded automatically — `vendor/autoload.php` is included at startup if it exists. Composer's own PSR-4, classmap, and files entries all work. The `Q.autoload` config and Composer coexist: Q's autoloader runs first, Composer catches anything it misses.
 
 The resolution order:
 
@@ -1186,22 +1063,46 @@ The resolution order:
 
 ### When to use per-connection
 
-Use per-connection processes for **user-specific state**: authentication,
-preferences, per-user rate limiting, message history, notification
-subscriptions. Each user's data lives in their own process and can never
-leak to another user.
+Use per-connection processes for **user-specific state**: authentication, preferences, per-user rate limiting, message history, notification subscriptions. Each user's data lives in their own process and can never leak to another user.
+
+---
+
+## 🔄 Server-Sent Events (SSE)
+
+Scripts that set `Content-Type: text/event-stream` automatically stream their output to the client incrementally instead of buffering the entire response:
+
+```php
+<?php
+Q_Response::header('Content-Type: text/event-stream');
+Q_Response::header('Cache-Control: no-cache');
+
+for ($i = 1; $i <= 100; $i++) {
+    echo "data: " . json_encode(['count' => $i, 'time' => date('H:i:s')]) . "\n\n";
+    @ob_flush();
+    flush();
+    sleep(1);
+}
+```
+
+Three triggers activate streaming mode (any one is sufficient):
+
+| Trigger | How |
+|---|---|
+| `Content-Type: text/event-stream` | Auto-detected from response headers |
+| `X-Accel-Buffering: no` | Nginx convention, also auto-detected |
+| `Q_Response::setStreaming(true)` | Explicit API call |
+
+The server sends HTTP headers immediately with `Transfer-Encoding: chunked`, then writes each `flush()` output as a chunked frame directly to the client socket. Non-streaming responses are completely unaffected — the detection adds zero overhead (the callback only fires on explicit `ob_flush()`, not per byte).
+
+This is useful for AI token streaming (proxying LLM APIs to the browser), real-time logs, progress indicators, and any long-running response where the client should see partial results before the script finishes.
 
 ---
 
 ## 🏠 Rooms — Process Per Room
 
-For use cases where multiple connections need **shared in-memory state** — chat
-messages, game positions, cursor aggregation, live vote tallies — use room
-processes.
+For use cases where multiple connections need **shared in-memory state** — chat messages, game positions, cursor aggregation, live vote tallies — use room processes.
 
-One process per active room. All members' messages go to the same process.
-State is shared across all of them. When the last member leaves, the process
-dies.
+One process per active room. All members' messages go to the same process. State is shared across all of them. When the last member leaves, the process dies.
 
 ### The lifecycle
 
@@ -1217,9 +1118,7 @@ dies.
 9. destroy fires → room process exits
 ```
 
-The client never talks to the room process directly. Per-connection handlers
-call `$socket->join()` — that's the gateway. Access control lives there.
-User identity flows through the third argument.
+The client never talks to the room process directly. Per-connection handlers call `$socket->join()` — that's the gateway. Access control lives there. User identity flows through the third argument.
 
 ### Config
 
@@ -1239,12 +1138,9 @@ User identity flows through the third argument.
 }
 ```
 
-The pattern uses `$name` placeholders — `chat/$room` matches `chat/general`,
-`chat/dev`, etc. The `tick` option (in ms) fires `tick` events on a timer,
-even when no messages arrive.
+The pattern uses `$name` placeholders — `chat/$room` matches `chat/general`, `chat/dev`, etc. The `tick` option (in ms) fires `tick` events on a timer, even when no messages arrive.
 
-The `handler` value is a path prefix. Each event dispatches to its own handler
-file under that prefix — just like HTTP handlers:
+The `handler` value is a path prefix. Each event dispatches to its own handler file under that prefix — just like HTTP handlers:
 
 ```
 "chat/$room": {"handler": "chat/room"}
@@ -1371,15 +1267,9 @@ class ChatRoom
 }
 ```
 
-Why class statics instead of `static` variables inside functions? Because each
-handler is now a separate file. A `static $users` in `join.php` wouldn't be
-visible in `leave.php`. Class statics (or globals) are shared across all
-handlers in the same room process.
+Why class statics instead of `static` variables inside functions? Because each handler is now a separate file. A `static $users` in `join.php` wouldn't be visible in `leave.php`. Class statics (or globals) are shared across all handlers in the same room process.
 
-Copy-on-write handles the rest: the parent's `ChatRoom::$users` starts as `[]`.
-When a room process forks and writes to it, only that room's pages are copied.
-When the room dies, the OS reclaims everything. No `unset()`, no destructors,
-no cleanup.
+Copy-on-write handles the rest: the parent's `ChatRoom::$users` starts as `[]`. When a room process forks and writes to it, only that room's pages are copied. When the room dies, the OS reclaims everything. No `unset()`, no destructors, no cleanup.
 
 ### Example: game with tick timer
 
@@ -1458,9 +1348,7 @@ Both use the same handler pattern, same `Q_Socket` API, same directory structure
 
 ## 📖 Complete Example: Chat App With Rooms
 
-All three models in one project. HTTP handles pages and login.
-Per-connection WebSocket handles auth and room joining. Room processes
-handle the actual chat.
+All three models in one project. HTTP handles pages and login. Per-connection WebSocket handles auth and room joining. Room processes handle the actual chat.
 
 ### Project structure
 
@@ -1515,9 +1403,7 @@ chat/
 }
 ```
 
-Note: `message`, `typing` are NOT in the events map. Once a user joins a room,
-their messages are forwarded directly to the room process and dispatched as
-`chat/room/message`, `chat/room/typing`, etc.
+Note: `message`, `typing` are NOT in the events map. Once a user joins a room, their messages are forwarded directly to the room process and dispatched as `chat/room/message`, `chat/room/typing`, etc.
 
 ### Per-connection handlers
 
@@ -1687,16 +1573,13 @@ Room:           chat/room/join      → ChatRoom::$users, $names, $history
 php qbixserver.php
 ```
 
-One command. Static files, REST API, authentication, access-controlled rooms,
-multi-tab awareness, and shared real-time chat — all from one PHP server.
+One command. Static files, REST API, authentication, access-controlled rooms, multi-tab awareness, and shared real-time chat — all from one PHP server.
 
 ---
 
 ## 🛤️ Clean URL Routing (Optional)
 
-Add `Q.routes` to your config and the server maps clean URLs to handlers —
-same event pipeline as the [Qbix Platform](https://github.com/Qbix/Platform).
-No `.php` suffixes, no rewrite rules.
+Add `Q.routes` to your config and the server maps clean URLs to handlers — same event pipeline as the [Qbix Platform](https://github.com/Qbix/Platform). No `.php` suffixes, no rewrite rules.
 
 ### Config
 
@@ -1711,8 +1594,7 @@ No `.php` suffixes, no rewrite rules.
 }
 ```
 
-Route patterns use `$variable` for dynamic segments. Literal segments match
-exactly. The matched `module` and `action` determine which handlers fire.
+Route patterns use `$variable` for dynamic segments. Literal segments match exactly. The matched `module` and `action` determine which handlers fire.
 
 ### Handler directory structure
 
@@ -1738,8 +1620,7 @@ For `GET /api/users`, the server fires three events in order:
 3.  api/users/response   ← post-process, add headers
 ```
 
-This is the same pipeline as `Q_Dispatcher` in the full Qbix Platform.
-Your handlers work identically when you upgrade.
+This is the same pipeline as `Q_Dispatcher` in the full Qbix Platform. Your handlers work identically when you upgrade.
 
 ### Example handlers
 
@@ -1786,14 +1667,11 @@ function api_users_post(&$params, &$result) {
 6. 404
 ```
 
-Static files and `.php` scripts take priority. Routing only activates when
-`Q.routes` is configured and no file matches. This means you can mix
-routed handlers with direct PHP scripts — migrate gradually.
+Static files and `.php` scripts take priority. Routing only activates when `Q.routes` is configured and no file matches. This means you can mix routed handlers with direct PHP scripts — migrate gradually.
 
 ### Fallback — SPA routing, custom 404, catch-all
 
-When nothing matches, the server checks `Q.webserver.fallback` in config.
-Three options:
+When nothing matches, the server checks `Q.webserver.fallback` in config. Three options:
 
 **SPA catch-all** — serve `index.html` for all unmatched routes (React, Vue, etc.):
 
@@ -1835,17 +1713,13 @@ All four use classes/ (preloaded, shared)
 The last three use handlers/ (loaded on demand)
 ```
 
-Drop files. They work. No framework to learn, no boilerplate to write.
-When you outgrow it, the same handlers run on the full Qbix Platform.
+Drop files. They work. No framework to learn, no boilerplate to write. When you outgrow it, the same handlers run on the full Qbix Platform.
 
 ---
 
 ## 📂 For PHP Developers — The Micro-Framework
 
-Qbix Server isn't just a static file server with PHP bolted on. It's a micro-framework
-where you **drop files into conventional directories** and things just work — classes
-autoload, events fire handlers, views render templates. No configuration needed for
-the basics.
+Qbix Server isn't just a static file server with PHP bolted on. It's a micro-framework where you **drop files into conventional directories** and things just work — classes autoload, events fire handlers, views render templates. No configuration needed for the basics.
 
 ### Project layout
 
@@ -1880,10 +1754,7 @@ myproject/
 
 Only `web/` is accessible via HTTP. Everything else is server-side only.
 
-**Your PHP scripts don't need to `require` or `include` anything.** The server
-has already loaded the `Q` class, the autoloader, and the event system before
-your script runs. Classes from `classes/`, events via `Q::event()`, views via
-`Q::view()` — all available immediately. Just write your code:
+**Your PHP scripts don't need to `require` or `include` anything.** The server has already loaded the `Q` class, the autoloader, and the event system before your script runs. Classes from `classes/`, events via `Q::event()`, views via `Q::view()` — all available immediately. Just write your code:
 
 ```php
 <?php
@@ -1899,8 +1770,7 @@ echo json_encode($feed);
 
 ### The `Q` class — available in every script
 
-The server injects the `Q` class into every PHP script automatically. Here's
-what you get:
+The server injects the `Q` class into every PHP script automatically. Here's what you get:
 
 | Method | What it does |
 |---|---|
@@ -1955,9 +1825,7 @@ echo Q::view('MyApp/settings/page.php', [
 
 ### Why `Q_Response::header()` instead of `header()`?
 
-The server runs PHP in CLI SAPI (same as FrankenPHP worker mode and Workerman).
-PHP's built-in `header()` is silently discarded in CLI mode. `Q_Response::header()` has
-the exact same signature but captures headers so the server can send them:
+The server runs PHP in CLI SAPI (same as FrankenPHP worker mode and Workerman). PHP's built-in `header()` is silently discarded in CLI mode. `Q_Response::header()` has the exact same signature but captures headers so the server can send them:
 
 ```php
 Q_Response::header('Content-Type: application/json');   // same as header() but works
@@ -1970,18 +1838,13 @@ Q_Response::setCookie('session', $id);         // cookies
 Q_Response::redirect('/login');                // redirect
 ```
 
-For existing code that calls `header()` directly, use CGI carveout mode —
-configure URL patterns in `server.json` under `Q.webserver.cgi.patterns` to run
-those scripts via `php-cgi` where native `header()` works (see Configuration).
+For existing code that calls `header()` directly, use CGI carveout mode — configure URL patterns in `server.json` under `Q.webserver.cgi.patterns` to run those scripts via `php-cgi` where native `header()` works (see Configuration).
 
-When you upgrade to the full [Qbix Platform](https://github.com/Qbix/Platform),
-the `Q` class expands with hundreds more methods — but everything above
-continues to work identically. Your scripts don't need to change.
+When you upgrade to the full [Qbix Platform](https://github.com/Qbix/Platform), the `Q` class expands with hundreds more methods — but everything above continues to work identically. Your scripts don't need to change.
 
 ### Classes — autoloaded and optionally preloaded
 
-Drop a PHP file in `classes/` and it's **autoloaded** — found automatically the first
-time your code references it. No `require` needed. Both naming conventions work:
+Drop a PHP file in `classes/` and it's **autoloaded** — found automatically the first time your code references it. No `require` needed. Both naming conventions work:
 
 ```php
 <?php
@@ -2013,15 +1876,9 @@ $user = User::fromSession();
 $isAdmin = MyApp_Auth::check();
 ```
 
-The autoloader maps class names to file paths (`MyApp\User` → `classes/MyApp/User.php`,
-`MyApp_Auth` → `classes/MyApp/Auth.php`) and bridges between conventions with
-`class_alias` — if you define `MyApp_Auth`, it's also accessible as `MyApp\Auth`,
-and vice versa. If you have a Composer `autoload.php`, that works too — list it
-in the preload config and both autoloaders coexist.
+The autoloader maps class names to file paths (`MyApp\User` → `classes/MyApp/User.php`, `MyApp_Auth` → `classes/MyApp/Auth.php`) and bridges between conventions with `class_alias` — if you define `MyApp_Auth`, it's also accessible as `MyApp\Auth`, and vice versa. If you have a Composer `autoload.php`, that works too — list it in the preload config and both autoloaders coexist.
 
-**Preloading** is optional but recommended for `--workers=N` mode. It loads specific
-classes into memory *before* forking workers, so the autoloader never runs during
-requests — classes are already there via copy-on-write:
+**Preloading** is optional but recommended for `--workers=N` mode. It loads specific classes into memory *before* forking workers, so the autoloader never runs during requests — classes are already there via copy-on-write:
 
 ```json
 {
@@ -2046,13 +1903,11 @@ php qbixserver.php --workers=4
 #  Preloaded: 3 classes
 ```
 
-Classes are **eager** — loaded once at startup, shared across all workers via
-copy-on-write. This is the "hot path" code that handles every request.
+Classes are **eager** — loaded once at startup, shared across all workers via copy-on-write. This is the "hot path" code that handles every request.
 
 ### Handlers — loaded on demand
 
-Handlers are the opposite of classes: they're loaded **only when their event fires**.
-Drop a file in `handlers/` and it's available as an event:
+Handlers are the opposite of classes: they're loaded **only when their event fires**. Drop a file in `handlers/` and it's available as an event:
 
 ```php
 <?php
@@ -2086,10 +1941,7 @@ Q_Response::header('Content-Type: application/json');
 echo json_encode($result);
 ```
 
-The handler file is `include`'d the first time the event fires, then the function
-stays in memory. If the event never fires, the file is never loaded. This is ideal
-for things like webhooks, admin actions, and error handlers — code that runs rarely
-but needs to be available.
+The handler file is `include`'d the first time the event fires, then the function stays in memory. If the event never fires, the file is never loaded. This is ideal for things like webhooks, admin actions, and error handlers — code that runs rarely but needs to be available.
 
 **Check if a handler exists:**
 
@@ -2101,8 +1953,7 @@ if (Q::canHandle('MyApp/feed/post')) {
 
 ### Before/after hooks
 
-You can attach hooks to any event via config — useful for validation, logging,
-access control, or cross-cutting concerns:
+You can attach hooks to any event via config — useful for validation, logging, access control, or cross-cutting concerns:
 
 ```json
 {
@@ -2139,16 +1990,11 @@ function MyApp_feed_notify(&$params, &$result) {
 }
 ```
 
-The chain is: **before hooks → main handler → after hooks**. Any before hook
-returning `false` stops the chain. This is the same pattern the full
-[Qbix Platform](https://github.com/Qbix/Platform) uses — your handlers
-work identically when you upgrade.
+The chain is: **before hooks → main handler → after hooks**. Any before hook returning `false` stops the chain. This is the same pattern the full [Qbix Platform](https://github.com/Qbix/Platform) uses — your handlers work identically when you upgrade.
 
 ### Remote handlers
 
-Handlers can also be URLs. If a handler name in the config starts with
-`http://` or `https://`, the server POSTs the event parameters as JSON
-to that URL instead of loading a local PHP file:
+Handlers can also be URLs. If a handler name in the config starts with `http://` or `https://`, the server POSTs the event parameters as JSON to that URL instead of loading a local PHP file:
 
 ```json
 {
@@ -2160,10 +2006,7 @@ to that URL instead of loading a local PHP file:
 }
 ```
 
-When `Q::event('MyApp/user/register', $params)` fires, the local handler
-runs first, then the server POSTs `$params` as JSON to the remote URL.
-This is webhooks built into the event system — no separate webhook
-infrastructure needed.
+When `Q::event('MyApp/user/register', $params)` fires, the local handler runs first, then the server POSTs `$params` as JSON to the remote URL. This is webhooks built into the event system — no separate webhook infrastructure needed.
 
 ### Views — PHP templates
 
@@ -2204,66 +2047,38 @@ Views are just PHP files — full language access, no template DSL to learn.
 | **Scripts** | When requested via HTTP | `web/` | Entry points — the "controller" layer |
 | **Config** | Startup | `config/` | Settings, handler hooks, preload lists |
 
-Classes are **eager**. Handlers are **lazy**. Scripts are **per-request**.
-Views are **on-demand**. This gives you the right loading strategy for each
-kind of code without thinking about it — just put files in the right directory.
+Classes are **eager**. Handlers are **lazy**. Scripts are **per-request**. Views are **on-demand**. This gives you the right loading strategy for each kind of code without thinking about it — just put files in the right directory.
 
 ### Workers: fork-per-request (truly shared-nothing)
 
-Each worker handles exactly **one request**, then exits. The parent immediately
-forks a replacement. This means:
+Each worker handles exactly **one request**, then exits. The parent immediately forks a replacement. This means:
 
 - Static variables — **wiped** (process dies)
 - Global state — **wiped** (process dies)
 - Memory leaks — **impossible** (OS reclaims everything)
 - Secrets in memory — **gone** (no persistence between requests)
 
-This is safer than php-fpm, which reuses workers across requests and relies on
-`pm.max_requests` to periodically recycle them. With Qbix Server, every request
-gets a clean process. The fork cost (~0.5ms) is negligible compared to the
-bootstrap savings (~10–50ms).
+This is safer than php-fpm, which reuses workers across requests and relies on `pm.max_requests` to periodically recycle them. With Qbix Server, every request gets a clean process. The fork cost (~0.5ms) is negligible compared to the bootstrap savings (~10–50ms).
 
-For higher throughput, switch to [Octane Mode](#-octane-mode---workersn) with
-`--workers=N`. Octane reuses workers across requests but resets all statics,
-globals, superglobals, and response headers between requests via a snapshot
-restore (~0.05ms). See that section for what resets, what doesn't, and how to
-write scripts that work in both modes.
+For higher throughput, switch to [Octane Mode](#-octane-mode---workersn) with `--workers=N`. Octane reuses workers across requests but resets all statics, globals, superglobals, and response headers between requests via a snapshot restore (~0.05ms). See that section for what resets, what doesn't, and how to write scripts that work in both modes.
 
 ### How PHP requests are handled
 
-**Fork mode (default, no `--workers`):** On Linux and macOS (where `pcntl_fork`
-is available), every PHP request is forked — the server forks a child, the child
-handles the request and exits, the parent continues serving. This means:
+**Fork mode (default, no `--workers`):** On Linux and macOS (where `pcntl_fork` is available), every PHP request is forked — the server forks a child, the child handles the request and exits, the parent continues serving. This means:
 
 - `exit()` / `die()` in a script only kills the child — the server survives
 - Long-running scripts don't block static file serving
 - Each request is truly isolated
 
-**Octane mode (`--workers=N`):** Persistent workers handle requests in a loop
-with snapshot restore between them. See [Octane Mode](#-octane-mode---workersn)
-for what resets, what persists, and how to write scripts for both modes.
+**Octane mode (`--workers=N`):** Persistent workers handle requests in a loop with snapshot restore between them. See [Octane Mode](#-octane-mode---workersn) for what resets, what persists, and how to write scripts for both modes.
 
-The `--workers=N` flag pre-forks N idle workers for faster dispatch (no fork
-latency per request). Without it, the server forks on demand. Both modes are
-shared-nothing.
+The `--workers=N` flag pre-forks N idle workers for faster dispatch (no fork latency per request). Without it, the server forks on demand. Both modes are shared-nothing.
 
-**Windows** doesn't have `pcntl_fork`, so PHP scripts run in a subprocess
-via `proc_open`. This is safe — `exit()` can't crash the server — but each
-subprocess starts a fresh PHP interpreter (~50ms), so you don't get the
-preload speed benefit. Static files, WebSocket, caching, and everything
-else work identically. Good for development; use Linux/macOS for the full
-100–300× concurrent capacity (measured) advantage.
+**Windows** doesn't have `pcntl_fork`, so PHP scripts run in a subprocess via `proc_open`. This is safe — `exit()` can't crash the server — but each subprocess starts a fresh PHP interpreter (~50ms), so you don't get the preload speed benefit. Static files, WebSocket, caching, and everything else work identically. Good for development; use Linux/macOS for the full 100–300× concurrent capacity (measured) advantage.
 
 ### Growing into the full Qbix Platform
 
-The conventions above — `classes/`, `handlers/`, `views/`, `config/` — are
-the same ones the [Qbix Platform](https://github.com/Qbix/Platform) uses.
-When your project outgrows the micro-framework and you need user accounts,
-real-time streams, access control, payments, or a plugin system, you switch
-to `--app` mode and everything you've written keeps working. Your classes
-stay in `classes/`, your handlers stay in `handlers/`, your views stay in
-`views/`. You just gain access to Streams, Users, Assets, and the rest of
-the plugin ecosystem — without rewriting anything.
+The conventions above — `classes/`, `handlers/`, `views/`, `config/` — are the same ones the [Qbix Platform](https://github.com/Qbix/Platform) uses. When your project outgrows the micro-framework and you need user accounts, real-time streams, access control, payments, or a plugin system, you switch to `--app` mode and everything you've written keeps working. Your classes stay in `classes/`, your handlers stay in `handlers/`, your views stay in `views/`. You just gain access to Streams, Users, Assets, and the rest of the plugin ecosystem — without rewriting anything.
 
 ---
 
@@ -2343,9 +2158,7 @@ Serve multiple domains from one server. Each host can have its own document root
 }
 ```
 
-The `Host` header selects the root. Requests for unconfigured hosts use the
-default `--root` directory. WebSocket, rooms, handlers, and static files all
-respect the per-host root.
+The `Host` header selects the root. Requests for unconfigured hosts use the default `--root` directory. WebSocket, rooms, handlers, and static files all respect the per-host root.
 
 ### Hot reload
 
@@ -2367,9 +2180,7 @@ Or via config:
 }
 ```
 
-Handler changes take effect immediately — handlers are lazy-loaded, so the
-next request or connection picks up the new code. Class or config changes
-trigger a graceful restart (the server re-execs itself with the same arguments).
+Handler changes take effect immediately — handlers are lazy-loaded, so the next request or connection picks up the new code. Class or config changes trigger a graceful restart (the server re-execs itself with the same arguments).
 
 Changes are logged to stderr:
 
@@ -2381,20 +2192,13 @@ Changes are logged to stderr:
 
 Polls every 2 seconds. Recommended for development.
 
-Even without `--hotreload`, handler changes take effect naturally: HTTP
-requests fork fresh and load handlers on demand, so the next request gets the
-new file. WebSocket connections and rooms keep the old code for their lifetime
-— new connections pick up the change. A natural rolling deploy with no
-interruption. The `--hotreload` flag adds automatic restart for class and
-config changes, which are preloaded in the parent process.
+Even without `--hotreload`, handler changes take effect naturally: HTTP requests fork fresh and load handlers on demand, so the next request gets the new file. WebSocket connections and rooms keep the old code for their lifetime — new connections pick up the change. A natural rolling deploy with no interruption. The `--hotreload` flag adds automatic restart for class and config changes, which are preloaded in the parent process.
 
-If `Q.handlers.preload` is `true` (production mode), handlers are also loaded
-in the parent — use `--reload` to pick up handler changes in that case.
+If `Q.handlers.preload` is `true` (production mode), handlers are also loaded in the parent — use `--reload` to pick up handler changes in that case.
 
 ### Scheduler
 
-Run tasks on intervals or at specific times. Handlers are forked like HTTP
-requests — they don't block the event loop and respect `requestTimeout`.
+Run tasks on intervals or at specific times. Handlers are forked like HTTP requests — they don't block the event loop and respect `requestTimeout`.
 
 ```json
 {
@@ -2442,14 +2246,11 @@ function tasks_cleanup(&$params, &$result) {
 }
 ```
 
-On restart, tasks scheduled for the current minute are skipped to avoid
-double-firing. Interval tasks wait one full interval before their first run.
+On restart, tasks scheduled for the current minute are skipped to avoid double-firing. Interval tasks wait one full interval before their first run.
 
 ### CGI carveout mode — legacy PHP compatibility
 
-Scripts matching `Q.webserver.cgi.patterns` run via `php-cgi` subprocess instead
-of fork. Native `header()`, `setcookie()`, `session_start()` all work — full
-compatibility with WordPress, Laravel, or any PHP code that calls `header()` directly.
+Scripts matching `Q.webserver.cgi.patterns` run via `php-cgi` subprocess instead of fork. Native `header()`, `setcookie()`, `session_start()` all work — full compatibility with WordPress, Laravel, or any PHP code that calls `header()` directly.
 
 ```json
 {
@@ -2467,10 +2268,7 @@ compatibility with WordPress, Laravel, or any PHP code that calls `header()` dir
 }
 ```
 
-The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you
-don't get the preload speed benefit. Static files, caching, and everything else
-still work at full speed. Use this for third-party code you can't modify — your
-own code should use `Q_Response::header()` and the fork path for 100–300× concurrent capacity (measured).
+The tradeoff: CGI mode starts a fresh PHP interpreter per request (~50ms), so you don't get the preload speed benefit. Static files, caching, and everything else still work at full speed. Use this for third-party code you can't modify — your own code should use `Q_Response::header()` and the fork path for 100–300× concurrent capacity (measured).
 
 The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
 
@@ -2480,9 +2278,7 @@ The server auto-detects `php-cgi` on your system. Override with `cgi.binary`:
 
 ### Running legacy PHP — WordPress, Laravel, Symfony
 
-You can run existing PHP applications on Qbix Server without modifying their code.
-The key: put the framework's public directory as `web/`, and use CGI carveout
-patterns to match all PHP files.
+You can run existing PHP applications on Qbix Server without modifying their code. The key: put the framework's public directory as `web/`, and use CGI carveout patterns to match all PHP files.
 
 **WordPress:**
 
@@ -2514,9 +2310,7 @@ wordpress-site/
 }
 ```
 
-The pattern `\.php$` sends all PHP files through `php-cgi`. The fallback
-sends unmatched URLs to `index.php` (WordPress permalink routing). Static
-files (images, CSS, JS) are served directly at full speed.
+The pattern `\.php$` sends all PHP files through `php-cgi`. The fallback sends unmatched URLs to `index.php` (WordPress permalink routing). Static files (images, CSS, JS) are served directly at full speed.
 
 **Laravel:**
 
@@ -2548,9 +2342,7 @@ laravel-app/
 }
 ```
 
-All requests that don't match a static file go to `index.php`. Laravel's
-router takes over from there. The `app/`, `vendor/`, and `storage/`
-directories are outside `web/` — inaccessible via URL by default.
+All requests that don't match a static file go to `index.php`. Laravel's router takes over from there. The `app/`, `vendor/`, and `storage/` directories are outside `web/` — inaccessible via URL by default.
 
 **Symfony:**
 
@@ -2568,8 +2360,7 @@ symfony-app/
 └── vendor/
 ```
 
-Same config pattern. Symfony's front controller (`public/index.php`) handles
-all routing internally.
+Same config pattern. Symfony's front controller (`public/index.php`) handles all routing internally.
 
 **Porting your own legacy code:**
 
@@ -2581,9 +2372,7 @@ For code you control, you have three options — from least effort to best perfo
 { "Q": { "webserver": { "cgi": { "patterns": ["\.php$"] } } } }
 ```
 
-Every PHP file runs through `php-cgi`. Native `header()`, `setcookie()`,
-`session_start()` all work. No code changes. Performance is comparable
-to nginx + php-fpm (no preload benefit).
+Every PHP file runs through `php-cgi`. Native `header()`, `setcookie()`, `session_start()` all work. No code changes. Performance is comparable to nginx + php-fpm (no preload benefit).
 
 **Option 2: Targeted carveouts (minimal changes, mostly fast)**
 
@@ -2602,9 +2391,7 @@ to nginx + php-fpm (no preload benefit).
 }
 ```
 
-Only specific paths use CGI. New code and simple scripts use fork mode
-(100–300× concurrent capacity (measured)). Legacy code that calls `header()` directly stays
-in CGI mode.
+Only specific paths use CGI. New code and simple scripts use fork mode (100–300× concurrent capacity (measured)). Legacy code that calls `header()` directly stays in CGI mode.
 
 **Option 3: Find-replace (one-time effort, full performance)**
 
@@ -2614,8 +2401,7 @@ header(       →  Q_Response::header(
 setcookie(    →  Q_Response::setCookie(
 ```
 
-Two find-replaces. Your code now uses fork mode everywhere — 30× concurrent capacity
-capacity, preloaded classes, shared-nothing safety.
+Two find-replaces. Your code now uses fork mode everywhere — 30× concurrent capacity capacity, preloaded classes, shared-nothing safety.
 
 ### Installing php-cgi
 
@@ -2645,6 +2431,14 @@ php-cgi --version
 php qbixserver.php
 ```
 
+```bash
+# Listen on a Unix domain socket (for nginx proxy)
+php qbixserver.php --socket=/run/qbix/app.sock
+
+# Both TCP and UDS simultaneously
+php qbixserver.php --port=8080 --socket=/run/qbix/app.sock
+```
+
 ### 2. PHAR — single ~280KB file (needs PHP)
 
 ```bash
@@ -2657,14 +2451,21 @@ chmod +x bin/qbixserver.phar
 
 ### 3. Static binary — no PHP needed
 
+Download the binary for your platform — no PHP installation required:
+
+| Platform | Download |
+|---|---|
+| **Linux x86_64** | [qbixserver-linux-x86_64](https://github.com/Qbix/webserver/releases/latest/download/qbixserver-linux-x86_64) |
+| **Linux ARM64** | [qbixserver-linux-aarch64](https://github.com/Qbix/webserver/releases/latest/download/qbixserver-linux-aarch64) |
+| **macOS ARM64** | [qbixserver-macos-arm64](https://github.com/Qbix/webserver/releases/latest/download/qbixserver-macos-arm64) |
+
 ```bash
-# Download from GitHub Releases
-chmod +x qbixserver-linux-x86_64
-./qbixserver-linux-x86_64 --port=80
+curl -L https://github.com/Qbix/webserver/releases/latest/download/qbixserver-linux-x86_64 -o qbixserver
+chmod +x qbixserver
+./qbixserver --port=80
 ```
 
-The binary bundles PHP 8.3 + extensions into a single ~15MB executable.  
-Copy it to any Linux or macOS machine and run. No dependencies.
+The binary bundles PHP 8.3 + SQLite + OpenSSL + curl into a single ~15MB executable. Copy it to any Linux or macOS machine and run. No dependencies.
 
 ---
 
@@ -2689,18 +2490,15 @@ php -d phar.readonly=0 build-phar.php
 # Output: bin/qbixserver (~15MB)
 ```
 
-The binary is built using [static-php-cli](https://github.com/crazywhalecc/static-php-cli),
-which compiles PHP + extensions into a statically linked binary.
+The binary is built using [static-php-cli](https://github.com/crazywhalecc/static-php-cli), which compiles PHP + extensions into a statically linked binary.
 
-GitHub Actions automatically builds binaries for **Linux x86_64**, **Linux ARM64**,
-**macOS x86_64**, and **macOS Apple Silicon** on every tagged release.
+GitHub Actions automatically builds binaries for **Linux x86_64**, **Linux ARM64**, **macOS x86_64**, and **macOS Apple Silicon** on every tagged release.
 
 ---
 
 ## 🔌 With Qbix Platform
 
-Qbix Server is extracted from the [Qbix Platform](https://github.com/Qbix/Platform) — a full-stack
-framework for building social apps with real-time streams, user management, and plugin architecture.
+Qbix Server is extracted from the [Qbix Platform](https://github.com/Qbix/Platform) — a full-stack framework for building social apps with real-time streams, user management, and plugin architecture.
 
 When you have a Qbix app, the server uses the full framework:
 
@@ -2716,15 +2514,11 @@ In this mode:
 - Static files still use the fast path (no framework overhead)
 - The dashboard shows Qbix-specific stats
 
-The standalone mode (without `--app`) runs as a plain web server — no framework, no plugins.
-PHP files execute directly, static files serve from memory. Use this for simple sites,
-APIs, or any project that doesn't need the full Qbix stack.
+The standalone mode (without `--app`) runs as a plain web server — no framework, no plugins. PHP files execute directly, static files serve from memory. Use this for simple sites, APIs, or any project that doesn't need the full Qbix stack.
 
 ### Qbix Platform scripts
 
-The full Platform includes additional server scripts like `static.php` for
-CDN-style static file serving with versioned URLs. See the
-[Platform repository](https://github.com/Qbix/Platform) for details.
+The full Platform includes additional server scripts like `static.php` for CDN-style static file serving with versioned URLs. See the [Platform repository](https://github.com/Qbix/Platform) for details.
 
 ---
 
@@ -2748,28 +2542,17 @@ CDN-style static file serving with versioned URLs. See the
         └──────────┘   └──────────┘   └──────────┘
 ```
 
-**Static files** are served from an in-memory response cache. The full HTTP response
-(headers + body) is pre-built and sent in a single `fwrite()` call. The cache is
-mtime-validated with configurable check intervals. Combined with `TCP_NODELAY`,
-this delivers sub-millisecond response times.
+**Static files** are served from an in-memory response cache. The full HTTP response (headers + body) is pre-built and sent in a single `fwrite()` call. The cache is mtime-validated with configurable check intervals. Combined with `TCP_NODELAY`, this delivers sub-millisecond response times.
 
-**PHP scripts** run in-process (single-threaded, suitable for lightweight APIs)
-or in a pre-fork worker pool (`--workers=N`) for concurrent PHP execution.
-Workers are forked after class preloading, so they share the base memory
-footprint via copy-on-write pages.
+**PHP scripts** run in-process (single-threaded, suitable for lightweight APIs) or in a pre-fork worker pool (`--workers=N`) for concurrent PHP execution. Workers are forked after class preloading, so they share the base memory footprint via copy-on-write pages.
 
-**Static files** are served at ~20K req/s (pure PHP, in-memory cache, single
-`fwrite`). nginx is ~2.5× faster (50K req/s) because it uses `sendfile()`
-(kernel-space file→socket copy) and compiled C. For production, put nginx or a
-CDN in front for static files and let Qbix Server handle PHP execution,
-WebSocket, and access-controlled file serving.
+**Static files** are served at ~20K req/s (pure PHP, in-memory cache, single `fwrite`). nginx is ~2.5× faster (50K req/s) because it uses `sendfile()` (kernel-space file→socket copy) and compiled C. For production, put nginx or a CDN in front for static files and let Qbix Server handle PHP execution, WebSocket, and access-controlled file serving.
 
 ---
 
 ## 📊 Live Dashboard
 
-Open `http://localhost/Q/dashboard` in your browser for a real-time server
-dashboard. Updates live via WebSocket — no polling, no page refreshes.
+Open `http://localhost/Q/dashboard` in your browser for a real-time server dashboard. Updates live via WebSocket — no polling, no page refreshes.
 
 **What it shows:**
 
@@ -2789,9 +2572,7 @@ dashboard. Updates live via WebSocket — no polling, no page refreshes.
 | `/Q/health` | JSON | Load balancers, uptime monitors (lightweight) |
 | `/Q/stats` | JSON | Monitoring systems — full stats payload |
 
-The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline`
-(60 data points), `topPaths`, `activeRooms`, `statusCodes` breakdown, and
-`cache` stats. Feed it to Grafana, Datadog, or your own monitoring.
+The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline` (60 data points), `topPaths`, `activeRooms`, `statusCodes` breakdown, and `cache` stats. Feed it to Grafana, Datadog, or your own monitoring.
 
 ---
 
@@ -2799,28 +2580,17 @@ The `/Q/stats` JSON includes everything the dashboard shows, plus `sparkline`
 
 Password-protected admin panel at `/Q/panel`. First visit sets the password.
 
-**Apps tab** — discovers sibling app directories (any folder with `web/` or
-`config/app.json`). Create new apps, serve them (hot-switches the document
-root), open in VS Code, run configure scripts. Editable apps directory path.
+**Apps tab** — discovers sibling app directories (any folder with `web/` or `config/app.json`). Create new apps, serve them (hot-switches the document root), open in VS Code, run configure scripts. Editable apps directory path.
 
-**Scripts tab** — list and run PHP scripts from `scripts/Q/` (configure,
-install, translate, etc.)
+**Scripts tab** — list and run PHP scripts from `scripts/Q/` (configure, install, translate, etc.)
 
-**Plugins tab** — reads the app's `config/app.json` for declared plugins,
-`local/plugins.json` for installed versions, and scans the Platform's
-`plugins/` directory. Shows version, dependencies, and DB connections for
-each.
+**Plugins tab** — reads the app's `config/app.json` for declared plugins, `local/plugins.json` for installed versions, and scans the Platform's `plugins/` directory. Shows version, dependencies, and DB connections for each.
 
-**Playground tab** — PHP REPL with all Q classes preloaded. Write code, hit
-Run (or Ctrl+Enter), see output. Sandboxed in a forked process with disabled
-filesystem writes, no network, 32MB memory limit, 5 second timeout.
+**Playground tab** — PHP REPL with all Q classes preloaded. Write code, hit Run (or Ctrl+Enter), see output. Sandboxed in a forked process with disabled filesystem writes, no network, 32MB memory limit, 5 second timeout.
 
-**System tab** — PHP version, OS, extensions, memory limit. One-click
-Platform install: clones `github.com/Qbix/Platform`, runs
-`git submodule update --recursive`, sets up `local/paths.json`.
+**System tab** — PHP version, OS, extensions, memory limit. One-click Platform install: clones `github.com/Qbix/Platform`, runs `git submodule update --recursive`, sets up `local/paths.json`.
 
-The panel is restricted to localhost by default. Set `Q.panel.remote: true`
-in config to allow remote access.
+The panel is restricted to localhost by default. Set `Q.panel.remote: true` in config to allow remote access.
 
 ---
 
@@ -2848,26 +2618,19 @@ Configure targets in `config/deploy.json`:
 }
 ```
 
-The command rsyncs each directory to the remote server. If the remote runs
-Qbix Server, it can be configured to hot-reload on deploy.
+The command rsyncs each directory to the remote server. If the remote runs Qbix Server, it can be configured to hot-reload on deploy.
 
-Servers can also be managed from the Panel's **Servers** tab — add, deploy,
-and remove remote servers through the browser.
+Servers can also be managed from the Panel's **Servers** tab — add, deploy, and remove remote servers through the browser.
 
 ---
 
 ## 🔗 Federation
 
-Qbix servers can forward events to each other. Any `Q::event()` call can be
-handled locally or routed to a remote server — same dispatch path, same
-handler signature, transparent to the app code.
+Qbix servers can forward events to each other. Any `Q::event()` call can be handled locally or routed to a remote server — same dispatch path, same handler signature, transparent to the app code.
 
 ### How it works
 
-**1. Server identity.** On first run, each server generates a self-signed
-certificate and stores it in `local/server.crt`. The SHA-256 fingerprint
-is the server's identity — like SSH `known_hosts`, no certificate authority
-needed.
+**1. Server identity.** On first run, each server generates a self-signed certificate and stores it in `local/server.crt`. The SHA-256 fingerprint is the server's identity — like SSH `known_hosts`, no certificate authority needed.
 
 **2. Discovery.** Every server exposes `/.well-known/qbix.json`:
 
@@ -2886,24 +2649,17 @@ needed.
 ```json
 {
     "Q": {
-        "handlersRemote": {
-            "Users/login": "https://auth.example.com",
-            "Streams/stream": "https://streams.example.com"
+        "handlersUsingRemote": {
+            "Users/login": {"baseUrl": "https://auth.example.com"},
+            "Streams/stream": {"baseUrl": "https://streams.example.com"}
         }
     }
 }
 ```
 
-When Server A receives a `Users/login` event, it forwards it to
-`auth.example.com/Q/event` via HMAC-signed POST. The receiving server
-verifies the signature, dispatches the event locally, and returns the result.
-Loop prevention is built in — a forwarded event is never re-forwarded.
+When Server A receives a `Users/login` event, it forwards it to `auth.example.com/Q/event` via HMAC-signed POST. The receiving server verifies the signature, dispatches the event locally, and returns the result. Loop prevention is built in — a forwarded event is never re-forwarded.
 
-**4. Signing.** All inter-server requests are signed using `Q_Utils::sign()`,
-which is compatible with the Qbix Platform's signing. The signature uses
-HMAC-SHA1 over recursively key-sorted, URL-encoded data — the same format
-the Platform uses. Servers upgrading to the full Platform keep working
-without changes.
+**4. Signing.** All inter-server requests are signed using `Q_Utils::sign()`, which is compatible with the Qbix Platform's signing. The signature uses HMAC-SHA1 over recursively key-sorted, URL-encoded data — the same format the Platform uses. Servers upgrading to the full Platform keep working without changes.
 
 ### Trust levels
 
@@ -2918,8 +2674,7 @@ Servers authenticate each other at three levels:
 
 ### Logging
 
-Access and error logs with buffered writes, daily rotation, gzip archiving, and
-retention management. Enable by adding a `log` section to config:
+Access and error logs with buffered writes, daily rotation, gzip archiving, and retention management. Enable by adding a `log` section to config:
 
 ```json
 {
@@ -2951,9 +2706,7 @@ retention management. Enable by adding a `log` section to config:
 | `archiveAfterDays` | `2` | Compress rotated logs to .gz after this many days. |
 | `deleteAfterDays` | `30` | Delete archived logs older than this. |
 
-**Buffered writes** accumulate log lines in memory and flush them in a single
-`write()` syscall — either when the buffer fills or on the timer. This cuts the
-per-request overhead roughly in half vs writing every line:
+**Buffered writes** accumulate log lines in memory and flush them in a single `write()` syscall — either when the buffer fills or on the timer. This cuts the per-request overhead roughly in half vs writing every line:
 
 | Mode | Throughput | Overhead vs no logging |
 |---|---|---|
@@ -2961,13 +2714,9 @@ per-request overhead roughly in half vs writing every line:
 | Buffered (64KB, 1s) | 8,671 req/s | 6.5% |
 | Unbuffered | 8,186 req/s | 11.7% |
 
-Error lines always flush immediately (they're rare and you want them on disk
-before a crash). Set `access` to `false` to skip access logging entirely.
+Error lines always flush immediately (they're rare and you want them on disk before a crash). Set `access` to `false` to skip access logging entirely.
 
-**Rotation:** Logs rotate daily at midnight. The current day's log is always
-`access.log` and `error.log`. Yesterday's becomes `access.2026-08-11.log`. After
-2 days that file is gzipped to `access.2026-08-11.log.gz`. After 30 days it's
-deleted. If a log exceeds 50 MB mid-day, it rotates early with a timestamp suffix.
+**Rotation:** Logs rotate daily at midnight. The current day's log is always `access.log` and `error.log`. Yesterday's becomes `access.2026-08-11.log`. After 2 days that file is gzipped to `access.2026-08-11.log.gz`. After 30 days it's deleted. If a log exceeds 50 MB mid-day, it rotates early with a timestamp suffix.
 
 Access log format (nginx-compatible combined + response time):
 
@@ -3004,8 +2753,7 @@ Errors also go to stderr, so `php qbixserver.php 2>err.log` works without config
 
 ### Full-stack microservices
 
-Each Qbix server is a complete, independent app server. Federation lets
-you split your app across multiple servers without changing your code:
+Each Qbix server is a complete, independent app server. Federation lets you split your app across multiple servers without changing your code:
 
 ```
 Server A (auth.example.com)     Server B (app.example.com)
@@ -3014,42 +2762,32 @@ Server A (auth.example.com)     Server B (app.example.com)
 └── handles Users/ events       └── forwards Users/ → Server A
 ```
 
-Server B's handlers call `Q::event('Users/login', $params)` as if Users
-were installed locally. The server transparently forwards it to Server A,
-gets the result, and returns it. The handler never knows the difference.
+Server B's handlers call `Q::event('Users/login', $params)` as if Users were installed locally. The server transparently forwards it to Server A, gets the result, and returns it. The handler never knows the difference.
 
 ### Loop prevention
 
-Every forwarded event carries a unique `_msgId`. Each server tracks seen
-IDs in memory (1-hour TTL). If a message ripples through A→B→C→A, server A
-recognizes the ID and drops it. This is per-message, not per-peer — works
-for any topology.
+Every forwarded event carries a unique `_msgId`. Each server tracks seen IDs in memory (1-hour TTL). If a message ripples through A→B→C→A, server A recognizes the ID and drops it. This is per-message, not per-peer — works for any topology.
 
 ### Signing
 
-Inter-server requests are signed two ways, both compatible with the
-Qbix Platform:
+Inter-server requests are signed two ways, both compatible with the Qbix Platform:
 
 - **Body signature** — `Q_Utils::sign()` adds a `Q.sig` field using
   HMAC-SHA1 over recursively key-sorted data. Same format the Platform uses.
 - **Header signature** — `X-Q-HMAC` header over the raw JSON body. Same
   as the Platform's curl-based `handleUsingRemote`.
 
-The receiving server accepts either. A Platform server and a standalone
-Qbix Server can forward events to each other without configuration changes.
+The receiving server accepts either. A Platform server and a standalone Qbix Server can forward events to each other without configuration changes.
 
 ---
 
 ## 🔍 API Discovery
 
-The server auto-generates three discovery endpoints from its actual
-handlers and configuration. No manual documentation needed — add a
-handler file, the specs update automatically.
+The server auto-generates three discovery endpoints from its actual handlers and configuration. No manual documentation needed — add a handler file, the specs update automatically.
 
 ### `/.well-known/qbix.json` — Server manifest
 
-Qbix-native discovery. Returns the server's identity, fingerprint,
-installed plugins, and links to other specs.
+Qbix-native discovery. Returns the server's identity, fingerprint, installed plugins, and links to other specs.
 
 ```json
 {
@@ -3069,26 +2807,21 @@ installed plugins, and links to other specs.
 }
 ```
 
-Other Qbix servers use this for federation — pin the fingerprint, discover
-endpoints, forward events.
+Other Qbix servers use this for federation — pin the fingerprint, discover endpoints, forward events.
 
 ### `/.well-known/openapi.json` — OpenAPI 3.1
 
-Standard API spec compatible with Swagger UI, Postman, Redoc, Insomnia,
-and any OpenAPI-compatible tool.
+Standard API spec compatible with Swagger UI, Postman, Redoc, Insomnia, and any OpenAPI-compatible tool.
 
 - Paste the URL into **Postman** → Import → complete API documentation
 - Point **Swagger UI** at it → interactive API explorer
 - Feed it to **Redoc** → polished reference docs
 
-The spec includes built-in endpoints (`/Q/health`, `/Q/event`) and
-auto-discovers handlers from the `handlers/` directory. Each handler
-becomes a documented path with its event name, tags, and schema.
+The spec includes built-in endpoints (`/Q/health`, `/Q/event`) and auto-discovers handlers from the `handlers/` directory. Each handler becomes a documented path with its event name, tags, and schema.
 
 ### `/.well-known/mcp.json` — MCP (Model Context Protocol)
 
-Lets AI tools (Claude, GPT, Cursor, etc.) discover and call this server's
-APIs as tools. Each handler becomes an MCP tool:
+Lets AI tools (Claude, GPT, Cursor, etc.) discover and call this server's APIs as tools. Each handler becomes an MCP tool:
 
 ```json
 {
@@ -3101,8 +2834,7 @@ APIs as tools. Each handler becomes an MCP tool:
 }
 ```
 
-An AI assistant connected to your Qbix server can call your handlers
-directly — no glue code, no adapters.
+An AI assistant connected to your Qbix server can call your handlers directly — no glue code, no adapters.
 
 ### Compatibility matrix
 
@@ -3116,14 +2848,11 @@ directly — no glue code, no adapters.
 | curl | `/Q/health` | `curl https://host/Q/health` |
 | Monitoring | `/Q/health` | Uptime checks, Prometheus, etc. |
 
-All three endpoints are configurable. Set `Q.federation.advertise: false`
-to disable, or selectively hide apps and plugins.
+All three endpoints are configurable. Set `Q.federation.advertise: false` to disable, or selectively hide apps and plugins.
 
 ### `/.well-known/openclaiming/{hostname}/server.json` — OpenClaiming
 
-Every Qbix server auto-generates a signed [OpenClaim](https://openclaiming.org)
-for its identity. The claim is signed with ES256 (P-256) and verifiable by
-anyone with the public key.
+Every Qbix server auto-generates a signed [OpenClaim](https://openclaiming.org) for its identity. The claim is signed with ES256 (P-256) and verifiable by anyone with the public key.
 
 ```json
 {
@@ -3146,14 +2875,11 @@ anyone with the public key.
 }
 ```
 
-The key pair (P-256) is generated on first run and stored in `local/claim.pub`
-and `local/claim.key`. The server's TLS fingerprint is embedded in the claim's
-`stm.fingerprint` field, binding the two identity systems together.
+The key pair (P-256) is generated on first run and stored in `local/claim.pub` and `local/claim.key`. The server's TLS fingerprint is embedded in the claim's `stm.fingerprint` field, binding the two identity systems together.
 
 ### Publishing claims — files in folders
 
-The same convention as handlers: drop a file in `claims/`, it becomes a
-signed OpenClaim. Three sources, checked in priority order:
+The same convention as handlers: drop a file in `claims/`, it becomes a signed OpenClaim. Three sources, checked in priority order:
 
 **1. PHP (dynamic, auto-signed)** — `claims/{domain}/{name}.php`
 
@@ -3168,8 +2894,7 @@ return array(
 );
 ```
 
-Evaluated per-request. The server adds `key[]` and `sig[]` automatically.
-Served at `/.well-known/openclaiming/example.com/session.json`.
+Evaluated per-request. The server adds `key[]` and `sig[]` automatically. Served at `/.well-known/openclaiming/example.com/session.json`.
 
 **2. JSON template (static, auto-signed, cached)** — `claims/{domain}/{name}.json`
 
@@ -3182,14 +2907,11 @@ Served at `/.well-known/openclaiming/example.com/session.json`.
 }
 ```
 
-Write the claim body without crypto fields. The server signs it with its
-P-256 key and caches the result in `files/Q/cached/claims/`. When you
-edit the template, the cache invalidates automatically (keyed by mtime).
+Write the claim body without crypto fields. The server signs it with its P-256 key and caches the result in `files/Q/cached/claims/`. When you edit the template, the cache invalidates automatically (keyed by mtime).
 
 **3. Pre-signed (as-is)** — `web/.well-known/openclaiming/{domain}/{name}.json`
 
-For claims signed by someone else — a user's wallet, a partner server, a
-smart contract. The server serves them unchanged.
+For claims signed by someone else — a user's wallet, a partner server, a smart contract. The server serves them unchanged.
 
 ### Signature format
 
@@ -3200,32 +2922,24 @@ All server-signed claims use OCP wire format:
 - **Signature encoding:** raw r||s (64 bytes, base64)
 - **Key URI:** `data:key/es256;base64,{SPKI-DER}`
 
-This is byte-compatible with the Qbix Platform's `Q_Crypto_OpenClaim::sign()`
-and the JavaScript reference implementation's `Q.Crypto.OpenClaim.sign()`.
-Claims signed by the server verify with either library, and vice versa.
+This is byte-compatible with the Qbix Platform's `Q_Crypto_OpenClaim::sign()` and the JavaScript reference implementation's `Q.Crypto.OpenClaim.sign()`. Claims signed by the server verify with either library, and vice versa.
 
 ### Multisig
 
-If a template already has `key[]` and `sig[]` (partially signed by
-another party), the server appends its own key and signature. Keys are
-sorted lexicographically per OCP convention. This enables co-signed
-claims where multiple authorities attest to the same statement.
+If a template already has `key[]` and `sig[]` (partially signed by another party), the server appends its own key and signature. Keys are sorted lexicographically per OCP convention. This enables co-signed claims where multiple authorities attest to the same statement.
 
 ---
 
 ## 🌐 HTTP/2 Support
 
-The built-in event loop uses `stream_select` — zero dependencies, works everywhere.
-But if you install [amphp](https://amphp.org/), the server upgrades to a full
-HTTP/2 server with no code changes:
+The built-in event loop uses `stream_select` — zero dependencies, works everywhere. But if you install [amphp](https://amphp.org/), the server upgrades to a full HTTP/2 server with no code changes:
 
 ```bash
 composer require amphp/http-server amphp/socket
 php qbixserver.php --port=8443
 ```
 
-The server detects amphp automatically and switches to its event loop and HTTP
-driver. You get:
+The server detects amphp automatically and switches to its event loop and HTTP driver. You get:
 
 | | HTTP/1.1 (built-in) | HTTP/2 (amphp) |
 |---|---|---|
@@ -3237,34 +2951,22 @@ driver. You get:
 
 ### How it works
 
-The server has a clean two-layer architecture. `Q_WebServer::route()` handles
-all request logic (static files, PHP dispatch, cache, access control) and returns
-a `[status, headers, body]` array. The transport layer is pluggable:
+The server has a clean two-layer architecture. `Q_WebServer::route()` handles all request logic (static files, PHP dispatch, cache, access control) and returns a `[status, headers, body]` array. The transport layer is pluggable:
 
 ```
 Built-in:   stream_select → accept → fread → route() → fwrite
 amphp:      Revolt loop → amphp HTTP server → route() → amphp response
 ```
 
-All the server's features — response cache, X-Accel-Redirect, component cache
-invalidation, keep-alive, compression — work identically on both transports.
-The `Q_Evented` facade abstracts the event loop, so timers, signals, and socket
-watchers work the same way whether you're on `stream_select` or Revolt.
+All the server's features — response cache, X-Accel-Redirect, component cache invalidation, keep-alive, compression — work identically on both transports. The `Q_Evented` facade abstracts the event loop, so timers, signals, and socket watchers work the same way whether you're on `stream_select` or Revolt.
 
 ### When to use which
 
-**Built-in (default):** Zero dependencies. Works on any PHP 8.1+ installation.
-Good for development, small-to-medium sites, and environments where you can't
-install Composer packages.
+**Built-in (default):** Zero dependencies. Works on any PHP 8.1+ installation. Good for development, small-to-medium sites, and environments where you can't install Composer packages.
 
-**amphp:** Better performance under high concurrency thanks to `epoll`/`kqueue`.
-HTTP/2 multiplexing reduces connection overhead for asset-heavy pages.
-Required if you need server push or HTTP/2-only clients.
+**amphp:** Better performance under high concurrency thanks to `epoll`/`kqueue`. HTTP/2 multiplexing reduces connection overhead for asset-heavy pages. Required if you need server push or HTTP/2-only clients.
 
-**Either way:** You can always put Cloudflare, CloudFront, or nginx in front
-as a reverse proxy. The CDN terminates HTTP/2 (and HTTP/3) for you, forwarding
-HTTP/1.1 to the backend. In that configuration, the built-in transport is all
-you need — the CDN handles the protocol upgrade.
+**Either way:** You can always put Cloudflare, CloudFront, or nginx in front as a reverse proxy. The CDN terminates HTTP/2 (and HTTP/3) for you, forwarding HTTP/1.1 to the backend. In that configuration, the built-in transport is all you need — the CDN handles the protocol upgrade.
 
 ---
 
@@ -3287,29 +2989,19 @@ sudo apt install php-cli php-sockets
 
 - Nothing. The PHP runtime is included.
 
-**Windows:** The server works without `pcntl`. Static files, PHP scripts,
-WebSocket, caching, compression, access control — everything works. PHP
-scripts run in isolated subprocesses via `proc_open`, so `exit()` and
-crashes won't bring down the server. You lose the preload speed benefit
-(each subprocess starts fresh) and signal-based graceful shutdown. For
-the full 100–300× concurrent capacity (measured) advantage, use Linux or macOS (or WSL).
+**Windows:** The server works without `pcntl`. Static files, PHP scripts, WebSocket, caching, compression, access control — everything works. PHP scripts run in isolated subprocesses via `proc_open`, so `exit()` and crashes won't bring down the server. You lose the preload speed benefit (each subprocess starts fresh) and signal-based graceful shutdown. For the full 100–300× concurrent capacity (measured) advantage, use Linux or macOS (or WSL).
 
 ---
 
 ## ⚡ Octane Mode (`--workers=N`)
 
-Persistent workers with automatic state reset. Combines fpm's throughput with
-fork-per-request's memory isolation.
+Persistent workers with automatic state reset. Combines fpm's throughput with fork-per-request's memory isolation.
 
 ```bash
 php qbixserver.php --app=/path/to/myapp --workers=40
 ```
 
-The parent preloads your framework (classes, config, routes, autoloader), takes
-a snapshot of every static property on every user-defined class, then forks N
-workers. Each worker handles requests in a loop. Between requests, the snapshot
-is restored — all statics, globals, superglobals, and response state are reset
-to their preloaded values. Cost: ~0.05ms, vs ~8ms for a full fork.
+The parent preloads your framework (classes, config, routes, autoloader), takes a snapshot of every static property on every user-defined class, then forks N workers. Each worker handles requests in a loop. Between requests, the snapshot is restored — all statics, globals, superglobals, and response state are reset to their preloaded values. Cost: ~0.05ms, vs ~8ms for a full fork.
 
 ### What gets reset between requests
 
@@ -3327,11 +3019,7 @@ to their preloaded values. Cost: ~0.05ms, vs ~8ms for a full fork.
 | DB transactions | `ROLLBACK` on all connections (safe no-op if none active) | 0ms |
 | Output buffers | Non-removable buffer drained by `executeScript()` | 0ms |
 
-After reset, the next request sees exactly the same state as the first
-request this worker ever handled — the same static values, the same empty
-globals, the same clean superglobals. Secrets from request A (cookies,
-Authorization headers, POST passwords, session tokens) are guaranteed
-invisible to request B.
+After reset, the next request sees exactly the same state as the first request this worker ever handled — the same static values, the same empty globals, the same clean superglobals. Secrets from request A (cookies, Authorization headers, POST passwords, session tokens) are guaranteed invisible to request B.
 
 ### What does NOT reset
 
@@ -3345,14 +3033,11 @@ These are inherent PHP limitations, not something the snapshot can work around:
 | **Closures capturing references** | A closure that captured `&$static` holds a live reference that bypasses the snapshot | Rare in practice; avoid capturing statics by reference |
 | **File descriptors** | An opened file handle persists in the process | Close file handles when done — same as fpm |
 
-For anything the snapshot can't reach, `maxRequests` (default 1000) recycles
-the worker after N requests — the process exits and a clean one is forked.
-This is the same safety net fpm uses via `pm.max_requests`.
+For anything the snapshot can't reach, `maxRequests` (default 1000) recycles the worker after N requests — the process exits and a clean one is forked. This is the same safety net fpm uses via `pm.max_requests`.
 
 ### ⚠️ The class declaration gotcha
 
-This is the most common octane pitfall. In fork-per-request mode, every
-request gets a fresh process, so inline class declarations always work:
+This is the most common octane pitfall. In fork-per-request mode, every request gets a fresh process, so inline class declarations always work:
 
 ```php
 // WORKS in fork mode (process dies after each request)
@@ -3378,20 +3063,11 @@ Counter::$n++;  // always 1 — the snapshot resets $n to 0 between requests
 echo Counter::$n;
 ```
 
-The `false` parameter prevents autoloading — it checks only whether the
-class is already declared in this process. On the first request, the class
-is declared. On the second request in the same worker, `class_exists` returns
-true and the declaration is skipped. The snapshot still resets `$n` to its
-default value (`0`) between requests, so the counter always reads 1.
+The `false` parameter prevents autoloading — it checks only whether the class is already declared in this process. On the first request, the class is declared. On the second request in the same worker, `class_exists` returns true and the declaration is skipped. The snapshot still resets `$n` to its default value (`0`) between requests, so the counter always reads 1.
 
-**Classes in `classes/` are fine.** The autoloader loads each class file
-via `require_once`, which is already idempotent. This gotcha only affects
-classes declared inline inside scripts (e.g. in `web/` PHP files or
-handler files).
+**Classes in `classes/` are fine.** The autoloader loads each class file via `require_once`, which is already idempotent. This gotcha only affects classes declared inline inside scripts (e.g. in `web/` PHP files or handler files).
 
-**The Qbix Platform is octane-safe.** All Platform classes live in `classes/`
-and are autoloaded with `require_once`. Inline classes in handlers are rare
-and already guarded.
+**The Qbix Platform is octane-safe.** All Platform classes live in `classes/` and are autoloaded with `require_once`. Inline classes in handlers are rare and already guarded.
 
 ### What it means in practice
 
@@ -3406,13 +3082,7 @@ Octane uses **3× less RAM** for **6.7× more throughput** at **9× lower latenc
 
 ### Auto-introspection
 
-Scripts that define inline classes (with the `class_exists` guard) are handled
-automatically. The snapshot system detects newly declared classes via
-`get_declared_classes()` after each request and adds their static properties
-to the snapshot using `ReflectionProperty::getDefaultValue()`. No manual
-registration, no interface to implement. This is what makes it strictly
-better than Laravel Octane's `ResetScope`, which depends on package authors
-opting in.
+Scripts that define inline classes (with the `class_exists` guard) are handled automatically. The snapshot system detects newly declared classes via `get_declared_classes()` after each request and adds their static properties to the snapshot using `ReflectionProperty::getDefaultValue()`. No manual registration, no interface to implement. This is what makes it strictly better than Laravel Octane's `ResetScope`, which depends on package authors opting in.
 
 ### Writing octane-safe scripts
 
@@ -3452,9 +3122,7 @@ $GLOBALS['api_key'] = getenv('API_KEY');  // cleared between requests
 | (default) | fork per request | maximum isolation, simple scripts |
 | `--workers=N` | persistent workers + snapshot | production: throughput + memory efficiency |
 
-Both modes preload your framework before handling requests. The difference is
-whether the preloaded state is inherited via fork (8ms) or reused in a loop
-with snapshot restore (0.05ms).
+Both modes preload your framework before handling requests. The difference is whether the preloaded state is inherited via fork (8ms) or reused in a loop with snapshot restore (0.05ms).
 
 ### Configuration
 
@@ -3493,8 +3161,7 @@ handlers/game/move.php       ← updates static $positions, broadcasts
 handlers/game/leave.php      ← removes player, notifies room
 ```
 
-No Redis. No message queue. No pub/sub infrastructure. No WebSocket library.
-No event loop to learn. Just PHP files in a folder.
+No Redis. No message queue. No pub/sub infrastructure. No WebSocket library. No event loop to learn. Just PHP files in a folder.
 
 The developer's decision tree:
 
@@ -3508,15 +3175,9 @@ Does anyone else need to see it?
   Yes → $room->broadcast()
 ```
 
-Ephemeral state lives in RAM — static variables in the per-connection process.
-It's fast (no I/O), isolated (per-user process boundary), and self-cleaning
-(process dies on disconnect, OS reclaims everything). When you need durability,
-call your preloaded classes to write to a database. When you need to notify
-others, call `$room->broadcast()`.
+Ephemeral state lives in RAM — static variables in the per-connection process. It's fast (no I/O), isolated (per-user process boundary), and self-cleaning (process dies on disconnect, OS reclaims everything). When you need durability, call your preloaded classes to write to a database. When you need to notify others, call `$room->broadcast()`.
 
-The same `handlers/` directory serves HTTP requests, WebSocket messages, and
-routed clean URLs. The same `classes/` directory is preloaded and shared across
-all of them. One server, one codebase, one mental model.
+The same `handlers/` directory serves HTTP requests, WebSocket messages, and routed clean URLs. The same `classes/` directory is preloaded and shared across all of them. One server, one codebase, one mental model.
 
 ```
 Static files:    GET /style.css            → web/style.css
@@ -3527,11 +3188,7 @@ Bare WebSocket:  {"event":"chat/message"}  → handlers/chat/message.php
 Legacy:          GET /wp-admin/post.php    → php-cgi (full compatibility)
 ```
 
-When you outgrow it — when you need the full dispatch pipeline, Streams for
-real-time data synchronization, or the component-level cache invalidation
-with Merkle trees — the same handlers run on the
-[Qbix Platform](https://github.com/Qbix/Platform) without changes. The upgrade
-path is adding capability, not rewriting architecture.
+When you outgrow it — when you need the full dispatch pipeline, Streams for real-time data synchronization, or the component-level cache invalidation with Merkle trees — the same handlers run on the [Qbix Platform](https://github.com/Qbix/Platform) without changes. The upgrade path is adding capability, not rewriting architecture.
 
 ---
 
@@ -3555,8 +3212,7 @@ Full results in [BENCHMARKS.md](docs/BENCHMARKS.md). Key findings:
 | 50ms I/O (c=40) | 78/s | 78/s | 77/s | 39/s |
 | Static 13KB | 26,974/s | 50,742/s | 18,311/s | 10,038/s |
 
-Octane matches Swoole and fpm on I/O. The 7% CPU gap is IPC overhead (parent
-dispatches to workers via Unix sockets, same as fpm's FastCGI).
+Octane matches Swoole and fpm on I/O. The 7% CPU gap is IPC overhead (parent dispatches to workers via Unix sockets, same as fpm's FastCGI).
 
 **Same memory budget (200MB, 50ms I/O, c=40):**
 
@@ -3565,29 +3221,22 @@ dispatches to workers via Unix sockets, same as fpm's FastCGI).
 | req/s | 78 | **520** |
 | p50 | 505ms | 56ms |
 
-**6.7× throughput, 9× lower latency** — because octane fits 100–300× more workers (measured for typical handlers)
-on the same RAM.
+**6.7× throughput, 9× lower latency** — because octane fits 100–300× more workers (measured for typical handlers) on the same RAM.
 
 ## Execution model
 
-One request, one PHP process. Qbix and ordinary PHP both assume a process
-handles a single request and then dies; this server preserves that.
+One request, one PHP process. Qbix and ordinary PHP both assume a process handles a single request and then dies; this server preserves that.
 
 | Platform | Mode | How |
 |---|---|---|
 | Unix (`pcntl`) | fork | Parent preloads classes, config and DB; forks per request; child runs the script and `exit(0)`s. Copy-on-write means no interpreter startup and no framework bootstrap — the memory and isolation advantage comes from this model. The fork itself costs ~7ms, which is the throughput trade-off vs. persistent workers. |
 | Windows / no `pcntl` | `php-cgi` | A real SAPI process per request, spawned via `Q.webserver.cgi.patterns`. Slower (full interpreter startup) but handles arbitrary PHP. |
 
-The parent never runs application code. It owns the socket, the reverse cache
-and static files, and forks. Because no request state is ever populated in the
-parent, children inherit a clean slate and nothing needs to be reset between
-requests.
+The parent never runs application code. It owns the socket, the reverse cache and static files, and forks. Because no request state is ever populated in the parent, children inherit a clean slate and nothing needs to be reset between requests.
 
 ## Q_Sapi — SAPI emulation for forked children
 
-A forked child of a CLI process has no SAPI. Nothing populated the
-superglobals, nothing captures output, and native `header()` is a silent no-op.
-`Q_Sapi` does what mod_php or php-fpm would do:
+A forked child of a CLI process has no SAPI. Nothing populated the superglobals, nothing captures output, and native `header()` is a silent no-op. `Q_Sapi` does what mod_php or php-fpm would do:
 
 ```php
 Q_Sapi::enter($parsed);      // superglobals + ob_start
@@ -3595,42 +3244,23 @@ include $scriptPath;         // any PHP file, not just a front controller
 list($status, $headers, $body) = Q_Sapi::leave();
 ```
 
-`enter()` populates `$_GET`, `$_POST` (form-encoded or JSON), `$_COOKIE`,
-`$_FILES` and `$_SERVER` — including `HTTP_HOST`, `SCRIPT_NAME`, `PATH_INFO`
-and `REMOTE_ADDR`. `HTTP_HOST` matters more than it looks:
-`Q_Response::setCookie()` returns false without it, which silently drops the
-session cookie.
+`enter()` populates `$_GET`, `$_POST` (form-encoded or JSON), `$_COOKIE`, `$_FILES` and `$_SERVER` — including `HTTP_HOST`, `SCRIPT_NAME`, `PATH_INFO` and `REMOTE_ADDR`. `HTTP_HOST` matters more than it looks: `Q_Response::setCookie()` returns false without it, which silently drops the session cookie.
 
 ### Shutdown ordering
 
-PHP runs `register_shutdown_function` callbacks in registration order, then
-object destructors. Since `Q_Sapi` registers before any application code, a
-shutdown callback would fire *first* — before user callbacks had a chance to
-echo or set cookies. So capture happens in a **destructor**
-(`Q_Sapi_Finalizer`), which is guaranteed to run last and still runs on
-`exit()`, on uncaught exceptions and on fatal errors.
+PHP runs `register_shutdown_function` callbacks in registration order, then object destructors. Since `Q_Sapi` registers before any application code, a shutdown callback would fire *first* — before user callbacks had a chance to echo or set cookies. So capture happens in a **destructor** (`Q_Sapi_Finalizer`), which is guaranteed to run last and still runs on `exit()`, on uncaught exceptions and on fatal errors.
 
-Before assembling the response, `capture()` calls `session_write_close()`
-explicitly, so the session row and its cookie are settled rather than racing
-a response the parent has already sent.
+Before assembling the response, `capture()` calls `session_write_close()` explicitly, so the session row and its cookie are settled rather than racing a response the parent has already sent.
 
-`capture()` is idempotent, and `deliver()` hands the response off exactly once
-— to `Q_Sapi::$onCapture` if the worker pool registered a consumer, otherwise
-to `STDOUT` so a child run standalone behaves like an ordinary PHP script.
+`capture()` is idempotent, and `deliver()` hands the response off exactly once — to `Q_Sapi::$onCapture` if the worker pool registered a consumer, otherwise to `STDOUT` so a child run standalone behaves like an ordinary PHP script.
 
 ### What fork mode cannot do
 
-Native `header()` cannot be intercepted: in the CLI SAPI it does nothing, and
-PHP offers no hook. Fork mode therefore fully supports code that goes through
-`Q_Response::header()` / `Q::header()`. Third-party or legacy scripts that call
-`header()` directly should be routed to `php-cgi` with
-`Q.webserver.cgi.patterns` — that config is the supported escape hatch, not a
-workaround.
+Native `header()` cannot be intercepted: in the CLI SAPI it does nothing, and PHP offers no hook. Fork mode therefore fully supports code that goes through `Q_Response::header()` / `Q::header()`. Third-party or legacy scripts that call `header()` directly should be routed to `php-cgi` with `Q.webserver.cgi.patterns` — that config is the supported escape hatch, not a workaround.
 
 ## Setting headers, status codes and cookies
 
-**Use `Q_Response`.** It works in both standalone and `--app` mode and has the
-same signature as PHP's built-in `header()`:
+**Use `Q_Response`.** It works in both standalone and `--app` mode and has the same signature as PHP's built-in `header()`:
 
 ```php
 Q_Response::header('Content-Type: application/json');
@@ -3641,16 +3271,11 @@ Q_Response::setCookie('session', $token, 0, '/');
 Q_Response::redirect('/dashboard');
 ```
 
-`Q_Response::header()` also works — `Q_Response::header()` delegates to
-it — but `Q_Response` is the higher-level API that scripts should prefer.
+`Q_Response::header()` also works — `Q_Response::header()` delegates to it — but `Q_Response` is the higher-level API that scripts should prefer.
 
 ### Why not `header()`?
 
-PHP's built-in `header()` and `http_response_code()` are **silently discarded**
-under the CLI SAPI, which is what the server runs in. `headers_list()` always
-returns an empty array and `http_response_code()` returns `false`, and PHP
-offers no hook to intercept the builtins. A script calling them gets a `200`
-with none of its headers, and no error to explain why.
+PHP's built-in `header()` and `http_response_code()` are **silently discarded** under the CLI SAPI, which is what the server runs in. `headers_list()` always returns an empty array and `http_response_code()` returns `false`, and PHP offers no hook to intercept the builtins. A script calling them gets a `200` with none of its headers, and no error to explain why.
 
 ### What works where
 
@@ -3666,9 +3291,7 @@ with none of its headers, and no error to explain why.
 
 ### Scripts you don't control
 
-Third-party code — WordPress, a vendored SDK, anything not written for Qbix —
-will call native `header()`. Route it to `php-cgi`, which runs it in a real CGI
-process where the builtins work normally:
+Third-party code — WordPress, a vendored SDK, anything not written for Qbix — will call native `header()`. Route it to `php-cgi`, which runs it in a real CGI process where the builtins work normally:
 
 ```json
 { "Q": { "webserver": { "cgi": { "patterns": ["wp-.*\\.php", "legacy/.*"] } } } }
@@ -3678,9 +3301,7 @@ process where the builtins work normally:
 
 ### Cookies
 
-`Q_Response::setCookie()` works in both modes (the Platform declares it too).
-The server reads `Q_Response::$cookies` — a `public static` property on both
-implementations — and emits the `Set-Cookie` headers itself.
+`Q_Response::setCookie()` works in both modes (the Platform declares it too). The server reads `Q_Response::$cookies` — a `public static` property on both implementations — and emits the `Set-Cookie` headers itself.
 
 ## Tests
 
@@ -3703,57 +3324,31 @@ node tests/testWebSocket.js [port]           # 12 tests
 bash tests/testSnapshot.sh [port]            # 12 tests
 ```
 
-The snapshot tests start both a fork-mode server and an octane-mode server,
-then verify that statics, globals, `$_COOKIE`, `$_SERVER`, `$_POST`,
-Authorization headers, and response headers from request A are invisible to
-request B. The fork-mode server acts as a control group. See
-[Octane Mode](#-octane-mode---workersn) for what the snapshot resets.
+The snapshot tests start both a fork-mode server and an octane-mode server, then verify that statics, globals, `$_COOKIE`, `$_SERVER`, `$_POST`, Authorization headers, and response headers from request A are invisible to request B. The fork-mode server acts as a control group. See [Octane Mode](#-octane-mode---workersn) for what the snapshot resets.
 
 ## Class ownership in `--app` mode
 
 The webserver owns its own classes; the Platform does not carry copies.
 
-`Q::autoload()` resolves `Q_WebServer_Proxy` to `classes/Q/WebServer/Proxy.php`
-against PHP's include_path, which covers only the Platform. So `qbixserver.php`
-registers a prepended autoloader that serves these names from this repo's `src/`:
+`Q::autoload()` resolves `Q_WebServer_Proxy` to `classes/Q/WebServer/Proxy.php` against PHP's include_path, which covers only the Platform. So `qbixserver.php` registers a prepended autoloader that serves these names from this repo's `src/`:
 
     Q_WebServer, Q_WebServer_*, Q_WebSocket, Q_Scheduler, Q_FileCache, Q_HotReload
 
-It is deliberately **selective**. `src/Q/` also contains `Utils`, `Uri`,
-`Evented` and `Snapshot`, which the Platform also defines. Claiming those would
-shadow the Platform's versions with the standalone ones. In `--app` mode the
-Platform wins for anything it defines; we claim only what is ours alone.
+It is deliberately **selective**. `src/Q/` also contains `Utils`, `Uri`, `Evented` and `Snapshot`, which the Platform also defines. Claiming those would shadow the Platform's versions with the standalone ones. In `--app` mode the Platform wins for anything it defines; we claim only what is ours alone.
 
-Do **not** copy `Q/WebServer*.php` into `platform/classes/`. Nothing in the
-Platform references `Q_WebServer` except one comment, and a Platform running
-behind nginx or php-fpm should not ship code it never loads. A partial copy
-there is worse than none: it shadows this repo's complete set and fails with
-`Class "Q_WebServer_Proxy" not found`.
+Do **not** copy `Q/WebServer*.php` into `platform/classes/`. Nothing in the Platform references `Q_WebServer` except one comment, and a Platform running behind nginx or php-fpm should not ship code it never loads. A partial copy there is worse than none: it shadows this repo's complete set and fails with `Class "Q_WebServer_Proxy" not found`.
 
 ### `Q::$paths`
 
-`Q::$paths` is declared by this repo's **standalone shim** (`src/Q.php`), not by
-the Platform's `Q.php`. Use `Q_WebServer::paths()` instead of touching the
-property — it falls back to `APP_DIR`/`Q_DIR` when the property is absent.
-Dereferencing it directly in `--app` mode raised
-`Access to undeclared static property Q::$paths` and made every request a 500.
+`Q::$paths` is declared by this repo's **standalone shim** (`src/Q.php`), not by the Platform's `Q.php`. Use `Q_WebServer::paths()` instead of touching the property — it falls back to `APP_DIR`/`Q_DIR` when the property is absent. Dereferencing it directly in `--app` mode raised `Access to undeclared static property Q::$paths` and made every request a 500.
 
 ### The webserver is a strict, overridable subset
 
-In `--app` mode the Platform wins twice over: its **classes** override ours for
-any shared name, and its **config** (routing, etc.) overrides ours. That is the
-intended direction, and it only works if we never depend on anything the
-Platform lacks.
+In `--app` mode the Platform wins twice over: its **classes** override ours for any shared name, and its **config** (routing, etc.) overrides ours. That is the intended direction, and it only works if we never depend on anything the Platform lacks.
 
-The rule: **any member the Platform does not define must live on a
-webserver-only class** — `Q_WebServer`, `Q_WebServer_*`, `Q_WebSocket`,
-`Q_Scheduler`, `Q_FileCache`, `Q_HotReload` — never on a shared name like `Q`,
-`Q_Utils`, `Q_Uri`, `Q_Evented` or `Q_Snapshot`.
+The rule: **any member the Platform does not define must live on a webserver-only class** — `Q_WebServer`, `Q_WebServer_*`, `Q_WebSocket`, `Q_Scheduler`, `Q_FileCache`, `Q_HotReload` — never on a shared name like `Q`, `Q_Utils`, `Q_Uri`, `Q_Evented` or `Q_Snapshot`.
 
-`tests/platform-compat.php` enforces this. It maps both class trees, finds the
-shared names, and fails if we touch a static member the Platform's version does
-not declare. Guarded calls (`method_exists('Q','init') && Q::init(...)`) are
-allowed, since they degrade cleanly.
+`tests/platform-compat.php` enforces this. It maps both class trees, finds the shared names, and fails if we touch a static member the Platform's version does not declare. Guarded calls (`method_exists('Q','init') && Q::init(...)`) are allowed, since they degrade cleanly.
 
     php tests/platform-compat.php /path/to/Qbix/platform
 
@@ -3762,35 +3357,11 @@ Fixed under this rule so far:
 - `Q::$paths` — declared by our standalone shim, not by the Platform. Now read
   through `Q_WebServer::paths()`, which falls back to `APP_DIR`/`Q_DIR`.
 - `Q_Utils::serverIdentity()`, `serverClaim()`, `signClaim()`, `verify()` —
-  four methods on a shared class name the Platform also defines (without them).
-  Moved to **`Q_WebServer_Identity`**.
+  four methods on a shared class name the Platform also defines (without them). Moved to **`Q_WebServer_Identity`**.
 
-#### Known violations still open (app mode is NOT clean yet)
+#### Platform compatibility: PASS
 
-`php tests/platform-compat.php <platform>` currently reports **7**. All are
-webserver-only extensions to `Q_Request` / `Q_Response`, which are declared
-inside `src/Q.php` and are therefore SHARED names — in `--app` mode the
-Platform's versions win and these methods do not exist:
-
-| Member | Used in |
-|---|---|
-| `Q_Request::setInput()` | `src/Q/WebServer.php`, `src/Q.php` |
-| `Q_Request::restoreInput()` | `src/Q/WebServer.php`, `src/Q.php` |
-| `Q_Response::getHeaders()` | `src/Q/WebServer.php`, `src/Q.php` |
-| `Q_Response::cookieHeaders()` | `src/Q/WebServer/Headers.php`, `src/Q.php` |
-| `Q_Response::clear()` | `src/Q/WebServer.php` |
-| `Q_Response::header()` | `src/Q.php` |
-| `Q_Response::responseCode()` | `src/Q.php` |
-
-Observed effect: `GET /index.php` in app mode returns **500 — Call to undefined
-method Q_Request::setInput()**. Static files serve correctly (200); it is the
-PHP dispatch path that fails.
-
-These need more than relocation. In app mode the *Platform's* `Q_Response` is
-what the application actually writes to, so the webserver must read headers and
-response state through the Platform's own API rather than move its private state
-to a new class. Relocating the methods without rewiring the state would compile
-and still be wrong.
+`php tests/platform-compat.php <platform>` reports **0 violations**. All webserver-only methods (`setInput`, `restoreInput`, `getHeaders`, `cookieHeaders`, `clear`, `responseCode`) are called on `Q_WebServer_State` (webserver-only class), never on shared classes that the Platform overrides. The webserver's internal code uses `Q_WebServer_State` for state management; user-facing APIs (`Q_Response::header()`, `Q_Request::method()`, etc.) exist in both the standalone shim and the Platform.
 
 ### Why the webserver keeps its own Q_Uri (measured)
 
@@ -3799,161 +3370,77 @@ and still be wrong.
 | Platform `Q_Uri` | 41,394 (1,472 lines) | `Q`, `Q_Config`, `Q_Request`, `Q_Utils`, `Q_Valid` |
 | webserver `Q_Uri` | 7,554 | `Q`, `Q_Config` |
 
-Adopting the Platform's outright means its **transitive closure**:
-Uri 41K + Request 55K + Utils 84K + Valid 17K = **~197KB**, versus 7.5KB — and
-the webserver has no `Q_Valid` at all. A standalone static server does not need
-slots, mobile detection or validation to match `AI/webhook/:type/:task`.
+Adopting the Platform's outright means its **transitive closure**: Uri 41K + Request 55K + Utils 84K + Valid 17K = **~197KB**, versus 7.5KB — and the webserver has no `Q_Valid` at all. A standalone static server does not need slots, mobile detection or validation to match `AI/webhook/:type/:task`.
 
-In `--app` mode the calculus reverses: the Platform is already loaded, so its
-`Q_Uri` is free and ours is dead weight. Hence `Q_WebServer_Router`, which uses
-whichever is present.
+In `--app` mode the calculus reverses: the Platform is already loaded, so its `Q_Uri` is free and ours is dead weight. Hence `Q_WebServer_Router`, which uses whichever is present.
 
-**Resolved.** `Q_Uri::from()` *is* the path→route matcher — it dispatches
-internally to the protected `fromUrl()`. The catch is that it must be given an
-**absolute URL**, not a bare path.
+**Resolved.** `Q_Uri::from()` *is* the path→route matcher — it dispatches internally to the protected `fromUrl()`. The catch is that it must be given an **absolute URL**, not a bare path.
 
-Passing a bare path is worse than an error. `from()` then treats it as a URI
-string (`"Module/action/..."`) and merely SPLITS it, returning a wrong answer
-with no exception. Measured against a live app:
+Passing a bare path is worse than an error. `from()` then treats it as a URI string (`"Module/action/..."`) and merely SPLITS it, returning a wrong answer with no exception. Measured against a live app:
 
-    bare path  AI/webhook/slack/ingest                    -> AI / webhook/slack/ingest   (split)
-    full URL   http://host/App/AI/webhook/slack/ingest    -> AI / webhook                (routed)
+    bare path  AI/webhook/slack/ingest                    -> AI / webhook/slack/ingest   (split) full URL   http://host/App/AI/webhook/slack/ingest    -> AI / webhook                (routed)
 
-`Q_WebServer_Router` now builds `Q_Request::baseUrl() + path` before calling
-`from()`, and returns null rather than guessing when no base URL is available.
-Verified with the Platform's `Q_Uri` loaded (`which Q_Uri: PLATFORM`):
+`Q_WebServer_Router` now builds `Q_Request::baseUrl() + path` before calling `from()`, and returns null rather than guessing when no base URL is available. Verified with the Platform's `Q_Uri` loaded (`which Q_Uri: PLATFORM`):
 
-    /AI/webhook/slack/ingest  -> AI/webhook
-    /Safebox/action           -> Safebox/action
-    /Users/login              -> null      (no catch-all route in that app's config)
-    /nope                     -> null
+    /AI/webhook/slack/ingest  -> AI/webhook /Safebox/action           -> Safebox/action /Users/login              -> null      (no catch-all route in that app's config) /nope                     -> null
 
 ## Testing
 
 Seven suites. Everything runs against a real server over a real socket — no mocks.
 
-    bash tests/run.sh --quick                    # 71 functional + security tests
-    php  tests/testSapi.php                      # 19 SAPI emulation tests
-    bash tests/run-probe.sh [platform-dir]       # 58 wire-level probes per mode
-    bash tests/run-cgi.sh                        # php-cgi carveout
-    php  tests/platform-compat.php <platform>    # --app compatibility audit
-    php  tests/routing-parity.php  <platform>    # our matcher vs the Platform's
-    bash tests/run-modes.sh <app> <platform>     # dual-mode acceptance
+    bash tests/run.sh --quick                    # 71 functional + security tests php  tests/testSapi.php                      # 19 SAPI emulation tests bash tests/run-probe.sh [platform-dir]       # 58 wire-level probes per mode bash tests/run-cgi.sh                        # php-cgi carveout php  tests/platform-compat.php <platform>    # --app compatibility audit php  tests/routing-parity.php  <platform>    # our matcher vs the Platform's bash tests/run-modes.sh <app> <platform>     # dual-mode acceptance
 
-CI runs all of them on every push (`.github/workflows/test.yml`), in three
-jobs: standalone, php-cgi, and `--app` against a fresh checkout of
-[Qbix/Platform](https://github.com/Qbix/Platform).
+CI runs all of them on every push (`.github/workflows/test.yml`), in three jobs: standalone, php-cgi, and `--app` against a fresh checkout of [Qbix/Platform](https://github.com/Qbix/Platform).
 
 ### Testing `--app` mode
 
-The Platform will not bootstrap without a real app — it needs a config with
-`Q/plugins` and `Q/web/appRootUrl`, and its `Q_Uri` is not loadable on its own.
-Build a minimal, plugin-free fixture:
+The Platform will not bootstrap without a real app — it needs a config with `Q/plugins` and `Q/web/appRootUrl`, and its `Q_Uri` is not loadable on its own. Build a minimal, plugin-free fixture:
 
-    bash tests/fixtures/make-app.sh /path/to/Platform/platform /tmp/TestApp 20099
-    bash tests/run-probe.sh /path/to/Platform/platform
+    bash tests/fixtures/make-app.sh /path/to/Platform/platform /tmp/TestApp 20099 bash tests/run-probe.sh /path/to/Platform/platform
 
-Without a Platform path, `platform-compat.php` and `routing-parity.php` exit 0
-with `SKIP`. **In CI that is indistinguishable from passing**, so the workflow
-greps their output and fails the job if they did not actually report success.
+Without a Platform path, `platform-compat.php` and `routing-parity.php` exit 0 with `SKIP`. **In CI that is indistinguishable from passing**, so the workflow greps their output and fails the job if they did not actually report success.
 
 ### `tests/probe.php` — the wire-level suite
 
-Unit tests miss whole classes of bug. Two examples this suite caught that
-nothing else did:
+Unit tests miss whole classes of bug. Two examples this suite caught that nothing else did:
 
 - **`exit()` sent the client zero bytes.** The forked child unwound past the
-  response-writing code, so nothing reached the socket — while the access log
-  recorded `200`, because the parent had already assumed success.
+  response-writing code, so nothing reached the socket — while the access log recorded `200`, because the parent had already assumed success.
 - **Headers were silently dropped in `--app` mode.** They were captured
-  correctly, then discarded by a guard that tested for a method only the
-  standalone shim declares.
+  correctly, then discarded by a guard that tested for a method only the standalone shim declares.
 
 Both looked fine from inside the process. Only reading the socket revealed them.
 
 ### `tests/platform-compat.php` — the invariant that matters
 
-The webserver is a *subset* the Platform must be able to override. In `--app`
-mode the Platform's classes win for every name it defines, so any member the
-webserver touches on a shared class must exist in the Platform's version too —
-otherwise it works standalone and dies under a real app.
+The webserver is a *subset* the Platform must be able to override. In `--app` mode the Platform's classes win for every name it defines, so any member the webserver touches on a shared class must exist in the Platform's version too — otherwise it works standalone and dies under a real app.
 
-This audit walks `src/` **and the test fixtures** (they run under both modes too)
-and fails on any member a shared class does not declare. Anything the Platform
-lacks belongs on a webserver-only class: `Q_WebServer`, `Q_WebServer_State`,
-`Q_WebServer_Router`, `Q_WebServer_Identity`, `Q_WebSocket`, `Q_Scheduler`,
-`Q_FileCache`, `Q_HotReload`.
+This audit walks `src/` **and the test fixtures** (they run under both modes too) and fails on any member a shared class does not declare. Anything the Platform lacks belongs on a webserver-only class: `Q_WebServer`, `Q_WebServer_State`, `Q_WebServer_Router`, `Q_WebServer_Identity`, `Q_WebSocket`, `Q_Scheduler`, `Q_FileCache`, `Q_HotReload`.
 
 ### Two behaviours worth knowing
 
-**`php://input` works, via a stream wrapper.** A forking server reads the
-request off the socket itself, so the real `php://input` is already consumed and
-would stay empty for the life of the process. `Q_WebServer_State::setInput()`
-registers a wrapper over `php` so `file_get_contents('php://input')` returns
-*this* request's body, and `restoreInput()` unregisters it afterwards.
+**`php://input` works, via a stream wrapper.** A forking server reads the request off the socket itself, so the real `php://input` is already consumed and would stay empty for the life of the process. `Q_WebServer_State::setInput()` registers a wrapper over `php` so `file_get_contents('php://input')` returns *this* request's body, and `restoreInput()` unregisters it afterwards.
 
-The wrapper class exists twice on purpose: `Q_PhpInputStream` in `src/Q.php` for
-standalone, and `Q_WebServer_PhpInput` for `--app`, because `src/Q.php` is the
-standalone shim and is not loaded when the Platform's `Q` wins. Without the
-webserver-owned copy, `php://input` returned an empty string for every request
-under `--app`.
+The wrapper class exists twice on purpose: `Q_PhpInputStream` in `src/Q.php` for standalone, and `Q_WebServer_PhpInput` for `--app`, because `src/Q.php` is the standalone shim and is not loaded when the Platform's `Q` wins. Without the webserver-owned copy, `php://input` returned an empty string for every request under `--app`.
 
-**Native `header()` is discarded under the CLI SAPI.** `headers_list()` always
-returns empty and `http_response_code()` returns `false`; PHP offers no hook to
-intercept the builtin. Scripts written for Qbix should use
-`Q_Response::header()`, which works in both modes. Scripts that must use
-native `header()` — WordPress, third-party code — are routed to `php-cgi` via
-`Q.webserver.cgi.patterns`; `tests/run-cgi.sh` proves that path preserves both
-status and headers.
+**Native `header()` is discarded under the CLI SAPI.** `headers_list()` always returns empty and `http_response_code()` returns `false`; PHP offers no hook to intercept the builtin. Scripts written for Qbix should use `Q_Response::header()`, which works in both modes. Scripts that must use native `header()` — WordPress, third-party code — are routed to `php-cgi` via `Q.webserver.cgi.patterns`; `tests/run-cgi.sh` proves that path preserves both status and headers.
 
-**The app enforces its own baseUrl.** If the app is configured for
-`http://host/App` and you serve it on another port, the Platform returns
-`{"error":"bad url ..."}`. That is the application refusing, not the server
-failing. Serve at the configured address, or point the app's baseUrl at the
-listening one — which is what `make-app.sh`'s port argument does.
+**The app enforces its own baseUrl.** If the app is configured for `http://host/App` and you serve it on another port, the Platform returns `{"error":"bad url ..."}`. That is the application refusing, not the server failing. Serve at the configured address, or point the app's baseUrl at the listening one — which is what `make-app.sh`'s port argument does.
 
 ### Fixed: `/` returned 403 in `--app` mode
 
 `GET /index.php` returns 200 and renders the app. `GET /` returns 403.
 
-Narrowed to the directory-index lookup: for `/` the server resolves the docroot
-directory and then tries `index.html`, `index.php` in turn. That lookup is not
-finding `web/index.php` even though the file exists and serves correctly when
-requested directly — so the request falls past the index branch and is refused.
-Suspect the `$fsPath . DS . $idx` join against `self::$rootDir` (the startup
-banner reports `Root: web`, a relative value).
+Narrowed to the directory-index lookup: for `/` the server resolves the docroot directory and then tries `index.html`, `index.php` in turn. That lookup is not finding `web/index.php` even though the file exists and serves correctly when requested directly — so the request falls past the index branch and is refused. Suspect the `$fsPath . DS . $idx` join against `self::$rootDir` (the startup banner reports `Root: web`, a relative value).
 
-Everything else in `--app` mode passes: static files, `index.php`, an
-`action.php` route, no class-loading / undeclared-property / undefined-method
-errors, and no leading NUL byte.
+Everything else in `--app` mode passes: static files, `index.php`, an `action.php` route, no class-loading / undeclared-property / undefined-method errors, and no leading NUL byte.
 
-**Root cause (fixed).** The extension used to pick the static-vs-PHP branch was
-read from `$path` (the URL) instead of `$fsPath` (the resolved file). `/` has no
-extension in the URL, but `$fsPath` had already been resolved to the directory
-index `.../index.php`. So `/` fell past the PHP branch into `serveStaticFile()`,
-which rejects any extension not in `$allowedExtensions` — 403 on the app's own
-home page, while `/index.php` served fine. The same mistake appeared in **two**
-places (`route()` and the serve path); both now read `$fsPath`.
+**Root cause (fixed).** The extension used to pick the static-vs-PHP branch was read from `$path` (the URL) instead of `$fsPath` (the resolved file). `/` has no extension in the URL, but `$fsPath` had already been resolved to the directory index `.../index.php`. So `/` fell past the PHP branch into `serveStaticFile()`, which rejects any extension not in `$allowedExtensions` — 403 on the app's own home page, while `/index.php` served fine. The same mistake appeared in **two** places (`route()` and the serve path); both now read `$fsPath`.
 
-**Also fixed: missing `Content-Type` on PHP-dispatched 200s.** A script that
-never calls `header()` left none set, so successful dispatches went out with no
-`Content-Type` at all — browsers sniff, strict clients reject. Error paths set it
-explicitly, which is why it only bit the success path. `dispatchToQ()` now
-defaults to `text/html; charset=utf-8` unless the script set one (and never on
-204/304).
+**Also fixed: missing `Content-Type` on PHP-dispatched 200s.** A script that never calls `header()` left none set, so successful dispatches went out with no `Content-Type` at all — browsers sniff, strict clients reject. Error paths set it explicitly, which is why it only bit the success path. `dispatchToQ()` now defaults to `text/html; charset=utf-8` unless the script set one (and never on 204/304).
 
 **Status: 32/32 passing in both modes**, stable across repeated runs.
 
-**Native `header()` is not captured — use `Q_Response::setHeader()`.** Under the
-CLI SAPI PHP's `header()` is a no-op and `headers_list()` returns nothing, so a
-long-running CLI server cannot see those calls. This is a PHP constraint, not a
-server one, and unlike `php://input` it cannot be worked around with a stream
-wrapper. Set response headers through `Q_Response::setHeader()` or
-`Q::header()`; both are captured and reach the client. The suite asserts this
-explicitly so it will report if a future SAPI changes the behaviour.
+**Native `header()` is not captured — use `Q_Response::setHeader()`.** Under the CLI SAPI PHP's `header()` is a no-op and `headers_list()` returns nothing, so a long-running CLI server cannot see those calls. This is a PHP constraint, not a server one, and unlike `php://input` it cannot be worked around with a stream wrapper. Set response headers through `Q_Response::setHeader()` or `Q::header()`; both are captured and reach the client. The suite asserts this explicitly so it will report if a future SAPI changes the behaviour.
 
-**One header store.** `Q_Response`'s accessors delegate to
-`Q_WebServer_State`. An earlier refactor left `Q_Response` keeping a parallel
-`$_headers` array while the server read State's — so every header set through the
-Qbix API silently vanished from the response. The suite now round-trips a header
-set via `Q_Response::setHeader()` and asserts it arrives.
+**One header store.** `Q_Response`'s accessors delegate to `Q_WebServer_State`. An earlier refactor left `Q_Response` keeping a parallel `$_headers` array while the server read State's — so every header set through the Qbix API silently vanished from the response. The suite now round-trips a header set via `Q_Response::setHeader()` and asserts it arrives.

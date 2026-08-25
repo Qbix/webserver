@@ -20,11 +20,11 @@ Q_Response::setCookie('test_cookie', 'hello', 0, '/');
 echo json_encode(array(
     'ok' => true,
     'method' => Q_Request::method(),
-    'path' => Q_Request::path(),
+    'path' => $_SERVER['REQUEST_URI'] ?? '/',
     'code' => Q_Response::code(),
     'headers_set' => array(
-        'Content-Type' => Q_Response::getHeader('Content-Type'),
-        'X-App-Mode' => Q_Response::getHeader('X-App-Mode'),
-        'X-Custom-Token' => Q_Response::getHeader('X-Custom-Token'),
+        'Content-Type' => Q_WebServer_State::getHeader('Content-Type'),
+        'X-App-Mode' => Q_WebServer_State::getHeader('X-App-Mode'),
+        'X-Custom-Token' => Q_WebServer_State::getHeader('X-Custom-Token'),
     ),
 ));

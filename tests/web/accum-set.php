@@ -12,5 +12,5 @@ Q_Response::addError(new Exception('test error'));
 echo json_encode(array(
     'set' => true,
     'errors' => count(Q_Response::getErrors()),
-    'cookies' => count(Q_Response::cookieHeaders()),
+    'cookies' => count(Q_WebServer_State::cookieHeaders()),
 ));

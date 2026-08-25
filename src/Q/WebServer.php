@@ -1592,7 +1592,7 @@ class Q_WebServer
 		// Make raw body available via Q_Request::input() and php://input
 		Q_WebServer_State::setInput($rawBody);
 		if (class_exists('Q_Request', false)) {
-			Q_Request::$input = $rawBody;
+			if (property_exists('Q_Request', 'input')) Q_Request::$input = $rawBody;
 		}
 
 		// If pcntl available, fork to isolate
@@ -3024,7 +3024,7 @@ HTML;
 			// Standalone shim has clear(); Platform's Q_Response may not,
 			// but its statics are reset by the snapshot or by Q_Dispatcher.
 			if (method_exists('Q_Response', 'clear')) {
-				Q_Response::clear();
+				Q_WebServer_State::clear();
 			}
 		}
 		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
@@ -3160,7 +3160,7 @@ HTML;
 		// Make raw body available via Q_Request::input() and php://input
 		Q_WebServer_State::setInput($rawBody);
 		if (class_exists('Q_Request', false)) {
-			Q_Request::$input = $rawBody;
+			if (property_exists('Q_Request', 'input')) Q_Request::$input = $rawBody;
 		}
 
 		// Clear any stale headers and output from previous in-process requests,

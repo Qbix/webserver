@@ -43,16 +43,16 @@ $p2 = $_POST; Q_Sapi::leave();
 ok($p2 === array('k'=>'v'), 'JSON body decoded into $_POST');
 
 echo "== headers and status ==\n";
-Q_Response::clear();
+Q_WebServer_State::clear();
 Q_Sapi::enter(req());
 Q_Response::header('X-Test: hi');
-Q_Response::responseCode(418);
+Q_WebServer_State::responseCode(418);
 list($st, $hd, $bd) = Q_Sapi::leave();
 ok($st === 418, 'status code captured');
 ok(isset($hd['X-Test']) && $hd['X-Test'] === 'hi', 'header captured');
 
 echo "== cookies reach the response ==\n";
-Q_Response::clear();
+Q_WebServer_State::clear();
 Q_Sapi::enter(req());
 Q_Response::setCookie('sess', 'v1', 0, '/');
 list($st3, $hd3, $bd3) = Q_Sapi::leave();
@@ -84,7 +84,7 @@ $out2 = shell_exec(PHP_BINARY . ' -r ' . escapeshellarg(
 ok(strpos($out2, 'BEFORE_EXIT') !== false, 'output captured even when script calls exit()');
 
 echo "== capture is idempotent ==\n";
-Q_Response::clear();
+Q_WebServer_State::clear();
 Q_Sapi::enter(req());
 echo "once";
 $a = Q_Sapi::capture();
@@ -95,12 +95,12 @@ Q_Sapi::leave();
 echo "== no state leaks between requests ==\n";
 // The regression test for the whole class of bugs: request 2 must not
 // inherit request 1's cookies, headers, or parsed URI.
-Q_Response::clear();
+Q_WebServer_State::clear();
 Q_Sapi::enter(req(array('query'=>'first=1')));
 Q_Response::setCookie('leak', 'REQ1', 0, '/');
 Q_Response::header('X-Leak: REQ1');
 Q_Sapi::leave();
-Q_Response::clear();
+Q_WebServer_State::clear();
 Q_Sapi::enter(req(array('query'=>'second=2')));
 $g2 = $_GET;
 list($st4, $hd4, $bd4) = Q_Sapi::leave();

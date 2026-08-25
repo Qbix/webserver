@@ -14,7 +14,7 @@ if (!empty($errors)) {
 }
 
 // Check Q_Response cookies (pending cookies, not request cookies)
-$cookieHeaders = Q_Response::cookieHeaders();
+$cookieHeaders = Q_WebServer_State::cookieHeaders();
 if (!empty($cookieHeaders)) {
     $leaks[] = 'pending_cookies=' . count($cookieHeaders);
 }
