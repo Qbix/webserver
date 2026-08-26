@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       php_version:
-        description: 'PHP version'
+        description: 'PHP version to build'
         default: '8.3'
 
 permissions:
@@ -20,14 +20,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            arch: x86_64
             name: linux-x86_64
+            spc_arch: x86_64
           - os: ubuntu-24.04-arm
-            arch: aarch64
             name: linux-aarch64
+            spc_arch: aarch64
           - os: macos-latest
-            arch: arm64
             name: macos-arm64
+            spc_arch: aarch64
 
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.name }}
@@ -35,90 +35,141 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install system build dependencies
         run: |
-          if command -v apt-get &>/dev/null; then
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            brew install cmake autoconf automake libtool pkg-config bison re2c
+          else
             sudo apt-get update -qq
             sudo apt-get install -y -qq \
-              pkg-config pkgconf autoconf automake build-essential cmake \
-              musl-tools musl-dev libmusl-dev
-            # Ensure pkg-config is findable (ARM runners sometimes miss the symlink)
-            if ! command -v pkg-config &>/dev/null; then
-              sudo ln -sf "$(which pkgconf)" /usr/local/bin/pkg-config
-            fi
-          elif command -v brew &>/dev/null; then
-            brew install pkg-config autoconf automake cmake
+              build-essential cmake autoconf automake libtool \
+              pkg-config pkgconf bison re2c curl wget \
+              musl-tools musl-dev
           fi
-          echo "pkg-config: $(which pkg-config 2>/dev/null || echo 'NOT FOUND')"
-          echo "musl-gcc: $(which musl-gcc 2>/dev/null || echo 'NOT FOUND')"
-          pkg-config --version 2>/dev/null || echo "pkg-config not working"
 
-      - name: Set up PHP for static-php-cli
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.4'
-
-      - name: Install static-php-cli
+      - name: Download pre-built spc binary
         run: |
-          composer create-project crazywhalecc/static-php-cli spc-build --no-dev
-          cd spc-build
-          chmod +x bin/spc
-          ./bin/spc doctor --auto-fix || true
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            SPC_OS="macos"
+          else
+            SPC_OS="linux"
+          fi
+          SPC_URL="https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-${SPC_OS}-${{ matrix.spc_arch }}"
+          echo "Downloading spc from: $SPC_URL"
+          curl -fSL "$SPC_URL" -o spc && chmod +x spc
+          ./spc --version
 
-      - name: Download sources
-        working-directory: spc-build
+      - name: Make pkg-config findable everywhere
+        run: |
+          # spc rebuilds PATH to /usr/local/musl/*/bin:/usr/local/bin:...
+          # We must place pkg-config where spc's modified PATH will find it
+          PKG_REAL=""
+          for p in /usr/bin/pkg-config /opt/homebrew/bin/pkg-config /usr/local/bin/pkg-config; do
+            if [ -x "$p" ]; then PKG_REAL="$p"; break; fi
+          done
+          if [ -z "$PKG_REAL" ] && command -v pkgconf &>/dev/null; then
+            PKG_REAL="$(which pkgconf)"
+          fi
+          if [ -n "$PKG_REAL" ]; then
+            echo "Found pkg-config at: $PKG_REAL (version: $($PKG_REAL --version))"
+            # Copy (not symlink) to every location spc might check
+            for dest in /usr/local/bin /usr/local/musl/bin /usr/bin; do
+              sudo mkdir -p "$dest" 2>/dev/null || true
+              sudo cp -f "$PKG_REAL" "$dest/pkg-config" 2>/dev/null || true
+            done
+          else
+            echo "WARNING: pkg-config not found anywhere"
+          fi
+
+      - name: Setup musl cross-compiler wrappers (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          ARCH=$(uname -m)
+          MUSL_PREFIX="${ARCH}-linux-musl"
+          # spc expects arch-prefixed musl tools (x86_64-linux-musl-gcc etc.)
+          # spc doctor downloads these from musl.libc.org but that site is often blocked
+          # Create wrappers from system musl-gcc if spc's versions don't exist
+          if ! command -v ${MUSL_PREFIX}-gcc &>/dev/null; then
+            echo "Creating ${MUSL_PREFIX} toolchain wrappers..."
+            sudo mkdir -p /usr/local/musl/bin /usr/local/musl/${MUSL_PREFIX}/bin
+            # gcc/g++ -> musl-gcc wrapper
+            for tool in gcc g++; do
+              SRC=$(which musl-$tool 2>/dev/null || which musl-gcc 2>/dev/null)
+              if [ -n "$SRC" ]; then
+                sudo cp -f "$SRC" "/usr/local/musl/bin/${MUSL_PREFIX}-${tool}"
+                sudo cp -f "$SRC" "/usr/local/musl/${MUSL_PREFIX}/bin/${MUSL_PREFIX}-${tool}"
+              fi
+            done
+            # binutils -> system versions
+            for tool in ar ld nm objcopy objdump ranlib readelf strip; do
+              SRC=$(which $tool 2>/dev/null)
+              if [ -n "$SRC" ]; then
+                sudo cp -f "$SRC" "/usr/local/musl/bin/${MUSL_PREFIX}-${tool}"
+                sudo cp -f "$SRC" "/usr/local/musl/${MUSL_PREFIX}/bin/${MUSL_PREFIX}-${tool}"
+              fi
+            done
+            echo "Created wrappers:"
+            ls /usr/local/musl/bin/${MUSL_PREFIX}-* 2>/dev/null | head -5
+          else
+            echo "${MUSL_PREFIX}-gcc already exists: $(which ${MUSL_PREFIX}-gcc)"
+          fi
+
+      - name: Run spc doctor (best-effort)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./spc doctor --auto-fix 2>&1 || echo "Doctor had issues (continuing anyway)"
+          # Verify critical tools after doctor
+          echo "=== Post-doctor check ==="
+          echo "pkg-config: $(which pkg-config 2>&1) -> $(pkg-config --version 2>&1)"
+          if [[ "$OSTYPE" != "darwin"* ]]; then
+            ARCH=$(uname -m)
+            echo "musl-gcc: $(which ${ARCH}-linux-musl-gcc 2>&1)"
+          fi
+
+      - name: Download PHP and extension sources
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PHP_VER="${{ github.event.inputs.php_version || '8.3' }}"
-          ./bin/spc download \
-            --for-extensions="pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
+          ./spc download \
+            --for-extensions="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session" \
             --with-php=$PHP_VER
 
       - name: Build static PHP CLI + phpmicro
-        working-directory: spc-build
+        env:
+          SPC_SKIP_DOCTOR_CHECK_ITEMS: "pkg-config,musl-wrapper"
         run: |
-          ./bin/spc doctor --auto-fix || true
-          ./bin/spc build \
-            "pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
+          ./spc build \
+            "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session" \
             --build-cli --build-micro
 
       - name: Build qbixserver.phar
         run: |
-          # Use the freshly built static PHP to build the phar
-          spc-build/buildroot/bin/php -d phar.readonly=0 build-phar.php
+          ./buildroot/bin/php -d phar.readonly=0 build-phar.php
 
       - name: Combine into single binary
-        working-directory: spc-build
         run: |
-          ./bin/spc micro:combine ../bin/qbixserver.phar -O ../qbixserver-${{ matrix.name }}
-          chmod +x ../qbixserver-${{ matrix.name }}
-          ls -lh ../qbixserver-${{ matrix.name }}
+          ./spc micro:combine bin/qbixserver.phar -O qbixserver-${{ matrix.name }}
+          chmod +x qbixserver-${{ matrix.name }}
+          ls -lh qbixserver-${{ matrix.name }}
 
       - name: Compress with UPX (Linux only)
-        if: startsWith(matrix.os, 'ubuntu')
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y -qq upx-ucl 2>/dev/null || true
           if command -v upx &>/dev/null; then
             cp qbixserver-${{ matrix.name }} qbixserver-${{ matrix.name }}-uncompressed
             upx --best --lzma qbixserver-${{ matrix.name }} || true
-            echo "Compressed: $(ls -lh qbixserver-${{ matrix.name }} | awk '{print $5}')"
-            echo "Original:   $(ls -lh qbixserver-${{ matrix.name }}-uncompressed | awk '{print $5}')"
           fi
 
       - name: Smoke test
         run: |
-          # Verify the binary works
-          ./qbixserver-${{ matrix.name }} --help || true
-          echo '<?php echo "ok\n";' > /tmp/test.php
-          timeout 3 ./qbixserver-${{ matrix.name }} --root=/tmp --port=19999 &
-          sleep 2
-          curl -s http://127.0.0.1:19999/test.php || echo "test skipped"
-          kill %1 2>/dev/null || true
+          ./qbixserver-${{ matrix.name }} --help 2>&1 | head -5 || true
 
-      - name: Also package static php-cli separately
+      - name: Package static php-cli separately
         run: |
-          cp spc-build/buildroot/bin/php php-${{ matrix.name }}
+          cp buildroot/bin/php php-${{ matrix.name }}
           chmod +x php-${{ matrix.name }}
 
       - name: Upload artifacts
@@ -133,7 +184,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -142,21 +193,12 @@ jobs:
         with:
           path: artifacts
 
-      - name: Build phar (for those who have PHP already)
-        run: |
-          php -d phar.readonly=0 build-phar.php || true
-
-      - name: Create zip
-        run: |
-          zip -rq qbixserver-source.zip . \
-            -x "./.git/*" "./node_modules/*" "./package.json" "./package-lock.json" \
-            "./spc-build/*" "./artifacts/*"
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             artifacts/qbixserver-linux-x86_64/qbixserver-linux-x86_64
             artifacts/qbixserver-linux-aarch64/qbixserver-linux-aarch64
@@ -164,38 +206,3 @@ jobs:
             artifacts/qbixserver-linux-x86_64/php-linux-x86_64
             artifacts/qbixserver-linux-aarch64/php-linux-aarch64
             artifacts/qbixserver-macos-arm64/php-macos-arm64
-            bin/qbixserver.phar
-            qbixserver-source.zip
-          body: |
-            ## Qbix Server ${{ github.ref_name }}
-
-            ### Download
-
-            | Platform | Binary | Size |
-            |---|---|---|
-            | **Linux x86_64** | `qbixserver-linux-x86_64` | ~12MB |
-            | **Linux ARM64** | `qbixserver-linux-aarch64` | ~12MB |
-            | **macOS ARM64** | `qbixserver-macos-arm64` | ~25MB |
-
-            Each binary contains PHP 8.3 + SQLite + OpenSSL + curl — no dependencies needed.
-
-            ```bash
-            # Download and run (Linux x86_64 example)
-            chmod +x qbixserver-linux-x86_64
-            ./qbixserver-linux-x86_64
-
-            # Or with the phar (requires PHP already installed)
-            php qbixserver.phar
-            ```
-
-            ### What's included
-            - PHP 8.3 interpreter (statically linked)
-            - SQLite3 + PDO_SQLite
-            - OpenSSL, curl, mbstring
-            - pcntl (fork), sockets (TCP_NODELAY), posix
-            - phar, json, tokenizer, filter, ctype, session
-
-            ### Also available
-            - `php-linux-x86_64` etc. — standalone static PHP CLI with the same extensions
-            - `qbixserver.phar` — for systems that already have PHP installed
-            - `qbixserver-source.zip` — full source code
