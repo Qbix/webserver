@@ -41,17 +41,20 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq \
               pkg-config pkgconf autoconf automake build-essential cmake \
-              musl-tools musl-dev libmusl-dev
-            # Ensure pkg-config is findable (ARM runners sometimes miss the symlink)
-            if ! command -v pkg-config &>/dev/null; then
-              sudo ln -sf "$(which pkgconf)" /usr/local/bin/pkg-config
+              musl-tools musl-dev
+            # Create the musl wrapper path that static-php-cli expects
+            # (spc looks for /usr/local/musl/bin/musl-gcc, not /usr/bin/musl-gcc)
+            if command -v musl-gcc &>/dev/null && [ ! -f /usr/local/musl/bin/musl-gcc ]; then
+              sudo mkdir -p /usr/local/musl/bin
+              sudo ln -sf "$(which musl-gcc)" /usr/local/musl/bin/musl-gcc
             fi
           elif command -v brew &>/dev/null; then
             brew install pkg-config autoconf automake cmake
           fi
-          echo "pkg-config: $(which pkg-config 2>/dev/null || echo 'NOT FOUND')"
-          echo "musl-gcc: $(which musl-gcc 2>/dev/null || echo 'NOT FOUND')"
-          pkg-config --version 2>/dev/null || echo "pkg-config not working"
+          echo "PATH=$PATH"
+          echo "pkg-config: $(which pkg-config)"
+          echo "musl-gcc: $(which musl-gcc 2>/dev/null || echo 'not found (ok on macOS)')"
+          ls -la /usr/local/musl/bin/ 2>/dev/null || true
 
       - name: Set up PHP for static-php-cli
         uses: shivammathur/setup-php@v2
@@ -63,7 +66,6 @@ jobs:
           composer create-project crazywhalecc/static-php-cli spc-build --no-dev
           cd spc-build
           chmod +x bin/spc
-          ./bin/spc doctor --auto-fix || true
 
       - name: Download sources
         working-directory: spc-build
@@ -78,7 +80,6 @@ jobs:
       - name: Build static PHP CLI + phpmicro
         working-directory: spc-build
         run: |
-          ./bin/spc doctor --auto-fix || true
           ./bin/spc build \
             "pcntl,sockets,pdo_sqlite,sqlite3,openssl,curl,mbstring,phar,json,tokenizer,filter,ctype,posix,session" \
             --build-cli --build-micro
