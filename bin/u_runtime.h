@@ -2726,9 +2726,9 @@ static inline void ec_p256(eccurve* c) {
 
 
 
-/* == EXTENDED CRYPTO PRIMITIVES (SHA-1/384/512, HMAC, HKDF, PBKDF2,
+/* == EXTENDED CRYPTO PRIMITIVES (SHA-384/512, HMAC, HKDF, PBKDF2,
  *    AES, AES-GCM/CBC/CTR, base64) - verified against RFC/NIST/FIPS == */
-/* ── Extended crypto primitives (SHA-1, SHA-512/384, HMAC, HKDF, PBKDF2,
+/* ── Extended crypto primitives (SHA-512/384, HMAC, HKDF, PBKDF2,
  *    AES, AES-GCM, AES-CBC, base64) ──────────────────────────────────────
  * Reference-correct implementations verified against published test
  * vectors. Companion to the EC/ECDSA already in the runtime. */
@@ -4103,11 +4103,10 @@ static inline char* u_ecdh(const char* our_priv_hex, const char* their_pub_hex,
  * These map algorithm-name strings to the right primitive, matching the
  * shape of the U stdlib Crypto/Hmac/Aes/Kdf classes. Data in, hex out. */
 
-/* Digest: "SHA-1"|"SHA-256"|"SHA-384"|"SHA-512"|"KECCAK-256" → hex. */
+/* Digest: "SHA-256"|"SHA-384"|"SHA-512"|"KECCAK-256" → hex. */
 static inline char* u_crypto_digest(const char* algo, const uint8_t* data, size_t len) {
     uint8_t out[64]; int n;
-    if (!strcmp(algo, "SHA-1"))       { u_sha1(data, len, out);   n = 20; }
-    else if (!strcmp(algo, "SHA-256")){ u_sha256(data, len, out); n = 32; }
+    if (!strcmp(algo, "SHA-256"))     { u_sha256(data, len, out); n = 32; }
     else if (!strcmp(algo, "SHA-384")){ u_sha384(data, len, out); n = 48; }
     else if (!strcmp(algo, "SHA-512")){ u_sha512(data, len, out); n = 64; }
     else if (!strcmp(algo, "KECCAK-256")){ u_keccak256(data, len, out); n = 32; }
@@ -4121,8 +4120,7 @@ static inline char* u_crypto_digest(const char* algo, const uint8_t* data, size_
 static inline char* u_crypto_hmac(const char* algo, const uint8_t* key, size_t klen,
                                   const uint8_t* msg, size_t mlen) {
     u_hashdesc d; int n;
-    if (!strcmp(algo, "SHA-1"))       { d = u_hash_sha1();   n = 20; }
-    else if (!strcmp(algo, "SHA-256")){ d = u_hash_sha256(); n = 32; }
+    if (!strcmp(algo, "SHA-256"))     { d = u_hash_sha256(); n = 32; }
     else if (!strcmp(algo, "SHA-384")){ d = u_hash_sha384(); n = 48; }
     else if (!strcmp(algo, "SHA-512")){ d = u_hash_sha512(); n = 64; }
     else return NULL;
