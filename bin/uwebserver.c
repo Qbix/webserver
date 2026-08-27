@@ -1063,8 +1063,9 @@ static void cache_store(const char* path, const char* resp, int rlen, int ttl) {
     unsigned h = 5381;
     for (const char* p = path; *p; p++) h = h * 33 + *p;
     CacheSlot* s = &cache[h % CACHE_SIZE];
-    strncpy(s->path, path, 127); s->path[127] = 0;
-    if (rlen > 4095) rlen = 4095;
+    snprintf(s->path, sizeof(s->path), "%s", path);
+    if (rlen < 0) rlen = 0;
+    if ((size_t)rlen > sizeof(s->response)) rlen = sizeof(s->response);
     memcpy(s->response, resp, rlen);
     s->resp_len = rlen;
     s->expires = ttl > 0 ? time(NULL) + ttl : 0;
