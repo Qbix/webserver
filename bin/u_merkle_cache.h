@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdint.h>
 
 /* ── Configuration ──────────────────────────────────── */
 
@@ -184,7 +185,7 @@ static void merkle_register_tree(MerkleCache* mc, const char* page_key,
 
     /* Add new tree */
     MerkleTree* tree = &mc->trees[mc->tree_count++];
-    strncpy(tree->page_key, page_key, MERKLE_KEY_LEN - 1);
+    snprintf(tree->page_key, MERKLE_KEY_LEN, "%s", page_key);
     tree->leaf_count = leaf_count;
     memcpy(tree->leaves, leaves, leaf_count * sizeof(MerkleLeaf));
     tree->created = time(NULL);
@@ -201,13 +202,20 @@ static void merkle_register_dep(MerkleCache* mc, const char* stream_key,
                                  const char* page_key, const char* leaf_path) {
     /* Grow if needed */
     if (mc->dep_count >= mc->dep_capacity) {
-        mc->dep_capacity *= 2;
-        mc->deps = (MerkleDep*)realloc(mc->deps, mc->dep_capacity * sizeof(MerkleDep));
+        int new_capacity = mc->dep_capacity * 2;
+        if (new_capacity <= mc->dep_capacity ||
+            (size_t)new_capacity > (SIZE_MAX / sizeof(MerkleDep))) {
+            return; /* would overflow the size_t multiplication — refuse to grow */
+        }
+        MerkleDep* new_deps = (MerkleDep*)realloc(mc->deps, (size_t)new_capacity * sizeof(MerkleDep));
+        if (!new_deps) return; /* allocation failed — keep old buffer, drop this dep */
+        mc->deps = new_deps;
+        mc->dep_capacity = new_capacity;
     }
     MerkleDep* d = &mc->deps[mc->dep_count++];
-    strncpy(d->stream_key, stream_key, MERKLE_KEY_LEN - 1);
-    strncpy(d->page_key, page_key, MERKLE_KEY_LEN - 1);
-    strncpy(d->leaf_path, leaf_path, 63);
+    snprintf(d->stream_key, MERKLE_KEY_LEN, "%s", stream_key);
+    snprintf(d->page_key, MERKLE_KEY_LEN, "%s", page_key);
+    snprintf(d->leaf_path, 64, "%s", leaf_path);
 }
 
 /* ── Invalidate a stream key ────────────────────────── */
@@ -250,8 +258,7 @@ static int merkle_invalidate_stream(MerkleCache* mc, const char* stream_key,
             if (strcmp(page_keys_out[k], page_key) == 0) { already = 1; break; }
         }
         if (!already && count < max_out) {
-            strncpy(page_keys_out[count], page_key, MERKLE_KEY_LEN - 1);
-            page_keys_out[count][MERKLE_KEY_LEN - 1] = 0;
+            snprintf(page_keys_out[count], MERKLE_KEY_LEN, "%s", page_key);
             count++;
             mc->pages_invalidated++;
         }
@@ -293,8 +300,7 @@ static int merkle_get_stale_leaves(MerkleCache* mc, const char* page_key,
     int count = 0;
     for (int i = 0; i < tree->leaf_count && count < max_out; i++) {
         if (tree->leaves[i].stale) {
-            strncpy(stale_out[count], tree->leaves[i].path, 63);
-            stale_out[count][63] = 0;
+            snprintf(stale_out[count], 64, "%s", tree->leaves[i].path);
             count++;
         }
     }
