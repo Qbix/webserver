@@ -83,8 +83,8 @@ static UTlsCtx* u_tls_ctx_new(const char* cert, const char* key, const char* min
     UTlsCtx* t = (UTlsCtx*)malloc(sizeof(UTlsCtx));
     t->ctx = ctx;
     t->min_version = SSL_CTX_get_min_proto_version(ctx);
-    strncpy(t->cert_path, cert, 511); t->cert_path[511] = 0;
-    strncpy(t->key_path, key, 511);   t->key_path[511] = 0;
+    snprintf(t->cert_path, sizeof(t->cert_path), "%s", cert);
+    snprintf(t->key_path, sizeof(t->key_path), "%s", key);
     return t;
 }
 
@@ -101,6 +101,7 @@ static UTlsCtx* u_tls_ctx_client(const char* ca_path) {
         SSL_CTX_set_default_verify_paths(ctx);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
     UTlsCtx* t = (UTlsCtx*)malloc(sizeof(UTlsCtx));
+    if (!t) { SSL_CTX_free(ctx); return NULL; }
     t->ctx = ctx; t->min_version = TLS1_2_VERSION;
     t->cert_path[0] = 0; t->key_path[0] = 0;
     return t;
@@ -216,7 +217,7 @@ static UTlsCertInfo u_tls_cert_info(const char* path) {
         BIGNUM* bn = ASN1_INTEGER_to_BN(serial, NULL);
         if (bn) {
             char* hex = BN_bn2hex(bn);
-            if (hex) { strncpy(info.serial, hex, 127); OPENSSL_free(hex); }
+            if (hex) { snprintf(info.serial, sizeof(info.serial), "%s", hex); OPENSSL_free(hex); }
             BN_free(bn);
         }
     }
