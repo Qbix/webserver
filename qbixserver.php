@@ -189,16 +189,43 @@ if ($opts['app']) {
 	$webDir = $opts['root'] ?: (getcwd() . '/web');
 }
 
-if (!$qbixMode) {
-	// Standalone mode — load minimal Q shim
-	require_once __DIR__ . '/src/Q.php';
+// ── Self-contained phar detection ─────────────────────────
+// When running as micro.sfx + phar (single binary), the phar contains
+// a web/ directory with the app's static files and PHP scripts.
+// If --root isn't specified, prefer the phar's web/ over the disk's.
+$pharRoot = Phar::running(false); // '' if not in a phar
+$servingFromPhar = false;
+
+if ($pharRoot && !$opts['root'] && !$qbixMode) {
+	$pharWebDir = 'phar://' . $pharRoot . '/web';
+	if (is_dir($pharWebDir)) {
+		$webDir = $pharWebDir;
+		$servingFromPhar = true;
+	}
 }
 
-$webDir = realpath($webDir);
-if (!$webDir || !is_dir($webDir)) {
-	fwrite(STDERR, "Error: document root not found: " . ($opts['root'] ?: './web') . "\n");
-	fwrite(STDERR, "Create a web/ directory or use --root=DIR\n");
-	exit(1);
+if (!$qbixMode) {
+	// Standalone mode — load minimal Q shim
+	if ($pharRoot) {
+		require_once 'phar://' . $pharRoot . '/src/Q.php';
+	} else {
+		require_once __DIR__ . '/src/Q.php';
+	}
+}
+
+// realpath doesn't work on phar:// paths
+if ($servingFromPhar) {
+	if (!is_dir($webDir)) {
+		fwrite(STDERR, "Error: phar does not contain a web/ directory\n");
+		exit(1);
+	}
+} else {
+	$webDir = realpath($webDir);
+	if (!$webDir || !is_dir($webDir)) {
+		fwrite(STDERR, "Error: document root not found: " . ($opts['root'] ?: './web') . "\n");
+		fwrite(STDERR, "Create a web/ directory or use --root=DIR\n");
+		exit(1);
+	}
 }
 
 // Initialize project root
@@ -531,7 +558,8 @@ if ($httpsAvailable) {
 	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
 	fwrite(STDERR, "  │" . str_pad($httpsLine, $W) . "│\n");
 }
-fwrite(STDERR, "  │" . str_pad("  Root: " . basename($webDir), $W) . "│\n");
+$rootLabel = $servingFromPhar ? 'web (phar)' : basename($webDir);
+fwrite(STDERR, "  │" . str_pad("  Root: " . $rootLabel, $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n");
 $nClasses = count(get_declared_classes());
@@ -546,6 +574,22 @@ fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");
+
+// ── Cluster initialization ──
+// If PEERS env or Q.cluster config is set, enable clustering
+if (!$qbixMode) {
+	require_once __DIR__ . '/src/Q/WebServer/Cluster.php';
+	$clusterConfig = Q_Config::get('Q', 'cluster', array());
+	$envPeers = getenv('PEERS') ?: '';
+	if (!empty($clusterConfig['peers']) || $envPeers) {
+		Q_WebServer_Cluster::init($clusterConfig);
+		if (Q_WebServer_Cluster::isActive()) {
+			$liveCount = count(Q_WebServer_Cluster::liveServers());
+			fwrite(STDERR, "  Cluster: " . Q_WebServer_Cluster::self()
+				. " ($liveCount servers)\n\n");
+		}
+	}
+}
 
 try {
 	Q_WebServer::start(

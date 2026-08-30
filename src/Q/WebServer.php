@@ -113,7 +113,12 @@ class Q_WebServer
 			pcntl_signal(SIGPIPE, SIG_IGN);
 		}
 
-		$root = realpath($dir);
+		// realpath() doesn't work on phar:// paths
+		if (strpos($dir, 'phar://') === 0) {
+			$root = $dir;
+		} else {
+			$root = realpath($dir);
+		}
 		if (!$root || !is_dir($root)) {
 			throw new Exception("Invalid document root: $dir");
 		}
@@ -952,8 +957,33 @@ class Q_WebServer
 				return array('status' => 404, 'body' => 'Not found');
 			}
 			$stats = Q_WebServer_Dashboard::getStats();
-			return array('status'=>200, 'body'=>json_encode(array('status'=>'ok')+$stats),
+			$result = array('status' => 'ok') + $stats;
+			// Add cluster info if active
+			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+				$result['cluster'] = Q_WebServer_Cluster::status();
+			}
+			return array('status'=>200, 'body'=>json_encode($result),
 				'headers'=>array('Content-Type'=>'application/json'));
+		}
+		if ($path === '/Q/cluster/join' && $method === 'POST') {
+			if (class_exists('Q_WebServer_Cluster', false)) {
+				$body = $parsed['body'] ?? '';
+				$data = json_decode($body, true) ?: array();
+				Q_WebServer_Cluster::handleJoin($data);
+				return array('status' => 200, 'body' => '{"ok":true}',
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return array('status' => 404, 'body' => 'Clustering not active');
+		}
+		if ($path === '/Q/cluster/status') {
+			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+				return array('status' => 200,
+					'body' => json_encode(Q_WebServer_Cluster::status()),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return array('status' => 200,
+				'body' => '{"active":false,"mode":"standalone"}',
+				'headers' => array('Content-Type' => 'application/json'));
 		}
 		if ($path === '/Q/dashboard' || $path === '/Q/dashboard/') {
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
@@ -1319,9 +1349,35 @@ class Q_WebServer
 					return false;
 				}
 				$stats = Q_WebServer_Dashboard::getStats();
+				$result = array('status' => 'ok') + $stats;
+				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+					$result['cluster'] = Q_WebServer_Cluster::status();
+				}
 				self::sendResponse($client, 200,
-					json_encode(array('status' => 'ok') + $stats),
+					json_encode($result),
 					'application/json');
+				return false;
+			}
+			if ($path === '/Q/cluster/join' && $method === 'POST') {
+				if (class_exists('Q_WebServer_Cluster', false)) {
+					$data = json_decode($parsed['body'] ?? '', true) ?: array();
+					Q_WebServer_Cluster::handleJoin($data);
+					self::sendResponse($client, 200, '{"ok":true}', 'application/json');
+				} else {
+					self::sendResponse($client, 404, 'Clustering not active');
+				}
+				return false;
+			}
+			if ($path === '/Q/cluster/status') {
+				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+					self::sendResponse($client, 200,
+						json_encode(Q_WebServer_Cluster::status()),
+						'application/json');
+				} else {
+					self::sendResponse($client, 200,
+						'{"active":false,"mode":"standalone"}',
+						'application/json');
+				}
 				return false;
 			}
 			// Panel (control panel + API)
@@ -3024,7 +3080,7 @@ HTML;
 			// Standalone shim has clear(); Platform's Q_Response may not,
 			// but its statics are reset by the snapshot or by Q_Dispatcher.
 			if (method_exists('Q_Response', 'clear')) {
-				Q_WebServer_State::clear();
+				Q_Response::clear();
 			}
 		}
 		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
@@ -3897,7 +3953,14 @@ HTML;
 		$rel = str_replace('/', DS, ltrim($urlPath, '/'));
 		// Block null bytes (directory traversal via null byte injection)
 		if (strpos($rel, "\0") !== false) return null;
-		$fsPath = realpath(self::$rootDir . $rel);
+
+		// realpath() doesn't work on phar:// paths — use file_exists fallback
+		$candidate = self::$rootDir . $rel;
+		if (strpos(self::$rootDir, 'phar://') === 0) {
+			$fsPath = file_exists($candidate) ? $candidate : false;
+		} else {
+			$fsPath = realpath($candidate);
+		}
 
 		// If file not found, check for shortcuts/aliases:
 		// .lnk (Windows) or Mac alias with same name
