@@ -305,6 +305,27 @@ class Q_WebServer_Cluster
 	}
 
 	/**
+	 * Check if an event should be replicated to peers.
+	 * Events are replicated if they appear in the Q.cluster.replicate config list.
+	 * A wildcard '*' means replicate everything.
+	 *
+	 * @param string $eventName
+	 * @return bool
+	 */
+	static function shouldReplicate($eventName)
+	{
+		$replicate = Q_Config::get('Q', 'cluster', 'replicate', array());
+		if (empty($replicate)) return false;
+		if (in_array('*', $replicate)) return true;
+		// Check exact match and prefix match (e.g. "swarm/" matches "swarm/task_add")
+		foreach ($replicate as $pattern) {
+			if ($pattern === $eventName) return true;
+			if (substr($pattern, -1) === '/' && strpos($eventName, $pattern) === 0) return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Get cluster status for the dashboard / health endpoint.
 	 * @return array
 	 */
