@@ -29,9 +29,6 @@ Q_Response::header('Access-Control-Allow-Headers: Content-Type, X-Forwarded-From
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit; }
 
-// ── Database setup (shared by handlers via swarm_db()) ──
-swarm_db();
-
 // ── Server identity ──
 $myPort = $_SERVER['SERVER_PORT'] ?? getenv('PORT') ?: '4000';
 $myUrl = 'http://localhost:' . $myPort;
@@ -122,6 +119,51 @@ switch ($action) {
             'server' => $server, '_forwarded' => $isForwarded,
         ], false, false, $result);
         echo json_encode(['ok' => true, 'uuid' => $uuid]);
+        return;
+
+    case 'payment':
+        // Chokepoint pattern: the sandbox forwards this to the authority
+        // via handlersUsingRemote. The sandbox never sees the API key.
+        // Note: this endpoint does NOT need the database — it's a
+        // stateless operation that only the authority can process.
+        $amount = (float) ($input['amount'] ?? 0);
+        $currency = $input['currency'] ?? 'USD';
+        $description = $input['description'] ?? '';
+        if ($amount <= 0) { echo '{"error":"amount required"}'; return; }
+        $result = null;
+        Q::event('swarm/payment', [
+            'amount' => $amount,
+            'currency' => $currency,
+            'description' => $description,
+        ], false, false, $result);
+        echo json_encode($result ?: ['error' => 'no handler response']);
+        return;
+
+    case 'email':
+        // SMTP credentials only on the authority — sandbox forwards
+        $to = trim($input['to'] ?? '');
+        $subject = trim($input['subject'] ?? '');
+        $body = $input['body'] ?? '';
+        if (!$to || !$subject) { echo '{"error":"to and subject required"}'; return; }
+        $result = null;
+        Q::event('swarm/email', [
+            'to' => $to, 'subject' => $subject, 'body' => $body,
+        ], false, false, $result);
+        echo json_encode($result ?: ['error' => 'no handler response']);
+        return;
+
+    case 'oauth':
+        // OAuth client_secret only on the authority — sandbox forwards
+        $provider = $input['provider'] ?? 'google';
+        $code = $input['code'] ?? '';
+        $redirectUri = $input['redirectUri'] ?? '';
+        if (!$code) { echo '{"error":"authorization code required"}'; return; }
+        $result = null;
+        Q::event('swarm/oauth', [
+            'provider' => $provider, 'code' => $code,
+            'redirectUri' => $redirectUri,
+        ], false, false, $result);
+        echo json_encode($result ?: ['error' => 'no handler response']);
         return;
 }
 

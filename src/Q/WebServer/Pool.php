@@ -417,32 +417,6 @@ class Q_WebServer_Pool
 			Q_Evented::enable($this->watchers[$index]);
 		}
 
-		// Issue #14: SCRIPT_NAME must keep its directory segments, and
-		// SERVER_PORT must come from the request rather than the listen port.
-		// Same normalisation as Q_WebServer::dispatchToQ(): realpath() both
-		// sides so a symlinked docroot cannot eat a segment.
-		$rootDir = Q_WebServer::$rootDir ?? '';
-		$docRoot = rtrim(realpath($rootDir) ?: $rootDir, DS);
-		$scriptReal = realpath($scriptPath) ?: $scriptPath;
-		if ($docRoot !== ''
-		and strncmp($scriptReal, $docRoot, strlen($docRoot)) === 0) {
-			$scriptName = '/' . ltrim(
-				str_replace(DS, '/', substr($scriptReal, strlen($docRoot))), '/'
-			);
-		} else {
-			$scriptName = '/' . basename($scriptPath);
-		}
-		// The master is a CLI process, so $_SERVER['SERVER_PORT'] is unset there
-		// and every worker used to receive the literal '8080'. Take the port
-		// from the Host header, falling back to the scheme default.
-		$hostParts = explode(':', $parsed['headers']['host'] ?? 'localhost');
-		if (isset($hostParts[1])) {
-			$serverPort = (string) $hostParts[1];
-		} else {
-			$scheme = $parsed['_scheme'] ?? 'http';
-			$serverPort = ($scheme === 'https') ? '443' : '80';
-		}
-
 		$msg = json_encode(array(
 			'method'         => $parsed['method'],
 			'uri'            => $parsed['uri'],
@@ -452,9 +426,9 @@ class Q_WebServer_Pool
 			'rawHeaders'     => $parsed['rawHeaders'] ?? array(),
 			'body'           => $parsed['body'],
 			'scriptFilename' => $scriptPath,
-			'scriptName'     => $scriptName,
+			'scriptName'     => '/' . basename($scriptPath),
 			'documentRoot'   => Q_WebServer::$rootDir ?? '',
-			'serverPort'     => $serverPort,
+			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
 			'remoteAddr'     => '127.0.0.1'
 		));
 		$written = @fwrite($this->workers[$index]['socket'], pack('N', strlen($msg)) . $msg);

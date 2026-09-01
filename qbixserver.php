@@ -326,15 +326,15 @@ foreach ($defaultConfig as $k1 => $v1) {
 	}
 }
 
-// User config file
-if ($opts['config']) {
-	Q_Config::load($opts['config']);
-}
-
-// Config from app directory
+// Config from app directory (base config)
 $appConfig = dirname($webDir) . '/config/server.json';
 if (file_exists($appConfig)) {
 	Q_Config::load($appConfig);
+}
+
+// User config file — loaded last so it overrides everything
+if ($opts['config']) {
+	Q_Config::load($opts['config']);
 }
 
 // Preload handlers if configured (Q.handlers.preload: true)

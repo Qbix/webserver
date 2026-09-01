@@ -33,7 +33,7 @@ class Q_WebServer_Identity
 		unset($data[$fieldKey]);
 		if (isset($data['Q'][$sf])) unset($data['Q'][$sf]);
 
-		$expected = self::signature($data, $secret);
+		$expected = Q_Utils::signature($data, $secret);
 		return hash_equals($expected, $receivedSig);
 	}
 
@@ -61,7 +61,7 @@ class Q_WebServer_Identity
 		}
 
 		// Generate
-		$result = self::generateSelfSignedCert();
+		$result = Q_Utils::generateSelfSignedCert();
 		if (!$result) return null;
 
 		if (!is_dir($localDir)) @mkdir($localDir, 0700, true);
@@ -85,7 +85,7 @@ class Q_WebServer_Identity
 	 */
 	static function signClaim($claim)
 	{
-		$keyPair = self::claimingKeyPair();
+		$keyPair = Q_Utils::claimingKeyPair();
 		if (!$keyPair) return $claim;
 
 		if (empty($claim['ocp'])) $claim['ocp'] = 1;
@@ -115,14 +115,14 @@ class Q_WebServer_Identity
 		// Canonicalize — must strip sig[] before hashing (OCP convention)
 		$forSigning = $claim;
 		unset($forSigning['sig']);
-		$canonical = self::jcsCanonicalize($forSigning);
+		$canonical = Q_Utils::jcsCanonicalize($forSigning);
 
 		$privKey = openssl_pkey_get_private($keyPair['privateKeyPem']);
 		$derSig = '';
 		openssl_sign($canonical, $derSig, $privKey, OPENSSL_ALGO_SHA256);
 
 		$idx = array_search($signerKey, $keys, true);
-		$sigs[$idx] = base64_encode(self::derToRawP256($derSig));
+		$sigs[$idx] = base64_encode(Q_Utils::derToRawP256($derSig));
 		$claim['sig'] = $sigs;
 
 		return $claim;
@@ -139,7 +139,7 @@ class Q_WebServer_Identity
 	static function serverClaim($hostname)
 	{
 		$identity = self::serverIdentity();
-		$keyPair = self::claimingKeyPair();
+		$keyPair = Q_Utils::claimingKeyPair();
 		if (!$identity || !$keyPair) return null;
 
 		$claim = array(
@@ -162,7 +162,7 @@ class Q_WebServer_Identity
 		);
 
 		// Canonicalize: RFC 8785 / JCS — sorted keys, no sig field
-		$canonical = self::jcsCanonicalize($claim);
+		$canonical = Q_Utils::jcsCanonicalize($claim);
 
 		// Sign with ES256 (P-256 + SHA-256)
 		$privKey = openssl_pkey_get_private($keyPair['privateKeyPem']);
@@ -170,7 +170,7 @@ class Q_WebServer_Identity
 		openssl_sign($canonical, $derSig, $privKey, OPENSSL_ALGO_SHA256);
 
 		// Convert DER signature to raw r||s (64 bytes) for OCP wire format
-		$rawSig = self::derToRawP256($derSig);
+		$rawSig = Q_Utils::derToRawP256($derSig);
 
 		$claim['sig'] = array(base64_encode($rawSig));
 

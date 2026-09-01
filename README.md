@@ -54,6 +54,40 @@ See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and [reset.md](docs
 | **Access control** | X-Accel-Redirect support — PHP enforces access, server serves the file |
 | **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
 | **Platform compatible** | `Q_Utils::sign()`, `Q::event()`, handler conventions, config paths — all match Qbix Platform. Upgrade without code changes. |
+| **Microservice isolation** | `handleUsingRemote` forwards sensitive operations (payments, email, OAuth) to an authority server over HMAC-signed HTTP. Same app code, different config. The public-facing server never has your secrets in memory. [How it works →](examples/swarm/README.md) |
+
+---
+
+## 📂 Examples
+
+Six self-contained apps in the `examples/` directory. Run any of them:
+
+```bash
+php qbixserver.php --root=examples/<name>/web
+```
+
+| App | What it shows | Key server features used |
+|---|---|---|
+| [💬 Chat](examples/chat/) | Multi-room chat with typing indicators, read receipts, emoji reactions, presence | Room handlers in PHP (`handlers/chat/*.php`), `Q_Socket::broadcast()`, `Q_Room` state |
+| [📋 Collab](examples/collab/) | Real-time collaborative kanban board with remote cursors | Room handlers (`handlers/board/*.php`), server-authoritative state, cursor broadcasting |
+| [⚡ Stream](examples/stream/) | SSE streaming — AI tokens, server logs, JSON data, counter | `Content-Type: text/event-stream`, `ob_flush() + flush()`, chunked transfer |
+| [✅ Todo](examples/todo/) | CRUD todo list with SQLite | REST API, `Q_Response::header()`, `Q_Response::code()`, SQLite |
+| [🔢 Counter](examples/counter/) | Live page view counter with real-time viewer sync | WebSocket heartbeat via `/Q/ws`, SQLite persistence |
+| [🐝 Swarm](examples/swarm/) | Distributed task list + chat + microservice isolation | `Q::event()` with handlers, cluster replication, `handleUsingRemote`, HMAC signing |
+
+### Full-stack microservice isolation (Swarm)
+
+The [swarm example](examples/swarm/) demonstrates the chokepoint security pattern. Two servers run the same app code. The sandbox serves the public-facing UI. The authority holds the secrets — payment keys, SMTP credentials, OAuth client secrets, database passwords. The sandbox forwards sensitive operations to the authority via `handleUsingRemote`, which signs every request with HMAC. The sandbox never loads the handler, never reads the secret, never has it in memory.
+
+```bash
+# Authority — has all secrets, processes writes
+php qbixserver.php --root=examples/swarm/web --config=examples/swarm/config/authority.json
+
+# Sandbox — serves UI, forwards sensitive ops to authority
+php qbixserver.php --root=examples/swarm/web --config=examples/swarm/config/sandbox.json
+```
+
+An attacker who compromises the sandbox gets the HMAC signing key — which only lets them make the same narrow API calls the sandbox already makes. They don't get payment keys, SMTP passwords, OAuth secrets, or database credentials. You rotate one signing key and redeploy. You don't rotate your Stripe key. [Full security analysis →](examples/swarm/README.md)
 
 ---
 
@@ -188,6 +222,7 @@ php qbixserver.php
 ## 📑 Table of Contents
 
 - [Quick Start](#-quick-start)
+- [Examples](#-examples)
 - [Performance](#-performance)
 - [Why Not php-fpm?](#-why-not-php-fpm)
 - [vs FrankenPHP and Swoole](#️-vs-frankenphp-and-swoole)
