@@ -622,6 +622,10 @@ class Q_WebServer
 			Q_HotReload::init();
 			Q_Evented::repeat(2, function () {
 				Q_HotReload::check();
+				// Also invalidate stale compat transform cache
+				if (class_exists('Q_WebServer_Compat', false)) {
+					Q_WebServer_Compat::invalidateStale();
+				}
 			});
 		}
 
@@ -3168,7 +3172,7 @@ HTML;
 			// Standalone shim has clear(); Platform's Q_Response may not,
 			// but its statics are reset by the snapshot or by Q_Dispatcher.
 			if (method_exists('Q_Response', 'clear')) {
-				Q_Response::clear();
+				Q_WebServer_State::clear();
 			}
 		}
 		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';
@@ -3286,6 +3290,21 @@ HTML;
 			}
 		}
 
+		// ── Framework compatibility init (before body parsing) ──
+		$compatEnabled = class_exists('Q_WebServer_Compat', false)
+			&& Q_Config::get('Q', 'compat', 'enabled', false);
+		if ($compatEnabled) {
+			Q_WebServer_Compat::setRequestHeaders($parsed['headers'] ?? array());
+			Q_WebServer_Compat::init();
+			// URL rewrite: route non-file requests to front controller
+			$rewritten = Q_WebServer_Compat::rewriteUrl(
+				$parsed['path'], self::$rootDir
+			);
+			if ($rewritten) {
+				$scriptPath = $rewritten;
+			}
+		}
+
 		// ── $_GET, $_POST, $_FILES, $_REQUEST ───────────
 		$_GET = $_POST = $_REQUEST = $_FILES = array();
 		if ($parsed['query']) parse_str($parsed['query'], $_GET);
@@ -3297,7 +3316,11 @@ HTML;
 			$_POST = json_decode($rawBody, true) ?: array();
 		} elseif (strpos($ct, 'multipart/form-data') !== false) {
 			$origCt = $parsed['headers']['content-type'] ?? $_SERVER['CONTENT_TYPE'] ?? '';
-			self::parseMultipart($origCt, $rawBody, $_POST, $_FILES);
+			if ($compatEnabled) {
+				Q_WebServer_Compat::parseMultipart($rawBody, $origCt);
+			} else {
+				self::parseMultipart($origCt, $rawBody, $_POST, $_FILES);
+			}
 		}
 		$_REQUEST = array_merge($_COOKIE, $_GET, $_POST); // PHP default order
 
@@ -3461,6 +3484,11 @@ HTML;
 		// Fix 3: Restore native php:// stream wrapper
 		if (class_exists('Q_Request', false)) {
 			Q_WebServer_State::restoreInput();
+		}
+
+		// Shut down framework compatibility layer (cleanup temp files, close sessions)
+		if (class_exists('Q_WebServer_Compat', false) && Q_Config::get("Q", "compat", "enabled", false)) {
+			Q_WebServer_Compat::shutdown();
 		}
 
 		list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;

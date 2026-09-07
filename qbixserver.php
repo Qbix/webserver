@@ -34,6 +34,7 @@ $opts = array(
 	'socket-mode' => null, // Permissions for the socket file (e.g. 0660)
 	'workers' => 0,
 	'config'  => null,
+	'preset'  => null,  // Framework preset: laravel, symfony, wordpress, drupal
 	'pid'     => null,
 	'debug'   => false,
 );
@@ -53,6 +54,7 @@ foreach ($argv as $i => $arg) {
 		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
 		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
 		echo "  --config=FILE    JSON config file\n";
+		echo "  --preset=NAME    Framework preset (laravel, symfony, wordpress, drupal)\n";
 		echo "  --pid=PATH       PID file path\n";
 		echo "  --hotreload      Watch files, auto-restart on changes\n";
 		echo "  --debug          Verbose logging\n";
@@ -337,6 +339,34 @@ if ($opts['config']) {
 	Q_Config::load($opts['config']);
 }
 
+// Framework preset (--preset=laravel, etc.)
+if ($opts['preset']) {
+	require_once __DIR__ . '/src/Q/WebServer/Compat.php';
+	Q_WebServer_Compat::loadPreset($opts['preset']);
+}
+
+// Initialize framework compatibility layer if enabled
+if (Q_Config::get('Q', 'compat', 'enabled', false)) {
+	if (!class_exists('Q_WebServer_Compat', false)) {
+		require_once __DIR__ . '/src/Q/WebServer/Compat.php';
+	}
+	// Pre-warm transform cache in the parent process.
+	// Fork children inherit via COW — zero per-request I/O.
+	// Prewarm from the project root (parent of web root) so vendor/, app/,
+	// src/ etc. are all cached. The web root is typically public/ or web/.
+	$prewarmDir = Q_Config::get('Q', 'compat', 'prewarmDir', null)
+		?: dirname($webDir);  // one level above --root
+	if (!is_dir($prewarmDir)) $prewarmDir = $webDir;
+	$prewarmCount = Q_WebServer_Compat::prewarm($prewarmDir);
+	if ($prewarmCount > 0) {
+		$stats = Q_WebServer_Compat::cacheStats();
+		fwrite(STDERR, "  Compat: pre-warmed $prewarmCount files ("
+			. $stats['transforms'] . " transformed, "
+			. $stats['passthrough'] . " pass-through, "
+			. round($stats['bytes'] / 1024) . "KB)\n");
+	}
+}
+
 // Preload handlers if configured (Q.handlers.preload: true)
 if (method_exists('Q', 'preload')) {
 	Q::preload();
@@ -561,6 +591,10 @@ if ($httpsAvailable) {
 $rootLabel = $servingFromPhar ? 'web (phar)' : basename($webDir);
 fwrite(STDERR, "  │" . str_pad("  Root: " . $rootLabel, $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
+if (Q_Config::get('Q', 'compat', 'enabled', false)) {
+	$preset = $opts['preset'] ?: 'custom';
+	fwrite(STDERR, "  │" . str_pad("  Compat: $preset (source transform active)", $W) . "│\n");
+}
 fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n");
 $nClasses = count(get_declared_classes());
 $nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
