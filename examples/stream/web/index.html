@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>Stream — Qbix Server</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0c0c0c;--surface:#161616;--surface2:#1e1e1e;--border:#262626;--text:#d4d4d4;--muted:#666;--accent:#a78bfa;--green:#4ade80;--red:#f87171;--yellow:#facc15;--radius:12px}
+body{font-family:"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column}
+.header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.header img{width:22px;height:22px}
+.header h1{font-size:17px;font-weight:600;flex:1}
+.header .badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:1px}
+.header .badge.live{background:var(--green);color:#000}
+.header .badge.off{background:var(--border);color:var(--muted)}
+.controls{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.controls select,.controls input{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-size:12px;font-family:inherit;outline:none}
+.controls select:focus,.controls input:focus{border-color:var(--accent)}
+.controls button{border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.controls button.start{background:var(--green);color:#000}
+.controls button.stop{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+.controls button:hover{opacity:.85}
+.metrics{padding:10px 24px;display:flex;gap:20px;border-bottom:1px solid var(--border)}
+.metric{display:flex;flex-direction:column;gap:1px}
+.metric .m-label{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+.metric .m-value{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.output{flex:1;padding:20px 24px;overflow-y:auto;white-space:pre-wrap;line-height:1.7;font-size:13px}
+.output .line{animation:fadeIn .15s ease}
+.output .line .ts{color:var(--muted)}
+.output .line .status-2{color:var(--green)}
+.output .line .status-4,.output .line .status-5{color:var(--red)}
+.output .cursor{display:inline-block;width:7px;height:15px;background:var(--accent);animation:blink 1s step-end infinite;vertical-align:text-bottom;margin-left:1px}
+.status-bar{padding:7px 24px;border-top:1px solid var(--border);display:flex;gap:16px;font-size:10px;color:var(--muted);font-family:-apple-system,sans-serif}
+.status-bar .dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:4px}
+.status-bar .dot.on{background:var(--green)}
+.status-bar .dot.off{background:var(--red)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@media(max-width:600px){.controls{flex-direction:column}.controls select,.controls button{width:100%}.metrics{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <img src="/favicon.svg" alt="">
+  <h1>SSE Stream</h1>
+  <span class="badge off" id="live-badge">Ready</span>
+</div>
+
+<div class="controls">
+  <select id="mode">
+    <option value="tokens">🤖 AI token stream</option>
+    <option value="logs">📋 Server log stream</option>
+    <option value="json">📊 JSON data feed</option>
+    <option value="counter">🔢 Counter (1/sec)</option>
+  </select>
+  <button class="start" onclick="startStream()">▶ Start</button>
+  <button class="stop" onclick="stopStream()">■ Stop</button>
+  <button class="stop" onclick="clearOutput()">⌫ Clear</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><span class="m-label">Events</span><span class="m-value" id="m-events">0</span></div>
+  <div class="metric"><span class="m-label">Bytes</span><span class="m-value" id="m-bytes">0</span></div>
+  <div class="metric"><span class="m-label">Duration</span><span class="m-value" id="m-duration">0.0s</span></div>
+  <div class="metric"><span class="m-label">Events/sec</span><span class="m-value" id="m-rate">0</span></div>
+</div>
+
+<div class="output" id="output"><span class="cursor" id="cursor"></span></div>
+
+<div class="status-bar">
+  <span><span class="dot off" id="conn-dot"></span><span id="conn-text">Disconnected</span></span>
+  <span>EventSource API</span>
+  <span>Qbix Server SSE</span>
+</div>
+
+<script>
+let source=null, eventCount=0, byteCount=0, startTime=0, rateInterval=null;
+
+function startStream() {
+  stopStream();
+  const mode = document.getElementById('mode').value;
+  const output = document.getElementById('output');
+  if (!output.querySelector('.cursor')) output.innerHTML += '<span class="cursor" id="cursor"></span>';
+  eventCount=0; byteCount=0; startTime=Date.now();
+  updateMetrics();
+
+  document.getElementById('live-badge').className='badge live';
+  document.getElementById('live-badge').textContent='Live';
+  document.getElementById('conn-dot').className='dot on';
+  document.getElementById('conn-text').textContent='Connected';
+
+  source = new EventSource('/stream.php?mode='+mode);
+  rateInterval = setInterval(updateMetrics, 500);
+
+  source.onmessage = e => {
+    eventCount++; byteCount+=e.data.length;
+    const cursor = document.getElementById('cursor');
+    const line = document.createElement('span');
+    line.className='line';
+    if (mode==='logs') {
+      const parts = e.data.match(/^(\S+)\s+(\d+)\s+(.*)$/);
+      if (parts) {
+        const sc = parts[2][0];
+        line.innerHTML='<span class="ts">'+parts[1]+'</span> <span class="status-'+sc+'">'+parts[2]+'</span> '+esc(parts[3])+'\n';
+      } else { line.textContent=e.data+'\n'; }
+    } else if (mode==='json') {
+      try { line.textContent=JSON.stringify(JSON.parse(e.data),null,2)+'\n\n'; }
+      catch { line.textContent=e.data+'\n'; }
+    } else {
+      line.textContent=e.data;
+    }
+    output.insertBefore(line, cursor);
+    output.scrollTop=output.scrollHeight;
+  };
+
+  source.addEventListener('done', () => { stopStream(); });
+  source.onerror = () => { stopStream(); document.getElementById('conn-text').textContent='Error — reconnecting...'; };
+}
+
+function stopStream() {
+  if (source) { source.close(); source=null; }
+  if (rateInterval) { clearInterval(rateInterval); rateInterval=null; }
+  document.getElementById('live-badge').className='badge off';
+  document.getElementById('live-badge').textContent='Stopped';
+  document.getElementById('conn-dot').className='dot off';
+  document.getElementById('conn-text').textContent='Disconnected';
+  const cursor = document.getElementById('cursor');
+  if (cursor) cursor.remove();
+  updateMetrics();
+}
+
+function clearOutput() { document.getElementById('output').innerHTML='<span class="cursor" id="cursor"></span>'; eventCount=0;byteCount=0;updateMetrics(); }
+
+function updateMetrics() {
+  document.getElementById('m-events').textContent=eventCount;
+  document.getElementById('m-bytes').textContent=byteCount>1024?(byteCount/1024).toFixed(1)+'K':byteCount;
+  const dur=(Date.now()-startTime)/1000;
+  document.getElementById('m-duration').textContent=dur.toFixed(1)+'s';
+  document.getElementById('m-rate').textContent=dur>0?(eventCount/dur).toFixed(1):'0';
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+</script>
+</body>
+</html>

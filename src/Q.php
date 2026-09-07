@@ -294,6 +294,16 @@ class Q
 			}
 		}
 
+		// Cluster replication — broadcast to all live peers after local handling.
+		// Only fires if: cluster is active, event is in the replicate list,
+		// and this event was not itself received from a peer (no re-replication).
+		if (class_exists('Q_WebServer_Cluster', false)
+		&& Q_WebServer_Cluster::isActive()
+		&& empty($params['_forwarded'])
+		&& Q_WebServer_Cluster::shouldReplicate($eventName)) {
+			Q_WebServer_Cluster::broadcast($eventName, $params);
+		}
+
 		return $result;
 	}
 
@@ -1552,7 +1562,7 @@ class Q_Config
 		if (!file_exists($path)) return;
 		$json = json_decode(file_get_contents($path), true);
 		if (is_array($json)) {
-			self::$data = self::merge(self::$data, $json);
+			self::$data = self::deepMerge(self::$data, $json);
 		}
 	}
 
@@ -1631,12 +1641,42 @@ class Q_Config
 	}
 
 	/**
+	 * Clear a config value at the given path.
+	 *   Q_Config::clear('Q', 'cluster', 'peers', 'http://dead-server')
+	 * @method clear
+	 * @static
+	 */
+	static function clear(/* key1, key2, ... */)
+	{
+		$args = func_get_args();
+		if (empty($args)) { self::$data = array(); return; }
+		$last = array_pop($args);
+		$ref = &self::$data;
+		foreach ($args as $key) {
+			if (!isset($ref[$key]) || !is_array($ref[$key])) return;
+			$ref = &$ref[$key];
+		}
+		unset($ref[$last]);
+	}
+
+	/**
 	 * Deep merge: arrays merge recursively, scalars overwrite.
+	 * Accepts an array to merge on top of the existing config data.
+	 * If called with two arguments, merges $overlay on top of $base (internal).
 	 * @method merge
 	 * @static
-	 * @private
 	 */
-	private static function merge($base, $overlay)
+	static function merge($base, $overlay = null)
+	{
+		if ($overlay === null) {
+			// Single-argument form: merge onto self::$data
+			self::$data = self::deepMerge(self::$data, $base);
+			return;
+		}
+		return self::deepMerge($base, $overlay);
+	}
+
+	private static function deepMerge($base, $overlay)
 	{
 		foreach ($overlay as $key => $value) {
 			if (is_array($value) && isset($base[$key]) && is_array($base[$key])) {

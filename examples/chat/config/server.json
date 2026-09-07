@@ -1,0 +1,14 @@
+{
+  "Q": {
+    "webserver": {
+      "port": 4000,
+      "rooms": {
+        "chat": {
+          "handler": "chat",
+          "maxMembers": 100,
+          "tickInterval": 30
+        }
+      }
+    }
+  }
+}

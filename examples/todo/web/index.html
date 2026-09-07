@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>Todo — Qbix Server</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#fafafa;--surface:#fff;--border:#e5e5e5;--text:#1a1a1a;--muted:#999;--accent:#16a34a;--danger:#ef4444;--radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08)}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:40px 20px}
+.container{max-width:520px;margin:0 auto}
+h1{font-size:28px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+h1 img{width:24px;height:24px}
+.subtitle{color:var(--muted);font-size:14px;margin-bottom:28px}
+.add-form{display:flex;gap:8px;margin-bottom:24px}
+.add-form input{flex:1;border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:14px;outline:none;background:var(--surface);transition:border-color .2s}
+.add-form input:focus{border-color:var(--accent)}
+.add-form button{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;transition:opacity .2s}
+.add-form button:hover{opacity:.85}
+.stats{display:flex;gap:16px;margin-bottom:16px;font-size:13px;color:var(--muted)}
+.stats span{display:flex;align-items:center;gap:4px}
+.stats .dot{width:6px;height:6px;border-radius:50%}
+.stats .dot.active{background:var(--accent)}
+.stats .dot.done{background:var(--border)}
+.list{display:flex;flex-direction:column;gap:6px}
+.todo{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);transition:opacity .2s;animation:slideIn .2s ease}
+.todo.done{opacity:.5}
+.todo.done .todo-text{text-decoration:line-through;color:var(--muted)}
+.todo .check{width:20px;height:20px;border:2px solid var(--border);border-radius:50%;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.todo .check:hover{border-color:var(--accent)}
+.todo.done .check{background:var(--accent);border-color:var(--accent)}
+.todo.done .check::after{content:"✓";color:#fff;font-size:12px;font-weight:700}
+.todo .todo-text{flex:1;font-size:14px;line-height:1.4}
+.todo .delete{color:var(--muted);cursor:pointer;font-size:18px;padding:0 4px;opacity:0;transition:opacity .2s}
+.todo:hover .delete{opacity:1}
+.todo .delete:hover{color:var(--danger)}
+.todo .date{color:var(--muted);font-size:11px;flex-shrink:0}
+.empty{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty .icon{font-size:48px;margin-bottom:12px}
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:500px){body{padding:20px 16px}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><img src="/favicon.svg" alt=""> Todo</h1>
+  <p class="subtitle">Powered by Qbix Server + SQLite</p>
+  <div class="add-form">
+    <input id="new-todo" type="text" placeholder="What needs doing?" maxlength="200">
+    <button onclick="addTodo()">Add</button>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="list" id="list"></div>
+</div>
+<script>
+const API='/api.php';
+async function load(){const r=await fetch(API);const todos=await r.json();render(todos);}
+function render(todos){const list=document.getElementById('list');const stats=document.getElementById('stats');const active=todos.filter(t=>!t.done).length;const done=todos.filter(t=>t.done).length;stats.innerHTML='<span><span class="dot active"></span>'+active+' active</span><span><span class="dot done"></span>'+done+' done</span>';if(!todos.length){list.innerHTML='<div class="empty"><div class="icon">📝</div><p>No todos yet. Add one above.</p></div>';return;}list.innerHTML=todos.map(t=>{const d=new Date(t.created_at);const date=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});return'<div class="todo'+(t.done?' done':'')+'">'+'<div class="check" onclick="toggle('+t.id+','+(t.done?0:1)+')"></div>'+'<span class="todo-text">'+esc(t.text)+'</span>'+'<span class="date">'+date+'</span>'+'<span class="delete" onclick="del('+t.id+')">×</span>'+'</div>';}).join('');}
+async function addTodo(){const input=document.getElementById('new-todo');const text=input.value.trim();if(!text)return;input.value='';await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});load();}
+async function toggle(id,done){await fetch(API,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,done})});load();}
+async function del(id){await fetch(API,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});load();}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+document.getElementById('new-todo').addEventListener('keydown',e=>{if(e.key==='Enter')addTodo();});
+load();
+</script>
+</body>
+</html>

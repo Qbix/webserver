@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Collab Board — Qbix Server</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f5f5f5;--surface:#fff;--border:#e0e0e0;--text:#1a1a1a;--muted:#888;--accent:#2563eb;--green:#16a34a;--orange:#ea580c;--red:#dc2626;--purple:#7c3aed;--radius:10px;--shadow:0 1px 4px rgba(0,0,0,.08)}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.topbar img{width:24px;height:24px}
+.topbar h1{font-size:16px;font-weight:600;flex:1}
+.topbar .share-btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:4px}
+.topbar .avatars{display:flex;margin-right:8px}
+.topbar .av{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;margin-left:-6px;border:2px solid var(--surface);position:relative}
+.topbar .av .cursor-dot{position:absolute;bottom:-2px;right:-2px;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--surface)}
+.board{display:flex;gap:16px;padding:20px;flex:1;overflow-x:auto;align-items:flex-start}
+.column{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);width:280px;min-width:280px;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+.column-header{padding:12px 14px;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+.column-header .col-dot{width:8px;height:8px;border-radius:50%}
+.column-header .col-count{background:var(--bg);border-radius:10px;padding:0 7px;font-size:11px;font-weight:600;color:var(--muted);margin-left:auto}
+.column-cards{padding:8px;display:flex;flex-direction:column;gap:8px;min-height:60px}
+.card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:grab;transition:box-shadow .15s,transform .15s;position:relative}
+.card:hover{box-shadow:0 2px 8px rgba(0,0,0,.1);transform:translateY(-1px)}
+.card.editing{border-color:var(--accent);box-shadow:0 0 0 2px rgba(37,99,235,.2)}
+.card .card-text{font-size:13px;line-height:1.5}
+.card .card-meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;color:var(--muted)}
+.card .card-tag{padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
+.card .card-editor{position:absolute;top:-2px;right:6px;font-size:10px;padding:1px 5px;border-radius:8px;color:#fff;font-weight:600;animation:fadeIn .2s}
+.card .card-actions{position:absolute;top:6px;right:6px;display:none;gap:4px}
+.card:hover .card-actions{display:flex}
+.card .card-actions button{background:var(--surface);border:1px solid var(--border);border-radius:4px;width:22px;height:22px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center}
+.add-card{padding:8px 12px;margin:0 8px 8px;border-radius:8px;border:1px dashed var(--border);text-align:center;font-size:12px;color:var(--muted);cursor:pointer;transition:background .15s}
+.add-card:hover{background:var(--bg);color:var(--text)}
+.remote-cursor{position:fixed;pointer-events:none;z-index:1000;transition:left .1s linear,top .1s linear}
+.remote-cursor .c-arrow{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid currentColor;transform:rotate(-30deg)}
+.remote-cursor .c-label{font-size:10px;font-weight:600;color:#fff;padding:1px 5px;border-radius:4px;margin-left:8px;margin-top:-2px;white-space:nowrap}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 16px;border-radius:8px;font-size:13px;animation:fadeIn .2s;z-index:200}
+.join-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:300;backdrop-filter:blur(4px)}
+.join-card{background:var(--surface);border-radius:16px;padding:36px;max-width:380px;width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.15)}
+.join-card h2{font-size:20px;margin-bottom:6px}
+.join-card p{color:var(--muted);font-size:13px;margin-bottom:20px}
+.join-card input{width:100%;border:1px solid var(--border);border-radius:var(--radius);padding:10px;font-size:14px;outline:none;text-align:center;margin-bottom:10px}
+.join-card input:focus{border-color:var(--accent)}
+.join-card button{width:100%;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:10px;font-size:14px;font-weight:600;cursor:pointer}
+.hidden{display:none!important}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+
+<div id="join-overlay" class="join-overlay">
+  <div class="join-card">
+    <h2>📋 Collab Board</h2>
+    <p>Real-time collaborative kanban. Share the URL to invite others.</p>
+    <input id="name-input" type="text" placeholder="Your name" maxlength="20" autofocus>
+    <button onclick="joinBoard()">Join Board</button>
+  </div>
+</div>
+
+<div class="topbar">
+  <img src="/favicon.svg" alt="">
+  <h1>Collab Board</h1>
+  <div class="avatars" id="avatars"></div>
+  <button class="share-btn" onclick="shareLink()">📎 Share Link</button>
+</div>
+
+<div class="board" id="board">
+  <div class="column" data-col="todo">
+    <div class="column-header"><div class="col-dot" style="background:var(--orange)"></div>To Do<span class="col-count" id="count-todo">0</span></div>
+    <div class="column-cards" id="cards-todo"></div>
+    <div class="add-card" onclick="addCard('todo')">+ Add card</div>
+  </div>
+  <div class="column" data-col="doing">
+    <div class="column-header"><div class="col-dot" style="background:var(--accent)"></div>Doing<span class="col-count" id="count-doing">0</span></div>
+    <div class="column-cards" id="cards-doing"></div>
+    <div class="add-card" onclick="addCard('doing')">+ Add card</div>
+  </div>
+  <div class="column" data-col="review">
+    <div class="column-header"><div class="col-dot" style="background:var(--purple)"></div>Review<span class="col-count" id="count-review">0</span></div>
+    <div class="column-cards" id="cards-review"></div>
+    <div class="add-card" onclick="addCard('review')">+ Add card</div>
+  </div>
+  <div class="column" data-col="done">
+    <div class="column-header"><div class="col-dot" style="background:var(--green)"></div>Done<span class="col-count" id="count-done">0</span></div>
+    <div class="column-cards" id="cards-done"></div>
+    <div class="add-card" onclick="addCard('done')">+ Add card</div>
+  </div>
+</div>
+
+<div id="cursors"></div>
+
+<script>
+let ws, me;
+const COLORS = ['#2563eb','#dc2626','#059669','#d97706','#7c3aed','#db2777','#0891b2','#4f46e5'];
+const TAGS = [
+  {label:'Bug',color:'#fef2f2',text:'#dc2626'},
+  {label:'Feature',color:'#eff6ff',text:'#2563eb'},
+  {label:'Docs',color:'#f0fdf4',text:'#16a34a'},
+  {label:'Design',color:'#faf5ff',text:'#7c3aed'},
+];
+const users = {};
+const cards = {};
+let cardId = 0;
+const boardId = location.hash.slice(1) || 'default';
+
+function colorFor(n){let h=0;for(let i=0;i<n.length;i++)h=n.charCodeAt(i)+((h<<5)-h);return COLORS[Math.abs(h)%COLORS.length];}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+function joinBoard() {
+  me = document.getElementById('name-input').value.trim();
+  if (!me) return;
+  document.getElementById('join-overlay').classList.add('hidden');
+  if (!location.hash) location.hash = Math.random().toString(36).substring(2,8);
+  connect();
+  // Track mouse for remote cursors
+  document.addEventListener('mousemove', e => {
+    if (ws?.readyState===1) emit('cursor', {name:me, x:e.clientX/window.innerWidth, y:e.clientY/window.innerHeight});
+  });
+}
+document.getElementById('name-input').addEventListener('keydown', e => { if(e.key==='Enter')joinBoard(); });
+
+function connect() {
+  const proto = location.protocol==='https:'?'wss:':'ws:';
+  ws = new WebSocket(proto+'//'+location.host+'/socket.io/?EIO=4&transport=websocket');
+  ws.onmessage = e => {
+    const s = e.data;
+    if (s[0]==='0') ws.send('40');
+    else if (s.startsWith('40')) emit('join', {name:me, board:boardId});
+    else if (s.startsWith('42')) { const[ev,d]=JSON.parse(s.substring(2)); handleEvent(ev,d); }
+    else if (s==='2') ws.send('3');
+  };
+  ws.onclose = () => setTimeout(connect, 2000);
+}
+function emit(ev,d){if(ws?.readyState===1)ws.send('42'+JSON.stringify([ev,d]));}
+
+function handleEvent(ev, d) {
+  // Cluster: if the server tells us to reconnect to the room leader, do it
+  if (ev === '_redirect' && d.url) {
+    console.log('Redirected to leader:', d.url);
+    ws.close();
+    const leaderWs = d.url + '/socket.io/?EIO=4&transport=websocket';
+    ws = new WebSocket(leaderWs);
+    ws.onmessage = arguments.callee; // reuse same handler
+    ws.onclose = () => setTimeout(connect, 2000);
+    return;
+  }
+  switch(ev) {
+    case 'joined':
+      users[d.name] = {color:colorFor(d.name)};
+      updateAvatars();
+      break;
+    case 'left':
+      delete users[d.name];
+      updateAvatars();
+      removeCursor(d.name);
+      break;
+    case 'cursor':
+      if (d.name !== me) showCursor(d.name, d.x, d.y);
+      break;
+    case 'card_add':
+      cards[d.id] = d;
+      renderBoard();
+      break;
+    case 'card_move':
+      if (cards[d.id]) { cards[d.id].col = d.col; renderBoard(); }
+      break;
+    case 'card_edit':
+      if (cards[d.id]) { cards[d.id].text = d.text; renderBoard(); }
+      break;
+    case 'card_delete':
+      delete cards[d.id];
+      renderBoard();
+      break;
+    case 'card_editing':
+      if (d.name !== me) showEditing(d.id, d.name);
+      break;
+    case 'sync':
+      if (d.cards) { Object.assign(cards, d.cards); renderBoard(); }
+      if (d.users) { Object.keys(d.users).forEach(u => users[u]={color:colorFor(u)}); updateAvatars(); }
+      break;
+  }
+}
+
+function addCard(col) {
+  const text = prompt('Card text:');
+  if (!text) return;
+  const id = ++cardId;
+  const tag = TAGS[Math.floor(Math.random()*TAGS.length)];
+  const card = {id, col, text, tag:tag.label, tagColor:tag.color, tagText:tag.text, author:me};
+  cards[id] = card;
+  emit('card_add', card);
+  renderBoard();
+}
+
+function moveCard(id, newCol) {
+  if (!cards[id]) return;
+  cards[id].col = newCol;
+  emit('card_move', {id, col:newCol});
+  renderBoard();
+}
+
+function editCard(id) {
+  const card = cards[id];
+  if (!card) return;
+  emit('card_editing', {id, name:me});
+  const newText = prompt('Edit card:', card.text);
+  if (newText !== null && newText.trim()) {
+    card.text = newText.trim();
+    emit('card_edit', {id, text:card.text});
+    renderBoard();
+  }
+}
+
+function deleteCard(id) {
+  delete cards[id];
+  emit('card_delete', {id});
+  renderBoard();
+}
+
+function renderBoard() {
+  ['todo','doing','review','done'].forEach(col => {
+    const colCards = Object.values(cards).filter(c => c.col === col);
+    document.getElementById('count-'+col).textContent = colCards.length;
+    const el = document.getElementById('cards-'+col);
+    const cols = ['todo','doing','review','done'];
+    el.innerHTML = colCards.map(c => {
+      const nextCol = cols[Math.min(cols.indexOf(c.col)+1, cols.length-1)];
+      const prevCol = cols[Math.max(cols.indexOf(c.col)-1, 0)];
+      return '<div class="card" data-id="'+c.id+'" ondblclick="editCard('+c.id+')">' +
+        '<div class="card-actions">' +
+        (c.col!==cols[0]?'<button title="Move left" onclick="moveCard('+c.id+',\''+prevCol+'\')">←</button>':'') +
+        (c.col!==cols[cols.length-1]?'<button title="Move right" onclick="moveCard('+c.id+',\''+nextCol+'\')">→</button>':'') +
+        '<button title="Delete" onclick="deleteCard('+c.id+')">×</button>' +
+        '</div>' +
+        '<div class="card-text">'+esc(c.text)+'</div>' +
+        '<div class="card-meta">' +
+        '<span class="card-tag" style="background:'+(c.tagColor||'#f0f0f0')+';color:'+(c.tagText||'#666')+'">'+esc(c.tag||'')+'</span>' +
+        '<span>'+esc(c.author||'')+'</span>' +
+        '</div></div>';
+    }).join('');
+  });
+}
+
+function showCursor(name, xPct, yPct) {
+  let el = document.getElementById('cursor-'+CSS.escape(name));
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.id = 'cursor-'+name;
+    const color = colorFor(name);
+    el.innerHTML = '<div class="c-arrow" style="color:'+color+'"></div><div class="c-label" style="background:'+color+'">'+esc(name)+'</div>';
+    document.getElementById('cursors').appendChild(el);
+  }
+  el.style.left = (xPct * window.innerWidth) + 'px';
+  el.style.top = (yPct * window.innerHeight) + 'px';
+}
+
+function removeCursor(name) {
+  const el = document.getElementById('cursor-'+CSS.escape(name));
+  if (el) el.remove();
+}
+
+function showEditing(id, name) {
+  const card = document.querySelector('.card[data-id="'+id+'"]');
+  if (!card) return;
+  card.classList.add('editing');
+  let label = card.querySelector('.card-editor');
+  if (!label) {
+    label = document.createElement('div');
+    label.className = 'card-editor';
+    card.appendChild(label);
+  }
+  label.style.background = colorFor(name);
+  label.textContent = name;
+  setTimeout(() => { card.classList.remove('editing'); label.remove(); }, 3000);
+}
+
+function updateAvatars() {
+  const el = document.getElementById('avatars');
+  const all = Object.entries(users);
+  el.innerHTML = all.map(([name,u]) =>
+    '<div class="av" style="background:'+u.color+'" title="'+esc(name)+'">'+name.charAt(0).toUpperCase()+'<div class="cursor-dot" style="background:#4ade80"></div></div>'
+  ).join('');
+}
+
+function shareLink() {
+  navigator.clipboard.writeText(location.href).then(() => {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = '📎 Link copied — share it to invite collaborators';
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 3000);
+  });
+}
+</script>
+</body>
+</html>

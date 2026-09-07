@@ -1,0 +1,20 @@
+{
+  "Q": {
+    "webserver": {
+      "port": 4002
+    },
+    "internal": {
+      "secret": "shared_hmac_signing_key_between_servers",
+      "fingerprint": "sandbox-001"
+    },
+    "handlersUsingRemote": {
+      "swarm/task_add":    {"baseUrl": "http://localhost:4001"},
+      "swarm/task_update": {"baseUrl": "http://localhost:4001"},
+      "swarm/task_delete": {"baseUrl": "http://localhost:4001"},
+      "swarm/message":     {"baseUrl": "http://localhost:4001"},
+      "swarm/payment":     {"baseUrl": "http://localhost:4001"},
+      "swarm/email":       {"baseUrl": "http://localhost:4001"},
+      "swarm/oauth":       {"baseUrl": "http://localhost:4001"}
+    }
+  }
+}

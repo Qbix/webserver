@@ -813,6 +813,26 @@ class Q_WebSocket
 		$config = self::matchRoomPattern($channel);
 		if (!$config) return;
 
+		// Cluster: check if this server is the leader for this room.
+		// If not, tell the client to reconnect to the leader.
+		if (class_exists('Q_WebServer_Cluster', false)
+		&& Q_WebServer_Cluster::isActive()
+		&& !Q_WebServer_Cluster::isLeaderFor($channel)) {
+			$leaderWs = Q_WebServer_Cluster::leaderWebSocketUrl($channel);
+			if ($leaderWs && isset(self::$sockets[$socketKey])) {
+				// Send a redirect event to the client
+				self::$sockets[$socketKey]->reply(array(
+					'event' => '_redirect',
+					'data' => array(
+						'url' => $leaderWs,
+						'room' => $channel,
+						'reason' => 'leader',
+					),
+				));
+				return;
+			}
+		}
+
 		// Spawn room worker if not running
 		if (!isset(self::$roomWorkers[$channel])) {
 			self::spawnRoomWorker($channel, $config);

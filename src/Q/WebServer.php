@@ -3168,7 +3168,7 @@ HTML;
 			// Standalone shim has clear(); Platform's Q_Response may not,
 			// but its statics are reset by the snapshot or by Q_Dispatcher.
 			if (method_exists('Q_Response', 'clear')) {
-				Q_WebServer_State::clear();
+				Q_Response::clear();
 			}
 		}
 		$scriptPath = $parsed['_scriptPath'] ?? self::$rootDir . 'index.php';

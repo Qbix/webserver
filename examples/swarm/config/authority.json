@@ -1,0 +1,39 @@
+{
+  "Q": {
+    "webserver": {
+      "port": 4001
+    },
+    "internal": {
+      "secret": "shared_hmac_signing_key_between_servers",
+      "fingerprint": "authority-001",
+      "paymentApiKey": "sk_live_abc123_your_payment_key",
+      "smtp": {
+        "host": "smtp.mailgun.org",
+        "port": 587,
+        "user": "postmaster@mg.example.com",
+        "pass": "smtp_p@ssw0rd"
+      },
+      "oauth": {
+        "google": {
+          "clientId": "123456.apps.googleusercontent.com",
+          "clientSecret": "GOCSPX-secret-key-here",
+          "tokenUrl": "https://oauth2.googleapis.com/token"
+        },
+        "github": {
+          "clientId": "Iv1.abc123def456",
+          "clientSecret": "ghp_secret_key_here",
+          "tokenUrl": "https://github.com/login/oauth/access_token"
+        }
+      },
+      "dbCredentials": {
+        "host": "localhost",
+        "name": "production_db",
+        "user": "admin",
+        "pass": "s3cret_p@ss"
+      }
+    },
+    "cluster": {
+      "replicate": ["swarm/task_add", "swarm/task_update", "swarm/task_delete", "swarm/message"]
+    }
+  }
+}
