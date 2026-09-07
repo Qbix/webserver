@@ -18,6 +18,55 @@ class Q_WebServer
 {
 
 	/**
+	 * Write a string to a stream socket in full, looping over partial writes.
+	 *
+	 * PHP's fwrite() on a stream socket is NOT guaranteed to write the entire
+	 * buffer in one call. Once the kernel send buffer fills up, fwrite() returns
+	 * the number of bytes actually written and the remainder is silently lost.
+	 * This was reproduced with a ~47MB file: only the first ~3MB reached the
+	 * client. Every response-writing call site must loop until all bytes are
+	 * written instead of trusting a single fwrite().
+	 *
+	 * The server uses non-blocking sockets for the event loop, so we
+	 * temporarily switch to blocking mode for the write, then restore.
+	 * This is safe because response writes happen synchronously in the
+	 * fork child or worker — no other I/O is multiplexed during a write.
+	 *
+	 * Credit: @jukkakangas (GitHub Issue #26)
+	 *
+	 * @method writeAll
+	 * @static
+	 * @param {resource} $stream
+	 * @param {string} $data
+	 * @return {boolean} true if all bytes were written, false on error
+	 */
+	static function writeAll($stream, $data)
+	{
+		$length = strlen($data);
+		if ($length === 0) return true;
+
+		// Switch to blocking mode for the write — ensures fwrite()
+		// waits for buffer space instead of returning 0 immediately.
+		// This is safe in fork/worker mode (single request per process).
+		stream_set_blocking($stream, true);
+
+		$written = 0;
+		$ok = true;
+		while ($written < $length) {
+			$chunk = @fwrite($stream, substr($data, $written));
+			if ($chunk === false || $chunk === 0) {
+				$ok = false;
+				break;
+			}
+			$written += $chunk;
+		}
+
+		// Restore non-blocking mode for the event loop
+		stream_set_blocking($stream, false);
+		return $ok;
+	}
+
+	/**
 	 * Search paths for app/user files.
 	 *
 	 * Q::$paths is declared by the webserver's STANDALONE shim (src/Q.php), not
@@ -113,7 +162,12 @@ class Q_WebServer
 			pcntl_signal(SIGPIPE, SIG_IGN);
 		}
 
-		$root = realpath($dir);
+		// realpath() doesn't work on phar:// paths
+		if (strpos($dir, 'phar://') === 0) {
+			$root = $dir;
+		} else {
+			$root = realpath($dir);
+		}
 		if (!$root || !is_dir($root)) {
 			throw new Exception("Invalid document root: $dir");
 		}
@@ -626,7 +680,7 @@ class Q_WebServer
 
 		// Rate limit check
 		if (!self::checkRateLimit($ip)) {
-			@fwrite($client, "HTTP/1.1 429 Too Many Requests\r\n"
+			self::writeAll($client, "HTTP/1.1 429 Too Many Requests\r\n"
 				. "Retry-After: 60\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
 			@fclose($client);
 			unset(self::$clients[$key], self::$buffers[$key], self::$keepAliveCount[$key],
@@ -952,8 +1006,33 @@ class Q_WebServer
 				return array('status' => 404, 'body' => 'Not found');
 			}
 			$stats = Q_WebServer_Dashboard::getStats();
-			return array('status'=>200, 'body'=>json_encode(array('status'=>'ok')+$stats),
+			$result = array('status' => 'ok') + $stats;
+			// Add cluster info if active
+			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+				$result['cluster'] = Q_WebServer_Cluster::status();
+			}
+			return array('status'=>200, 'body'=>json_encode($result),
 				'headers'=>array('Content-Type'=>'application/json'));
+		}
+		if ($path === '/Q/cluster/join' && $method === 'POST') {
+			if (class_exists('Q_WebServer_Cluster', false)) {
+				$body = $parsed['body'] ?? '';
+				$data = json_decode($body, true) ?: array();
+				Q_WebServer_Cluster::handleJoin($data);
+				return array('status' => 200, 'body' => '{"ok":true}',
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return array('status' => 404, 'body' => 'Clustering not active');
+		}
+		if ($path === '/Q/cluster/status') {
+			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+				return array('status' => 200,
+					'body' => json_encode(Q_WebServer_Cluster::status()),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return array('status' => 200,
+				'body' => '{"active":false,"mode":"standalone"}',
+				'headers' => array('Content-Type' => 'application/json'));
 		}
 		if ($path === '/Q/dashboard' || $path === '/Q/dashboard/') {
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
@@ -1319,9 +1398,35 @@ class Q_WebServer
 					return false;
 				}
 				$stats = Q_WebServer_Dashboard::getStats();
+				$result = array('status' => 'ok') + $stats;
+				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+					$result['cluster'] = Q_WebServer_Cluster::status();
+				}
 				self::sendResponse($client, 200,
-					json_encode(array('status' => 'ok') + $stats),
+					json_encode($result),
 					'application/json');
+				return false;
+			}
+			if ($path === '/Q/cluster/join' && $method === 'POST') {
+				if (class_exists('Q_WebServer_Cluster', false)) {
+					$data = json_decode($parsed['body'] ?? '', true) ?: array();
+					Q_WebServer_Cluster::handleJoin($data);
+					self::sendResponse($client, 200, '{"ok":true}', 'application/json');
+				} else {
+					self::sendResponse($client, 404, 'Clustering not active');
+				}
+				return false;
+			}
+			if ($path === '/Q/cluster/status') {
+				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
+					self::sendResponse($client, 200,
+						json_encode(Q_WebServer_Cluster::status()),
+						'application/json');
+				} else {
+					self::sendResponse($client, 200,
+						'{"active":false,"mode":"standalone"}',
+						'application/json');
+				}
 				return false;
 			}
 			// Panel (control panel + API)
@@ -1797,7 +1902,7 @@ class Q_WebServer
 					// If streaming already sent headers, just terminate and close
 					if (Q_WebServer_State::isStreaming()
 						&& !empty($parsed['_streamingSent'])) {
-						@fwrite($client, "0\r\n\r\n"); // chunked terminator
+						self::writeAll($client, "0\r\n\r\n"); // chunked terminator
 						@fclose($client);
 						return;
 					}
@@ -2276,7 +2381,7 @@ WORKER;
 		foreach ($extraHeaders as $pair) {
 			$out .= $pair[0] . ': ' . $pair[1] . "\r\n";
 		}
-		@fwrite($client, $out . "\r\n" . $body);
+		self::writeAll($client, $out . "\r\n" . $body);
 
 		self::$lastStatus = $status;
 		return false;
@@ -2340,9 +2445,9 @@ WORKER;
 			self::$lastStatus = 200;
 			self::$lastBytes = $cached['bodyLen'];
 			if ($method === 'HEAD') {
-				@fwrite($client, $cached['head'][$connKey]);
+				self::writeAll($client, $cached['head'][$connKey]);
 			} else {
-				@fwrite($client, $cached['full'][$connKey]);
+				self::writeAll($client, $cached['full'][$connKey]);
 			}
 			return;
 		}
@@ -2372,6 +2477,45 @@ WORKER;
 			. "Last-Modified: " . gmdate('D, d M Y H:i:s', $mtime) . " GMT\r\n"
 			. "Cache-Control: public, max-age=0, must-revalidate\r\n";
 
+		// ── Large file fork ──
+		// Files over 1MB are served by a forked child process so the parent's
+		// event loop isn't blocked by the writeAll() loop. The child inherits
+		// the client socket, writes the full response, and exits.
+		// Threshold: 1MB (below this, inline write is faster than fork overhead).
+		if ($size > 1048576 && $method !== 'HEAD' && function_exists('pcntl_fork')) {
+			$connHeader = 'close'; // forked child always closes
+			$out = "HTTP/1.1 200 OK\r\n" . $baseHeaders
+				. "Content-Length: $size\r\n"
+				. "Connection: close\r\n\r\n";
+			$pid = pcntl_fork();
+			if ($pid === 0) {
+				// Child: write headers + stream file in chunks
+				stream_set_blocking($client, true);
+				$ok = @fwrite($client, $out);
+				if ($ok !== false) {
+					$fp = fopen($fsPath, 'rb');
+					if ($fp) {
+						while (!feof($fp)) {
+							$chunk = fread($fp, 65536);
+							if ($chunk === false || $chunk === '') break;
+							if (@fwrite($client, $chunk) === false) break;
+						}
+						fclose($fp);
+					}
+				}
+				@fclose($client);
+				exit(0);
+			}
+			if ($pid > 0) {
+				// Parent: close our copy of the socket, back to event loop
+				@fclose($client);
+				self::$lastStatus = 200;
+				self::$lastBytes = $size;
+				return;
+			}
+			// Fork failed — fall through to inline write
+		}
+
 		// Companion .headers file
 		$hf = $fsPath . '.headers';
 		if (file_exists($hf)) {
@@ -2393,7 +2537,7 @@ WORKER;
 				. "Connection: $connHeader\r\n\r\n";
 			self::$lastStatus = 200;
 			self::$lastBytes = $preComp['size'];
-			@fwrite($client, $method === 'HEAD' ? $out : $out . file_get_contents($preComp['path']));
+			self::writeAll($client, $method === 'HEAD' ? $out : $out . file_get_contents($preComp['path']));
 			return;
 		}
 
@@ -2423,7 +2567,7 @@ WORKER;
 					. "Connection: $connHeader\r\n\r\n";
 				self::$lastStatus = 200;
 				self::$lastBytes = strlen($body);
-				@fwrite($client, $method === 'HEAD' ? $out : $out . $body);
+				self::writeAll($client, $method === 'HEAD' ? $out : $out . $body);
 				return;
 			}
 		}
@@ -2438,7 +2582,7 @@ WORKER;
 		self::$lastStatus = 200;
 		self::$lastBytes = $size;
 		$headStr = $keepAlive ? $kaHead : $clHead;
-		@fwrite($client, $method === 'HEAD' ? $headStr : $headStr . $body);
+		self::writeAll($client, $method === 'HEAD' ? $headStr : $headStr . $body);
 
 		// Cache if small enough
 		if ($size <= self::$fileCacheMaxFile
@@ -3652,19 +3796,19 @@ HTML;
 			. "\r\nContent-Type: $type\r\nContent-Length: " . strlen($body)
 			. "\r\nConnection: $conn\r\n";
 		foreach ($extra as $k => $v) $out .= "$k: $v\r\n";
-		@fwrite($client, $out . "\r\n" . $body);
+		self::writeAll($client, $out . "\r\n" . $body);
 	}
 
 	static function sendRedirect($client, $loc, $permanent = false) {
 		$code = $permanent ? 301 : 302;
 		$text = $permanent ? 'Moved Permanently' : 'Found';
-		@fwrite($client, "HTTP/1.1 $code $text\r\nLocation: $loc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+		self::writeAll($client, "HTTP/1.1 $code $text\r\nLocation: $loc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
 		self::$lastStatus = $code;
 	}
 
 	private static function sendNotModified($client, $etag, $mtime, $keepAlive = false) {
 		$conn = $keepAlive ? 'keep-alive' : 'close';
-		@fwrite($client, "HTTP/1.1 304 Not Modified\r\nETag: $etag\r\n"
+		self::writeAll($client, "HTTP/1.1 304 Not Modified\r\nETag: $etag\r\n"
 			. "Last-Modified: " . gmdate('D, d M Y H:i:s', $mtime) . " GMT\r\n"
 			. "Cache-Control: public, max-age=0, must-revalidate\r\nContent-Length: 0\r\nConnection: $conn\r\n\r\n");
 		self::$lastStatus = 304;
@@ -3897,7 +4041,14 @@ HTML;
 		$rel = str_replace('/', DS, ltrim($urlPath, '/'));
 		// Block null bytes (directory traversal via null byte injection)
 		if (strpos($rel, "\0") !== false) return null;
-		$fsPath = realpath(self::$rootDir . $rel);
+
+		// realpath() doesn't work on phar:// paths — use file_exists fallback
+		$candidate = self::$rootDir . $rel;
+		if (strpos(self::$rootDir, 'phar://') === 0) {
+			$fsPath = file_exists($candidate) ? $candidate : false;
+		} else {
+			$fsPath = realpath($candidate);
+		}
 
 		// If file not found, check for shortcuts/aliases:
 		// .lnk (Windows) or Mac alias with same name
