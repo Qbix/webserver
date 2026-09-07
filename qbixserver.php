@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '1.0.0');
+define('QBIX_SERVER_VERSION', '1.1.0');
 
 // ── Parse CLI args ──────────────────────────────────
 
@@ -35,6 +35,12 @@ $opts = array(
 	'workers' => 0,
 	'config'  => null,
 	'preset'  => null,  // Framework preset: laravel, symfony, wordpress, drupal
+	'sign'    => null,  // Sign a directory: --sign=DIR --key=private.pem --key-id=NAME
+	'verify'  => null,  // Verify a directory: --verify=DIR
+	'key'     => null,  // Private key for signing
+	'key-id'  => null,  // Key identifier for signing
+	'generate-key' => null, // Generate keypair: --generate-key=NAME
+	'policy'  => null,  // Set M-of-N policy: --policy=2
 	'pid'     => null,
 	'debug'   => false,
 );
@@ -42,8 +48,9 @@ $opts = array(
 foreach ($argv as $i => $arg) {
 	if ($i === 0) continue;
 	if ($arg === '--help' || $arg === '-h') {
+		$me = basename($argv[0]);
 		echo "Qbix Server v" . QBIX_SERVER_VERSION . "\n\n";
-		echo "Usage: ./qbixserver.php [options]\n\n";
+		echo "Usage: $me [options]\n\n";
 		echo "Options:\n";
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
@@ -62,7 +69,14 @@ foreach ($argv as $i => $arg) {
 		echo "  --stop           Graceful shutdown (via PID file)\n";
 		echo "  --reload         Re-exec server (via PID file)\n";
 		echo "  --deploy=TARGET  Deploy to remote server (from config/deploy.json)\n";
+		echo "  --sign=DIR       Generate/sign a manifest for a directory\n";
+		echo "  --verify=DIR     Verify a directory against its manifest\n";
+		echo "  --generate-key=NAME  Generate RSA-2048 keypair for signing\n";
 		echo "  --version        Print version\n";
+		echo "\nQuick start:\n";
+		echo "  mkdir -p web && echo '<?php echo \"Hello!\";' > web/index.php\n";
+		echo "  $me\n";
+		echo "\nDocs: https://github.com/Qbix/webserver\n";
 		exit(0);
 	}
 	if ($arg === '--version' || $arg === '-v') {
@@ -206,12 +220,49 @@ if ($pharRoot && !$opts['root'] && !$qbixMode) {
 	}
 }
 
+// ── Validate document root early ────────────────────────
+// Check this BEFORE loading Q shim, because if neither the root
+// nor src/Q.php exist, the user just downloaded the binary and
+// ran it in an empty directory — show them how to get started.
+if (!$servingFromPhar) {
+	$resolvedWebDir = realpath($webDir);
+	if (!$resolvedWebDir || !is_dir($resolvedWebDir)) {
+		$target = $opts['root'] ?: './web';
+		$me = basename($argv[0]);
+		fwrite(STDERR, "\n");
+		fwrite(STDERR, "  No document root found at: $target\n\n");
+		fwrite(STDERR, "  Quick start:\n\n");
+		fwrite(STDERR, "    mkdir -p web && echo '<?php echo \"Hello from Qbix Server!\";' > web/index.php\n");
+		fwrite(STDERR, "    $me\n\n");
+		fwrite(STDERR, "  Or point to an existing project:\n\n");
+		fwrite(STDERR, "    $me --root=/path/to/your/public\n\n");
+		fwrite(STDERR, "  Framework shortcuts:\n\n");
+		fwrite(STDERR, "    $me --root=public --preset=laravel\n");
+		fwrite(STDERR, "    $me --root=public --preset=symfony\n");
+		fwrite(STDERR, "    $me --root=.     --preset=wordpress\n\n");
+		fwrite(STDERR, "  Docs: https://github.com/Qbix/webserver\n\n");
+		exit(1);
+	}
+	$webDir = $resolvedWebDir;
+}
+
 if (!$qbixMode) {
 	// Standalone mode — load minimal Q shim
 	if ($pharRoot) {
-		require_once 'phar://' . $pharRoot . '/src/Q.php';
+		// Phar bundles files under src/ to match the repo layout
+		$pharQ = 'phar://' . $pharRoot . '/src/Q.php';
+		if (!file_exists($pharQ)) {
+			$pharQ = 'phar://' . $pharRoot . '/Q.php';
+		}
+		require_once $pharQ;
 	} else {
-		require_once __DIR__ . '/src/Q.php';
+		$shimPath = __DIR__ . '/src/Q.php';
+		if (!file_exists($shimPath)) {
+			fwrite(STDERR, "Error: src/Q.php not found. Run from the webserver repo directory,\n");
+			fwrite(STDERR, "or use a self-contained binary from https://github.com/Qbix/webserver/releases\n");
+			exit(1);
+		}
+		require_once $shimPath;
 	}
 }
 
@@ -219,13 +270,6 @@ if (!$qbixMode) {
 if ($servingFromPhar) {
 	if (!is_dir($webDir)) {
 		fwrite(STDERR, "Error: phar does not contain a web/ directory\n");
-		exit(1);
-	}
-} else {
-	$webDir = realpath($webDir);
-	if (!$webDir || !is_dir($webDir)) {
-		fwrite(STDERR, "Error: document root not found: " . ($opts['root'] ?: './web') . "\n");
-		fwrite(STDERR, "Create a web/ directory or use --root=DIR\n");
 		exit(1);
 	}
 }
@@ -343,6 +387,113 @@ if ($opts['config']) {
 if ($opts['preset']) {
 	require_once __DIR__ . '/src/Q/WebServer/Compat.php';
 	Q_WebServer_Compat::loadPreset($opts['preset']);
+}
+
+// ── Trust: signing, verification, key generation ──
+require_once __DIR__ . '/src/Q/WebServer/Trust.php';
+
+// --generate-key=NAME → create keypair and exit
+if ($opts['generate-key']) {
+	$name = $opts['generate-key'];
+	$privPath = "local/keys/{$name}.pem";
+	$pubPath = "local/keys/{$name}.pub.pem";
+	@mkdir(dirname($privPath), 0755, true);
+	if (Q_WebServer_Trust::generateKeypair($privPath, $pubPath)) {
+		fwrite(STDERR, "Generated keypair:\n  Private: $privPath\n  Public:  $pubPath\n");
+		fwrite(STDERR, "Share the .pub.pem with anyone who should verify your signatures.\n");
+		fwrite(STDERR, "Keep the private .pem safe — it signs your code.\n");
+	} else {
+		fwrite(STDERR, "Failed to generate keypair. Check OpenSSL is available.\n");
+	}
+	exit(0);
+}
+
+// --sign=DIR --key=private.pem --key-id=NAME [--policy=N]
+if ($opts['sign']) {
+	$dir = realpath($opts['sign']);
+	$keyPath = $opts['key'] ?? '';
+	$keyId = $opts['key-id'] ?? '';
+	if (!$dir || !is_dir($dir)) { fwrite(STDERR, "Directory not found: {$opts['sign']}\n"); exit(1); }
+
+	$manifestPath = $dir . DIRECTORY_SEPARATOR . 'manifest.json';
+	if (is_file($manifestPath) && $keyPath) {
+		// Add signature to existing manifest
+		$manifest = json_decode(file_get_contents($manifestPath), true);
+		if (!$manifest) { fwrite(STDERR, "Invalid manifest.json\n"); exit(1); }
+	} else {
+		// Generate new manifest
+		fwrite(STDERR, "Generating manifest for $dir...\n");
+		$manifest = Q_WebServer_Trust::generateManifest($dir);
+		fwrite(STDERR, "  " . count($manifest['files']) . " files hashed\n");
+	}
+
+	// Set policy if specified
+	if ($opts['policy']) {
+		$manifest['policy']['require'] = (int) $opts['policy'];
+		fwrite(STDERR, "  Policy: require {$opts['policy']} signatures\n");
+	}
+
+	// Sign if key provided
+	if ($keyPath && $keyId) {
+		if (!is_file($keyPath)) { fwrite(STDERR, "Key not found: $keyPath\n"); exit(1); }
+		$ok = Q_WebServer_Trust::signManifest($manifest, $keyPath, $keyId);
+		if ($ok) {
+			fwrite(STDERR, "  Signed by: $keyId\n");
+		} else {
+			fwrite(STDERR, "  Signing failed. Check your private key.\n"); exit(1);
+		}
+	}
+
+	Q_WebServer_Trust::saveManifest($manifest, $dir);
+	fwrite(STDERR, "  Saved: $manifestPath\n");
+	$sigs = count($manifest['signatures']);
+	$req = $manifest['policy']['require'] ?? 0;
+	fwrite(STDERR, "  Signatures: $sigs" . ($req ? " (policy requires $req)" : "") . "\n");
+	exit(0);
+}
+
+// --verify=DIR → verify and exit
+if ($opts['verify']) {
+	$dir = realpath($opts['verify']);
+	if (!$dir) { fwrite(STDERR, "Directory not found: {$opts['verify']}\n"); exit(1); }
+	Q_WebServer_Trust::init();
+	$result = Q_WebServer_Trust::verifyDirectory($dir, basename($dir));
+	if ($result['ok']) {
+		$v = $result['verified'] ?? 0;
+		$t = $result['total'] ?? 0;
+		fwrite(STDERR, "✓ Verified: $v/$t files pass. " . ($result['skipped'] ?? false ? "(no manifest)" : "") . "\n");
+		exit(0);
+	} else {
+		fwrite(STDERR, "✕ Verification failed:\n");
+		foreach ($result['errors'] as $err) {
+			fwrite(STDERR, "  - $err\n");
+		}
+		exit(1);
+	}
+}
+
+// Initialize trust at startup (verify app and plugins)
+if (Q_Config::get('Q', 'trust', 'enabled', false)) {
+	Q_WebServer_Trust::init();
+}
+
+// Verify code integrity before loading (if trust is enabled)
+if (Q_Config::get('Q', 'trust', 'enabled', false)) {
+	// Verify the app directory
+	$trustResult = Q_WebServer_Trust::verifyDirectory($webDir, 'app');
+	if (!$trustResult['ok']) {
+		fwrite(STDERR, "\n  ✕ Trust verification failed:\n");
+		foreach ($trustResult['errors'] as $err) {
+			fwrite(STDERR, "    - $err\n");
+		}
+		fwrite(STDERR, "\n  Server will not start with unverified code.\n");
+		fwrite(STDERR, "  Fix the files, re-sign the manifest, or disable trust.\n\n");
+		exit(1);
+	} elseif (!empty($trustResult['manifest'])) {
+		$v = $trustResult['verified'];
+		$t = $trustResult['total'];
+		fwrite(STDERR, "  Trust: ✓ $v/$t files verified\n");
+	}
 }
 
 // Initialize framework compatibility layer if enabled

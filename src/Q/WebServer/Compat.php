@@ -1461,6 +1461,15 @@ class Q_WebServer_CompatFileWrapper
 		self::unwrap();
 
 		if ($shouldTransform && is_file($realPath)) {
+			// Runtime trust check — reject files that fail integrity verification
+			if (class_exists('Q_WebServer_Trust', false) && Q_WebServer_Trust::isEnabled()) {
+				if (!Q_WebServer_Trust::checkFile($realPath)) {
+					self::rewrap();
+					trigger_error("Trust: blocked untrusted file: $realPath", E_USER_WARNING);
+					return false;
+				}
+			}
+
 			// Cache miss (file added after prewarm) — read, transform, cache
 			$source = file_get_contents($realPath);
 			if ($source !== false) {

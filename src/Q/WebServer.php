@@ -1038,6 +1038,16 @@ class Q_WebServer
 				'body' => '{"active":false,"mode":"standalone"}',
 				'headers' => array('Content-Type' => 'application/json'));
 		}
+		if ($path === '/Q/trust') {
+			if (class_exists('Q_WebServer_Trust', false) && Q_WebServer_Trust::isEnabled()) {
+				return array('status' => 200,
+					'body' => json_encode(Q_WebServer_Trust::status()),
+					'headers' => array('Content-Type' => 'application/json'));
+			}
+			return array('status' => 200,
+				'body' => '{"enabled":false}',
+				'headers' => array('Content-Type' => 'application/json'));
+		}
 		if ($path === '/Q/dashboard' || $path === '/Q/dashboard/') {
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
 				return array('status' => 404, 'body' => 'Not found');
