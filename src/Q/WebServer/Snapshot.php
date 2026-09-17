@@ -4,10 +4,10 @@
  *
  * This lets workers handle multiple requests in a loop WITHOUT state leaks:
  * the worker takes a snapshot after preloading, then restores it between
- * requests. The cost is ~0.05ms per restore (measured: 201 properties across
- * 25 classes with the Qbix Platform + Users plugin loaded).
+ * requests. ReflectionProperty handles are cached at snapshot time so
+ * restoreStatics() does only setValue() calls — no Reflection lookups.
  *
- * Compare: pcntl_fork() costs ~8ms. So this is 160× cheaper than forking,
+ * Compare: pcntl_fork() costs ~8ms. Snapshot restore is ~160× cheaper,
  * and achieves the same state isolation for static properties.
  *
  * What it DOES reset:
@@ -28,6 +28,8 @@ class Q_WebServer_Snapshot
 {
 	/** @var array class => [property => value] */
 	private static $snapshot = array();
+	/** @var array class => [property => ReflectionProperty] — cached handles */
+	private static $reflectors = array();
 	/** @var array Global variables snapshot */
 	private static $globals = array();
 	/** @var boolean Whether a snapshot has been taken */
@@ -36,10 +38,17 @@ class Q_WebServer_Snapshot
 	/**
 	 * Take a snapshot of all static properties. Call ONCE after preloading,
 	 * before the worker starts handling requests.
+	 *
+	 * Caches ReflectionProperty handles alongside values. Once a class is
+	 * loaded, its property slots never move, so the cached handle is safe
+	 * to reuse indefinitely. Only false negatives are possible (a new class
+	 * not yet cached), never false positives (stale handle pointing to the
+	 * wrong slot).
 	 */
 	static function take()
 	{
 		self::$snapshot = array();
+		self::$reflectors = array();
 		$count = 0;
 		foreach (get_declared_classes() as $cls) {
 			$ref = new \ReflectionClass($cls);
@@ -47,18 +56,22 @@ class Q_WebServer_Snapshot
 			$props = $ref->getProperties(\ReflectionProperty::IS_STATIC);
 			if (empty($props)) continue;
 			self::$snapshot[$cls] = array();
+			self::$reflectors[$cls] = array();
 			foreach ($props as $prop) {
 				$prop->setAccessible(true);
 				try {
 					$val = $prop->getValue(null);
-					if (is_resource($val)) continue; // can't snapshot resources
-					self::$snapshot[$cls][$prop->getName()] =
+					if (is_resource($val)) continue;
+					$name = $prop->getName();
+					self::$snapshot[$cls][$name] =
 						is_object($val) ? clone $val : $val;
+					self::$reflectors[$cls][$name] = $prop;
 					$count++;
 				} catch (\Throwable $e) { /* uninitialized typed property */ }
 			}
 			if (empty(self::$snapshot[$cls])) {
 				unset(self::$snapshot[$cls]);
+				unset(self::$reflectors[$cls]);
 			}
 		}
 
@@ -84,13 +97,12 @@ class Q_WebServer_Snapshot
 	{
 		if (!self::$taken) return;
 
-		// Restore static properties
+		// Restore static properties via cached handles
 		foreach (self::$snapshot as $cls => $props) {
-			$ref = new \ReflectionClass($cls);
 			foreach ($props as $name => $val) {
-				$p = $ref->getProperty($name);
-				$p->setAccessible(true);
-				$p->setValue(null, is_object($val) ? clone $val : $val);
+				self::$reflectors[$cls][$name]->setValue(
+					null, is_object($val) ? clone $val : $val
+				);
 			}
 		}
 
@@ -120,27 +132,27 @@ class Q_WebServer_Snapshot
 
 	/**
 	 * Expose the class snapshot for callers that need statics-only restore.
-	 * Used by persistent workers that need to reset statics without touching
-	 * $GLOBALS (which holds the server socket).
 	 */
 	static function getClassSnapshot() { return self::$snapshot; }
 
 	/**
 	 * Restore ONLY class statics, not globals.
+	 * Uses cached ReflectionProperty handles — no Reflection lookups per call.
 	 */
 	static function restoreStatics()
 	{
 		if (!self::$taken) return;
 		foreach (self::$snapshot as $cls => $props) {
 			// Never restore our own statics — doing so would undo
-			// updateNewClasses() by reverting $snapshot to the version
-			// that doesn't include newly discovered classes.
+			// updateNewClasses() by reverting $snapshot/$reflectors.
 			if ($cls === 'Q_WebServer_Snapshot') continue;
-			$ref = new \ReflectionClass($cls);
+			// Never restore Compat statics — the compat layer manages its
+			// own state via shutdown()/init().
+			if ($cls === 'Q_WebServer_Compat') continue;
 			foreach ($props as $name => $val) {
-				$p = $ref->getProperty($name);
-				$p->setAccessible(true);
-				$p->setValue(null, is_object($val) ? clone $val : $val);
+				self::$reflectors[$cls][$name]->setValue(
+					null, is_object($val) ? clone $val : $val
+				);
 			}
 		}
 	}
@@ -149,12 +161,8 @@ class Q_WebServer_Snapshot
 	 * Detect classes declared AFTER the initial snapshot and add their
 	 * statics to the snapshot using the declaration default values.
 	 *
-	 * Scripts may define inline classes (`class Foo { static $x = 0; }`).
-	 * These weren't in the original snapshot because they didn't exist at
-	 * preload time. This method discovers them so restoreStatics() resets
-	 * their properties on subsequent requests — without any manual
-	 * registration or interface implementation (unlike Laravel Octane's
-	 * ResetScope).
+	 * Also populates the $reflectors cache for the new class so
+	 * restoreStatics() can use cached handles on subsequent requests.
 	 *
 	 * Cost: ~0.01ms per new class (one ReflectionClass + property scan).
 	 * Already-tracked classes are skipped in O(1) via isset().
@@ -169,6 +177,7 @@ class Q_WebServer_Snapshot
 			$props = $ref->getProperties(\ReflectionProperty::IS_STATIC);
 			if (empty($props)) continue;
 			self::$snapshot[$cls] = array();
+			self::$reflectors[$cls] = array();
 			foreach ($props as $prop) {
 				$prop->setAccessible(true);
 				try {
@@ -176,12 +185,15 @@ class Q_WebServer_Snapshot
 						? $prop->getDefaultValue()
 						: $prop->getValue(null);
 					if (is_resource($val)) continue;
-					self::$snapshot[$cls][$prop->getName()] =
+					$name = $prop->getName();
+					self::$snapshot[$cls][$name] =
 						is_object($val) ? clone $val : $val;
+					self::$reflectors[$cls][$name] = $prop;
 				} catch (\Throwable $e) { /* uninitialized typed property */ }
 			}
 			if (empty(self::$snapshot[$cls])) {
 				unset(self::$snapshot[$cls]);
+				unset(self::$reflectors[$cls]);
 			}
 		}
 	}

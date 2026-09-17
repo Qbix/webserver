@@ -221,6 +221,12 @@ class Q_WebServer_State
 		self::$code = (int) $code;
 	}
 
+	/** Get the response status code. */
+	static function getStatusCode()
+	{
+		return self::$code;
+	}
+
 	/** Get or set the response code. Defers to the Platform's code() if present. */
 	static function responseCode($code = null)
 	{

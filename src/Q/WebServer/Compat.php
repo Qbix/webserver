@@ -19,7 +19,7 @@
  * 4. Session handling with file locking.
  *
  * Enable in config:
- *   { "Q": { "compat": { "enabled": true, "rewrite": "index.php" } } }
+ *   { "Q": { "compat": { "skipSourceCodeTransform": false, "rewrite": "index.php" } } }
  *
  * @class Q_WebServer_Compat
  */
@@ -49,6 +49,15 @@ class Q_WebServer_Compat
 		'set_time_limit'       => 'Q_WebServer_Compat::_set_time_limit',
 		'getallheaders'        => 'Q_WebServer_Compat::_getallheaders',
 		'apache_request_headers' => 'Q_WebServer_Compat::_getallheaders',
+		// Octane safety — lifecycle functions that leak state in persistent workers
+		'register_shutdown_function' => 'Q_WebServer_Compat::_register_shutdown_function',
+		'set_error_handler'    => 'Q_WebServer_Compat::_set_error_handler',
+		'set_exception_handler'=> 'Q_WebServer_Compat::_set_exception_handler',
+		'restore_error_handler'=> 'Q_WebServer_Compat::_restore_error_handler',
+		'restore_exception_handler' => 'Q_WebServer_Compat::_restore_exception_handler',
+		'spl_autoload_register'=> 'Q_WebServer_Compat::_spl_autoload_register',
+		'spl_autoload_unregister' => 'Q_WebServer_Compat::_spl_autoload_unregister',
+		'putenv'               => 'Q_WebServer_Compat::_putenv',
 	);
 
 	/** @var array In-memory transform cache: realpath → ['source' => ..., 'mtime' => ...] */
@@ -75,16 +84,76 @@ class Q_WebServer_Compat
 	/** @var array Request headers (set by the server before dispatch) */
 	private static $requestHeaders = array();
 
+	// ── Octane lifecycle state ────────────────────────────
+
+	/** @var array Shutdown callbacks registered during this request */
+	private static $shutdownCallbacks = array();
+
+	/** @var array Error handler stack for this request */
+	private static $errorHandlerStack = array();
+
+	/** @var callable|null Original error handler at boot time */
+	private static $bootErrorHandler = null;
+
+	/** @var callable|null Original exception handler at boot time */
+	private static $bootExceptionHandler = null;
+
+	/** @var bool Whether boot handlers have been captured */
+	private static $bootHandlersCaptured = false;
+
+	/** @var array Autoloaders registered during this request (for cleanup) */
+	private static $requestAutoloaders = array();
+
+	/** @var array Boot-time autoloader list */
+	private static $bootAutoloaders = array();
+
+	/** @var bool Whether boot autoloaders have been captured */
+	private static $bootAutoloadersCaptured = false;
+
+	/** @var array Environment variables set during this request */
+	private static $requestEnvVars = array();
+
+	/** @var array ini values changed during this request: key => old_value */
+	private static $requestIniChanges = array();
+
+	/** @var array Boot-time ini overrides from config (snapshot once) */
+	private static $bootIniOverrides = array();
+
+	/** @var bool Whether boot ini has been captured */
+	private static $bootIniCaptured = false;
+
 	/**
 	 * Initialize the compatibility layer.
 	 * Call this before dispatching any user PHP.
 	 */
 	static function init()
 	{
-		$enabled = Q_Config::get('Q', 'compat', 'enabled', false);
+		$enabled = !Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false);
 		if (!$enabled) return;
 
 		self::$enabled = true;
+
+		// Capture boot-time error/exception handlers (once)
+		if (!self::$bootHandlersCaptured) {
+			// Push a dummy, get the current, restore it
+			self::$bootErrorHandler = set_error_handler(function () { return false; });
+			restore_error_handler();
+			self::$bootExceptionHandler = set_exception_handler(function () {});
+			restore_exception_handler();
+			self::$bootHandlersCaptured = true;
+		}
+
+		// Capture boot-time autoloaders (once)
+		if (!self::$bootAutoloadersCaptured) {
+			self::$bootAutoloaders = spl_autoload_functions() ?: array();
+			self::$bootAutoloadersCaptured = true;
+		}
+
+		// Capture boot-time ini overrides (once)
+		if (!self::$bootIniCaptured) {
+			self::$bootIniOverrides = Q_Config::get('Q', 'compat', 'ini', array());
+			self::$bootIniCaptured = true;
+		}
 
 		// Register custom include wrapper
 		stream_wrapper_unregister('file');
@@ -99,6 +168,16 @@ class Q_WebServer_Compat
 	{
 		if (!self::$enabled) return;
 
+		// ── Fire registered shutdown functions (in registration order) ──
+		foreach (self::$shutdownCallbacks as $entry) {
+			try {
+				call_user_func_array($entry[0], $entry[1]);
+			} catch (\Throwable $e) {
+				// Shutdown callbacks must not kill the worker
+			}
+		}
+		self::$shutdownCallbacks = array();
+
 		// Close any open session
 		if (self::$sessionActive) {
 			self::_session_write_close();
@@ -108,6 +187,59 @@ class Q_WebServer_Compat
 		foreach (self::$uploadedFiles as $path => $flag) {
 			if (file_exists($path)) @unlink($path);
 		}
+
+		// ── Restore error/exception handlers to boot state ──
+		if (self::$bootHandlersCaptured) {
+			// Pop any handlers the request pushed
+			// set_error_handler returns the previous handler, and
+			// restore_error_handler pops the stack. We reset by
+			// setting the boot handler explicitly.
+			set_error_handler(self::$bootErrorHandler ?? function () { return false; });
+			set_exception_handler(self::$bootExceptionHandler);
+		}
+		self::$errorHandlerStack = array();
+
+		// ── Restore autoloader stack to boot state ──
+		if (self::$bootAutoloadersCaptured) {
+			foreach (self::$requestAutoloaders as $loader) {
+				spl_autoload_unregister($loader);
+			}
+		}
+		self::$requestAutoloaders = array();
+
+		// ── Restore environment variables ──
+		foreach (self::$requestEnvVars as $key => $oldValue) {
+			if ($oldValue === false) {
+				putenv($key); // remove it
+			} else {
+				putenv($key . '=' . $oldValue);
+			}
+		}
+		self::$requestEnvVars = array();
+
+		// ── Restore ini values changed during this request ──
+		foreach (self::$requestIniChanges as $key => $oldValue) {
+			@\ini_set($key, $oldValue);
+			// Restore the config override to boot-time value (or remove)
+			if (array_key_exists($key, self::$bootIniOverrides)) {
+				Q_Config::set('Q', 'compat', 'ini', $key, self::$bootIniOverrides[$key]);
+			} else {
+				Q_Config::clear('Q', 'compat', 'ini', $key);
+			}
+		}
+		self::$requestIniChanges = array();
+
+		// ── Reset response state ──
+		// Headers accumulated via _header() shim
+		if (class_exists('Q_WebServer_State', false)) {
+			\Q_WebServer_State::clear();
+		}
+		// Native headers (belt and suspenders)
+		if (function_exists('header_remove')) {
+			@header_remove();
+		}
+		// HTTP response code
+		@http_response_code(200);
 
 		self::$headersSent = false;
 		self::$uploadedFiles = array();
@@ -329,7 +461,8 @@ class Q_WebServer_Compat
 			if ($count >= $maxFiles) break;
 			if (!$file->isFile()) continue;
 			if ($file->getExtension() !== 'php') continue;
-			$path = $file->getRealPath();
+			$path = $file->getRealPath() ?: $file->getPathname();
+			if (!$path || $path === '') continue;
 			// Skip vendor test files (large, rarely included)
 			if (strpos($path, DIRECTORY_SEPARATOR . 'tests' . DIRECTORY_SEPARATOR) !== false) continue;
 			if (strpos($path, DIRECTORY_SEPARATOR . 'Tests' . DIRECTORY_SEPARATOR) !== false) continue;
@@ -751,6 +884,10 @@ class Q_WebServer_Compat
 	static function _ini_set($key, $value)
 	{
 		$old = self::_ini_get($key);
+		// Track for between-request restore (only first change per key)
+		if (!array_key_exists($key, self::$requestIniChanges)) {
+			self::$requestIniChanges[$key] = $old;
+		}
 		Q_Config::set('Q', 'compat', 'ini', $key, (string) $value);
 		@\ini_set($key, $value);
 		return $old;
@@ -784,6 +921,115 @@ class Q_WebServer_Compat
 			$result[$key] = $value;
 		}
 		return $result;
+	}
+
+	// ── Octane safety shims ────────────────────────────────
+
+	/**
+	 * Replacement for register_shutdown_function().
+	 * Collects callbacks; Compat::shutdown() fires them at request end.
+	 * In fork-per-request mode this behaves identically to PHP's native
+	 * version because the process exits after the request anyway.
+	 */
+	static function _register_shutdown_function($callback)
+	{
+		$args = func_get_args();
+		array_shift($args); // remove $callback
+		self::$shutdownCallbacks[] = array($callback, $args);
+	}
+
+	/**
+	 * Replacement for set_error_handler().
+	 * Tracks pushed handlers so shutdown() can restore the boot state.
+	 */
+	static function _set_error_handler($callback, $error_levels = E_ALL)
+	{
+		self::$errorHandlerStack[] = 'error';
+		return set_error_handler($callback, $error_levels);
+	}
+
+	/**
+	 * Replacement for set_exception_handler().
+	 */
+	static function _set_exception_handler($callback)
+	{
+		self::$errorHandlerStack[] = 'exception';
+		return set_exception_handler($callback);
+	}
+
+	/**
+	 * Replacement for restore_error_handler().
+	 */
+	static function _restore_error_handler()
+	{
+		// Remove tracking entry if we have one
+		$key = array_search('error', self::$errorHandlerStack);
+		if ($key !== false) {
+			array_splice(self::$errorHandlerStack, $key, 1);
+		}
+		return restore_error_handler();
+	}
+
+	/**
+	 * Replacement for restore_exception_handler().
+	 */
+	static function _restore_exception_handler()
+	{
+		$key = array_search('exception', self::$errorHandlerStack);
+		if ($key !== false) {
+			array_splice(self::$errorHandlerStack, $key, 1);
+		}
+		return restore_exception_handler();
+	}
+
+	/**
+	 * Replacement for spl_autoload_register().
+	 * Tracks autoloaders registered during this request so shutdown()
+	 * can unregister them — restoring the boot-time autoloader stack.
+	 */
+	static function _spl_autoload_register($callback = null, $throw = true, $prepend = false)
+	{
+		$result = spl_autoload_register($callback, $throw, $prepend);
+		if ($result && $callback !== null) {
+			self::$requestAutoloaders[] = $callback;
+		}
+		return $result;
+	}
+
+	/**
+	 * Replacement for spl_autoload_unregister().
+	 * If the script unregisters one of its own autoloaders, stop tracking it.
+	 */
+	static function _spl_autoload_unregister($callback)
+	{
+		$result = spl_autoload_unregister($callback);
+		if ($result) {
+			$key = array_search($callback, self::$requestAutoloaders, true);
+			if ($key !== false) {
+				array_splice(self::$requestAutoloaders, $key, 1);
+			}
+		}
+		return $result;
+	}
+
+	/**
+	 * Replacement for putenv().
+	 * Records the previous value so shutdown() can restore it.
+	 */
+	static function _putenv($setting)
+	{
+		$eq = strpos($setting, '=');
+		if ($eq !== false) {
+			$key = substr($setting, 0, $eq);
+		} else {
+			$key = $setting;
+		}
+		// Save old value only on first set per request
+		if (!array_key_exists($key, self::$requestEnvVars)) {
+			$old = getenv($key);
+			self::$requestEnvVars[$key] = ($old === false) ? false : $old;
+		}
+		return putenv($setting);
 	}
 
 	// ── Multipart form-data parser ──────────────────────
@@ -1003,7 +1249,7 @@ class Q_WebServer_Compat
 
 	/**
 	 * Load a framework preset config.
-	 * Presets set compat.enabled, compat.rewrite, compat.ini, etc.
+	 * Presets set compat.skipSourceCodeTransform, compat.rewrite, compat.ini, etc.
 	 *
 	 * @param string $preset Preset name: 'laravel', 'symfony', 'wordpress', 'drupal'
 	 */

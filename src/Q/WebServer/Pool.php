@@ -42,6 +42,7 @@ class Q_WebServer_Pool
 	protected $watchers = array();      // index => Q_Evented watcher id
 	protected $pending = array();       // queued [client, parsed, scriptPath]
 	protected $nextIndex = 0;
+	protected static $inputWrapperRegistered = false;
 
 	/**
 	 * @method __construct
@@ -58,13 +59,33 @@ class Q_WebServer_Pool
 		$this->targetSize = $size ?: (int) Q_Config::get(
 			'Q', 'webserver', 'workers', 4
 		);
-		$this->octane = (bool) Q_Config::get(
-			'Q', 'webserver', 'octane', true
+		$this->octane = !Q_Config::get(
+			'Q', 'webserver', 'forkPerRequest', false
 		);
 		$this->maxRequests = (int) Q_Config::get(
 			'Q', 'webserver', 'maxRequests', 1000
 		);
-		// Take a snapshot BEFORE forking workers so they inherit clean state.
+
+		// In octane mode, default compat on (unless explicitly disabled)
+		// so lifecycle functions are shimmed for shared-nothing safety.
+		if ($this->octane) {
+			$compatSet = Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', null);
+			if ($compatSet === null) {
+				Q_Config::set('Q', 'compat', 'skipSourceCodeTransform', false);
+			}
+			// Init compat BEFORE snapshot so workers inherit $enabled=true
+			// and the boot-time handlers/autoloaders are captured.
+			$compatFile = dirname(__DIR__) . '/WebServer/Compat.php';
+			if (!class_exists('Q_WebServer_Compat', false) && is_file($compatFile)) {
+				require_once $compatFile;
+			}
+			if (class_exists('Q_WebServer_Compat', false)) {
+				Q_WebServer_Compat::init();
+			}
+		}
+
+		// Take a snapshot AFTER compat init so workers inherit the
+		// enabled state and boot-time handler/autoloader snapshots.
 		// restoreStatics() costs ~0.05ms vs ~8ms for pcntl_fork().
 		if ($this->octane) {
 			$snapFile = dirname(__DIR__) . '/WebServer/Snapshot.php';
@@ -166,6 +187,18 @@ class Q_WebServer_Pool
 			if (!$octane) break;
 
 			// ── Octane: reset state for the next request ──
+
+			// Compat layer: fire shutdown callbacks, restore error/exception
+			// handlers, unregister request autoloaders, restore env vars,
+			// close sessions, clean up uploads — all BEFORE snapshot restore
+			// so shutdown callbacks see the request's final state.
+			if (class_exists('Q_WebServer_Compat', false)
+				&& Q_WebServer_Compat::isEnabled()) {
+				Q_WebServer_Compat::shutdown();
+				// Re-init for next request (re-registers file:// wrapper)
+				Q_WebServer_Compat::init();
+			}
+
 			// Static properties: the snapshot captures the clean state the parent
 			// had after preloading. restoreStatics() resets all user-defined class
 			// statics via ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
@@ -269,10 +302,14 @@ class Q_WebServer_Pool
 		$_SERVER['QUERY_STRING'] = $req['query'] ?? '';
 		$_SERVER['SCRIPT_FILENAME'] = $req['scriptFilename'];
 		$_SERVER['SCRIPT_NAME'] = $req['scriptName'] ?? '/index.php';
+		$_SERVER['PHP_SELF'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
 		$_SERVER['SERVER_NAME'] = $req['headers']['host'] ?? 'localhost';
 		$_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
 		$_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
+		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		$_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
+		$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
 
 		foreach ($req['headers'] as $k => $v) {
 			$_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $k))] = $v;
@@ -281,6 +318,29 @@ class Q_WebServer_Pool
 			$_SERVER['CONTENT_TYPE'] = $req['headers']['content-type'];
 		if (isset($req['headers']['content-length']))
 			$_SERVER['CONTENT_LENGTH'] = $req['headers']['content-length'];
+
+		// REQUEST_SCHEME / HTTPS from proxy headers or direct
+		$proto = $req['headers']['x-forwarded-proto'] ?? '';
+		if (strtolower($proto) === 'https' || ($req['https'] ?? false)) {
+			$_SERVER['HTTPS'] = 'on';
+			$_SERVER['REQUEST_SCHEME'] = 'https';
+		} else {
+			$_SERVER['REQUEST_SCHEME'] = 'http';
+			unset($_SERVER['HTTPS']);
+		}
+
+		// PHP_AUTH_USER / PHP_AUTH_PW from Authorization header
+		$authHeader = $req['headers']['authorization'] ?? '';
+		if ($authHeader && stripos($authHeader, 'Basic ') === 0) {
+			$decoded = base64_decode(substr($authHeader, 6));
+			if ($decoded !== false && strpos($decoded, ':') !== false) {
+				list($user, $pass) = explode(':', $decoded, 2);
+				$_SERVER['PHP_AUTH_USER'] = $user;
+				$_SERVER['PHP_AUTH_PW'] = $pass;
+			}
+		} else {
+			unset($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']);
+		}
 
 		// Populate getallheaders() / apache_request_headers()
 		if (!class_exists('Q_WebServer_GetAllHeaders', false)) {
@@ -314,16 +374,26 @@ class Q_WebServer_Pool
 		}
 
 		$ct = strtolower($req['headers']['content-type'] ?? '');
+		$origCt = $req['headers']['content-type'] ?? '';
 		$raw = $req['body'] ?? '';
 		if (strpos($ct, 'application/x-www-form-urlencoded') !== false) {
 			parse_str($raw, $_POST);
 		} elseif (strpos($ct, 'application/json') !== false) {
 			$_POST = json_decode($raw, true) ?: array();
+		} elseif (strpos($ct, 'multipart/form-data') !== false) {
+			\Q_WebServer::parseMultipart($origCt, $raw, $_POST, $_FILES);
 		}
 		$_REQUEST = array_merge($_GET, $_POST);
 
-		// php://input workaround for forked processes
+		// php://input workaround — register a custom stream wrapper
+		// so file_get_contents('php://input') works in persistent workers.
+		// PHP's built-in php://input is empty in CLI SAPI for included scripts.
 		$GLOBALS['_Q_RAW_INPUT'] = $raw;
+		if (!self::$inputWrapperRegistered) {
+			stream_wrapper_unregister('php');
+			stream_wrapper_register('php', 'Q_WebServer_PhpInputStream');
+			self::$inputWrapperRegistered = true;
+		}
 
 		// Non-removable buffer: Q_Dispatcher::dispatch() calls ob_end_flush()
 		// which would destroy a normal buffer. Passing flags=0 makes
@@ -348,7 +418,13 @@ class Q_WebServer_Pool
 				}
 			}
 			$code = http_response_code();
-			if ($code) $status = $code;
+			if ($code && $code !== 200) $status = $code;
+
+			// Check Q_WebServer_State for status code (CLI SAPI ignores http_response_code)
+			if (class_exists('Q_WebServer_State', false)) {
+				$stateCode = \Q_WebServer_State::getStatusCode();
+				if ($stateCode && $stateCode !== 200) $status = $stateCode;
+			}
 
 			// Recover status from the Platform's own error state.
 			// Same fix as dispatchToQ: http_response_code() is a no-op under
@@ -642,5 +718,93 @@ class Q_WebServer_Pool
 	{
 		$j = json_encode(compact('status', 'body', 'headers'));
 		fwrite($sock, pack('N', strlen($j)) . $j);
+	}
+}
+
+/**
+ * Custom stream wrapper for php://input in persistent workers.
+ * PHP's built-in php://input is empty in CLI SAPI for included scripts.
+ * This wrapper reads from $GLOBALS['_Q_RAW_INPUT'] which the Pool sets
+ * before each request.
+ *
+ * Only handles php://input — all other php:// streams pass through to
+ * PHP's built-in handler.
+ *
+ * @class Q_WebServer_PhpInputStream
+ */
+class Q_WebServer_PhpInputStream
+{
+	protected $data = '';
+	protected $pos = 0;
+	protected $path = '';
+
+	/**
+	 * @var resource|null Fallback wrapper handle for non-input streams
+	 */
+	protected $fallback = null;
+
+	function stream_open($path, $mode, $options, &$openedPath)
+	{
+		$this->path = $path;
+		if ($path === 'php://input') {
+			$this->data = $GLOBALS['_Q_RAW_INPUT'] ?? '';
+			$this->pos = 0;
+			return true;
+		}
+		// For php://stdout, php://stderr, php://temp, php://memory, etc.
+		// restore the built-in wrapper, open, then re-register ours
+		stream_wrapper_restore('php');
+		$this->fallback = fopen($path, $mode);
+		stream_wrapper_unregister('php');
+		stream_wrapper_register('php', __CLASS__);
+		return $this->fallback !== false;
+	}
+
+	function stream_read($count)
+	{
+		if ($this->fallback) return fread($this->fallback, $count);
+		$chunk = substr($this->data, $this->pos, $count);
+		$this->pos += strlen($chunk);
+		return $chunk;
+	}
+
+	function stream_write($data)
+	{
+		if ($this->fallback) return fwrite($this->fallback, $data);
+		return 0;
+	}
+
+	function stream_tell()
+	{
+		if ($this->fallback) return ftell($this->fallback);
+		return $this->pos;
+	}
+
+	function stream_eof()
+	{
+		if ($this->fallback) return feof($this->fallback);
+		return $this->pos >= strlen($this->data);
+	}
+
+	function stream_stat()
+	{
+		if ($this->fallback) return fstat($this->fallback);
+		return ['size' => strlen($this->data)];
+	}
+
+	function stream_close()
+	{
+		if ($this->fallback) { fclose($this->fallback); $this->fallback = null; }
+	}
+
+	function stream_seek($offset, $whence = SEEK_SET)
+	{
+		if ($this->fallback) return fseek($this->fallback, $offset, $whence) === 0;
+		switch ($whence) {
+			case SEEK_SET: $this->pos = $offset; break;
+			case SEEK_CUR: $this->pos += $offset; break;
+			case SEEK_END: $this->pos = strlen($this->data) + $offset; break;
+		}
+		return true;
 	}
 }

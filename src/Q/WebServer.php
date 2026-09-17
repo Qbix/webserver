@@ -322,6 +322,8 @@ class Q_WebServer
 		}
 
 		// ── Worker pool ──────────────────────────────────
+		// Workers are auto-detected in qbixserver.php before start() is called.
+		// If $workers > 0, create the pool.
 		if ($workers > 0 && function_exists('pcntl_fork')) {
 			self::$pool = new Q_WebServer_Pool($workers);
 		}
@@ -3302,7 +3304,7 @@ HTML;
 
 		// ── Framework compatibility init (before body parsing) ──
 		$compatEnabled = class_exists('Q_WebServer_Compat', false)
-			&& Q_Config::get('Q', 'compat', 'enabled', false);
+			&& !Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false);
 		if ($compatEnabled) {
 			Q_WebServer_Compat::setRequestHeaders($parsed['headers'] ?? array());
 			Q_WebServer_Compat::init();
@@ -3497,7 +3499,7 @@ HTML;
 		}
 
 		// Shut down framework compatibility layer (cleanup temp files, close sessions)
-		if (class_exists('Q_WebServer_Compat', false) && Q_Config::get("Q", "compat", "enabled", false)) {
+		if (class_exists('Q_WebServer_Compat', false) && !Q_Config::get("Q", "compat", "skipSourceCodeTransform", false)) {
 			Q_WebServer_Compat::shutdown();
 		}
 
@@ -4391,6 +4393,17 @@ HTML;
 
 		// Find /** ... */ blocks
 		if (!preg_match_all('/\/\*\*\s*(.*?)\s*\*\//s', $source, $matches)) {
+			// No docblock — try first // comment line(s) as summary
+			if (preg_match_all('/^\s*\/\/\s*(.+)/m', $source, $commentMatches)) {
+				// Skip shebangs and path comments (// handlers/foo/bar.php)
+				foreach ($commentMatches[1] as $comment) {
+					$comment = trim($comment);
+					if ($comment === '' || strpos($comment, '#!/') === 0) continue;
+					if (preg_match('#^[\w/]+\.php#', $comment)) continue;
+					$result['summary'] = $comment;
+					break;
+				}
+			}
 			return $result;
 		}
 

@@ -12,7 +12,7 @@
  *   --host=IP        Bind address (default: 0.0.0.0)
  *   --port=PORT      HTTP port (default: 80)
  *   --https-port=PORT HTTPS port (default: 443, only if certs available)
- *   --workers=N      Pre-fork PHP workers (default: 0 = in-process)
+ *   --workers=N      Persistent workers (default: auto = nproc × 50)
  *   --config=FILE    JSON config file to load
  *   --pid=PATH       Write PID file
  *   --debug          Enable verbose logging
@@ -59,7 +59,7 @@ foreach ($argv as $i => $arg) {
 		echo "  --https-port=PORT HTTPS port (default: 443, if certs available)\n";
 		echo "  --socket=PATH    Unix domain socket (e.g. /run/qbix/app.sock)\n";
 		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
-		echo "  --workers=N      Pre-fork workers (default: 0 = in-process)\n";
+		echo "  --workers=N      Persistent workers (default: auto = nproc × 50)\n";
 		echo "  --config=FILE    JSON config file\n";
 		echo "  --preset=NAME    Framework preset (laravel, symfony, wordpress, drupal)\n";
 		echo "  --pid=PATH       PID file path\n";
@@ -497,7 +497,7 @@ if (Q_Config::get('Q', 'trust', 'enabled', false)) {
 }
 
 // Initialize framework compatibility layer if enabled
-if (Q_Config::get('Q', 'compat', 'enabled', false)) {
+if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 	if (!class_exists('Q_WebServer_Compat', false)) {
 		require_once __DIR__ . '/src/Q/WebServer/Compat.php';
 	}
@@ -727,6 +727,36 @@ if (is_file($certFile) && is_file($keyFile)) {
 }
 
 fwrite(STDERR, "\n");
+
+// Auto-detect workers if not specified
+if (!$opts['workers'] && function_exists('pcntl_fork')) {
+	$nproc = 1;
+	$totalRAM = 0;
+	if (is_file('/proc/cpuinfo')) {
+		$nproc = max(1, (int) trim(shell_exec('nproc 2>/dev/null') ?: '1'));
+		// /proc/meminfo reports in KB
+		$memLine = shell_exec("grep MemTotal /proc/meminfo 2>/dev/null");
+		if ($memLine && preg_match('/(\d+)/', $memLine, $m)) {
+			$totalRAM = (int) $m[1] * 1024; // bytes
+		}
+	} elseif (PHP_OS_FAMILY === 'Darwin') {
+		$nproc = max(1, (int) trim(shell_exec('sysctl -n hw.ncpu 2>/dev/null') ?: '1'));
+		$totalRAM = (int) trim(shell_exec('sysctl -n hw.memsize 2>/dev/null') ?: '0');
+	}
+
+	$maxByCpu = $nproc * 200;
+
+	if ($totalRAM > 0) {
+		$reservedRAM = 1024 * 1024 * 1024; // 1GB for OS + PHP base + SQLite
+		$availableRAM = max(0, $totalRAM - $reservedRAM);
+		$perWorker = 200 * 1024; // ~200KB COW per worker (measured)
+		$maxByRam = (int) ($availableRAM / $perWorker);
+		$opts['workers'] = max(4, min($maxByRam, $maxByCpu));
+	} else {
+		$opts['workers'] = $nproc * 50; // fallback
+	}
+}
+
 fwrite(STDERR, "  ┌" . str_repeat('─', $W) . "┐\n");
 fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n");
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
@@ -742,7 +772,7 @@ if ($httpsAvailable) {
 $rootLabel = $servingFromPhar ? 'web (phar)' : basename($webDir);
 fwrite(STDERR, "  │" . str_pad("  Root: " . $rootLabel, $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
-if (Q_Config::get('Q', 'compat', 'enabled', false)) {
+if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 	$preset = $opts['preset'] ?: 'custom';
 	fwrite(STDERR, "  │" . str_pad("  Compat: $preset (source transform active)", $W) . "│\n");
 }
