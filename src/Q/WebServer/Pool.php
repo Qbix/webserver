@@ -50,10 +50,16 @@ class Q_WebServer_Pool
 	 */
 	function __construct($size = null)
 	{
-		if (!function_exists('pcntl_fork')) {
+		// Load Fork abstraction (pcntl on Unix, FFI+dll on Windows)
+		$forkFile = dirname(__DIR__) . '/WebServer/Fork.php';
+		if (!class_exists('Q_WebServer_Fork', false) && is_file($forkFile)) {
+			require_once $forkFile;
+		}
+		if (!Q_WebServer_Fork::available()) {
 			throw new Exception(
-				"Q_WebServer_Pool requires pcntl extension. "
-				. "Use --workers=0 or Caddy/nginx + php-fpm."
+				"Q_WebServer_Pool requires fork capability. "
+				. "Install pcntl (Linux/macOS) or qbix_fork.dll (Windows). "
+				. "Or use --workers=0 for php-cgi mode."
 			);
 		}
 		$this->targetSize = $size ?: (int) Q_Config::get(
@@ -73,8 +79,6 @@ class Q_WebServer_Pool
 			if ($compatSet === null) {
 				Q_Config::set('Q', 'compat', 'skipSourceCodeTransform', false);
 			}
-			// Init compat BEFORE snapshot so workers inherit $enabled=true
-			// and the boot-time handlers/autoloaders are captured.
 			$compatFile = dirname(__DIR__) . '/WebServer/Compat.php';
 			if (!class_exists('Q_WebServer_Compat', false) && is_file($compatFile)) {
 				require_once $compatFile;
@@ -84,9 +88,6 @@ class Q_WebServer_Pool
 			}
 		}
 
-		// Take a snapshot AFTER compat init so workers inherit the
-		// enabled state and boot-time handler/autoloader snapshots.
-		// restoreStatics() costs ~0.05ms vs ~8ms for pcntl_fork().
 		if ($this->octane) {
 			$snapFile = dirname(__DIR__) . '/WebServer/Snapshot.php';
 			if (!class_exists('Q_WebServer_Snapshot', false) && is_file($snapFile)) {
@@ -96,7 +97,9 @@ class Q_WebServer_Pool
 				$n = Q_WebServer_Snapshot::take();
 			}
 		}
-		pcntl_signal(SIGCHLD, SIG_DFL);
+		if (function_exists('pcntl_signal')) {
+			pcntl_signal(SIGCHLD, SIG_DFL);
+		}
 		for ($i = 0; $i < $this->targetSize; $i++) {
 			$this->forkWorker();
 		}
@@ -110,13 +113,15 @@ class Q_WebServer_Pool
 	 */
 	protected function forkWorker()
 	{
+		// STREAM_PF_UNIX doesn't exist on Windows — use INET loopback
+		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
 		$pair = stream_socket_pair(
-			STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP
+			$family, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP
 		);
 		if (!$pair) throw new Exception("socketpair failed");
 
-		$pid = pcntl_fork();
-		if ($pid === -1) throw new Exception("fork failed");
+		$pid = Q_WebServer_Fork::fork();
+		if ($pid === -1 || $pid === false) throw new Exception("fork failed");
 
 		if ($pid === 0) {
 			// ── CHILD ──
@@ -614,7 +619,7 @@ class Q_WebServer_Pool
 		if (isset($this->workers[$index])) {
 			$sock = $this->workers[$index]['socket'];
 			if (is_resource($sock)) @fclose($sock);
-			pcntl_waitpid($this->workers[$index]['pid'], $st, WNOHANG);
+			Q_WebServer_Fork::waitpid($this->workers[$index]["pid"], $st, 1);
 		}
 		unset($this->workers[$index], $this->workerClients[$index],
 			$this->workerBuffers[$index], $this->workerRequestHeaders[$index]);
@@ -675,7 +680,7 @@ class Q_WebServer_Pool
 		$remaining = $this->workers;
 		while (!empty($remaining) && microtime(true) < $deadline) {
 			foreach ($remaining as $i => $w) {
-				$result = pcntl_waitpid($w['pid'], $st, WNOHANG);
+				$result = Q_WebServer_Fork::waitpid($w['pid'], $st, 1);
 				if ($result > 0 || $result === -1) {
 					unset($remaining[$i]);
 				}
@@ -688,7 +693,7 @@ class Q_WebServer_Pool
 		// SIGKILL any workers that didn't exit in time
 		foreach ($remaining as $w) {
 			if (function_exists("posix_kill")) posix_kill($w["pid"], SIGKILL);
-			pcntl_waitpid($w['pid'], $st, 0);
+			Q_WebServer_Fork::waitpid($w['pid'], $st, 0);
 		}
 
 		$this->workers = array();
@@ -699,6 +704,81 @@ class Q_WebServer_Pool
 		$n = 0;
 		foreach ($this->workers as $w) if (!$w['busy']) $n++;
 		return $n;
+	}
+
+	/**
+	 * Get per-worker stats: PID, busy status, RSS memory.
+	 * Linux: /proc/$pid/statm. macOS: ps -o rss. Windows: tasklist.
+	 */
+	function getWorkerStats()
+	{
+		$stats = array();
+		$totalRss = 0;
+		$pids = array();
+		foreach ($this->workers as $i => $w) {
+			$pids[] = $w['pid'];
+		}
+
+		// Batch RSS lookup by platform
+		$rssMap = self::getProcessRss($pids);
+
+		foreach ($this->workers as $i => $w) {
+			$pid = $w['pid'];
+			$rssKb = $rssMap[$pid] ?? 0;
+			$totalRss += $rssKb;
+			$stats[] = array(
+				'pid' => $pid,
+				'busy' => $w['busy'],
+				'rssKb' => $rssKb,
+			);
+		}
+		return array(
+			'workers' => $stats,
+			'count' => count($this->workers),
+			'target' => $this->targetSize,
+			'idle' => $this->idleCount(),
+			'totalRssKb' => $totalRss,
+		);
+	}
+
+	/**
+	 * Get RSS in KB for a list of PIDs. Cross-platform.
+	 */
+	static function getProcessRss($pids)
+	{
+		$map = array();
+		if (empty($pids)) return $map;
+
+		if (PHP_OS_FAMILY === 'Linux') {
+			foreach ($pids as $pid) {
+				$statm = @file_get_contents("/proc/$pid/statm");
+				if ($statm) {
+					$fields = explode(' ', $statm);
+					$map[$pid] = (int) ($fields[1] ?? 0) * 4; // pages * 4KB
+				}
+			}
+		} elseif (PHP_OS_FAMILY === 'Darwin') {
+			// macOS: single ps call for all PIDs
+			$pidList = implode(',', $pids);
+			$out = @shell_exec("ps -o pid=,rss= -p $pidList 2>/dev/null");
+			if ($out) {
+				foreach (explode("\n", trim($out)) as $line) {
+					$parts = preg_split('/\s+/', trim($line));
+					if (count($parts) >= 2) {
+						$map[(int) $parts[0]] = (int) $parts[1]; // ps rss is in KB
+					}
+				}
+			}
+		} elseif (PHP_OS_FAMILY === 'Windows') {
+			// Windows: tasklist for each PID
+			foreach ($pids as $pid) {
+				$out = @shell_exec("tasklist /FI \"PID eq $pid\" /FO CSV /NH 2>NUL");
+				if ($out && preg_match('/"(\d[\d,]+)\s*K"/', $out, $m)) {
+					$map[$pid] = (int) str_replace(',', '', $m[1]);
+				}
+			}
+		}
+		return $map;
 	}
 
 	// ── Wire helpers ─────────────────────────────────────

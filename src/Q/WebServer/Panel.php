@@ -259,6 +259,8 @@ class Q_WebServer_Panel
 		switch ($route) {
 			case 'apps':
 				return self::apiListApps();
+			case 'apps/fork-mode':
+				return self::apiSetForkMode($parsed);
 			case 'apps/create':
 				return self::apiCreateApp($parsed);
 			case 'apps/configure':
@@ -297,6 +299,46 @@ class Q_WebServer_Panel
 				return self::apiPlaygroundRun($parsed);
 			case 'platform/install':
 				return self::apiInstallPlatform($parsed);
+			case 'domains':
+				return self::apiListDomains();
+			case 'domains/add':
+				return self::apiAddDomain($parsed);
+			case 'domains/remove':
+				return self::apiRemoveDomain($parsed);
+			case 'domains/provision':
+				return self::apiProvisionCert($parsed);
+			case 'workers':
+				return self::apiWorkerStatus();
+			case 'workers/resize':
+				return self::apiWorkerResize($parsed);
+			case 'logs':
+				return self::apiLogs($parsed);
+			case 'cron':
+				return self::apiCronStatus();
+			case 'cron/run':
+				return self::apiCronRun($parsed);
+			case 'frameworks':
+				return self::apiFrameworks();
+			case 'frameworks/run':
+				return self::apiFrameworkRun($parsed);
+			case 'frameworks/packages':
+				return self::apiFrameworkPackages($parsed);
+			case 'frameworks/composer':
+				return self::apiFrameworkComposer($parsed);
+			case 'frameworks/pkg-action':
+				return self::apiFrameworkPkgAction($parsed);
+			case 'frameworks/pkg-download':
+				return self::apiFrameworkPkgDownload($parsed);
+			case 'qbix/installer':
+				return self::apiQbixInstaller($parsed);
+			case 'qbix/npm':
+				return self::apiQbixNpm($parsed);
+			case 'qbix/plugins':
+				return self::apiQbixPlugins();
+			case 'qbix/plugins/install':
+				return self::apiQbixPluginInstall($parsed);
+			case 'qbix/plugins/schema':
+				return self::apiQbixPluginSchema($parsed);
 			default:
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
@@ -397,10 +439,50 @@ class Q_WebServer_Panel
 				'hasScripts' => $hasScripts,
 				'isQbixApp' => $isQbixApp,
 				'serving' => (self::$servingApp === $name),
+				'forkPerRequest' => $localConfig['Q']['webserver']['forkPerRequest'] ?? $config['Q']['webserver']['forkPerRequest'] ?? null,
 			);
 		}
 
 		return array('apps' => $apps, 'appsDir' => $appsDir);
+	}
+
+	/**
+	 * Set forkPerRequest mode for an app.
+	 * Writes to the app's local/app.json so it persists.
+	 */
+	static function apiSetForkMode($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$appDirName = $body['app'] ?? '';
+		$forkMode = $body['forkPerRequest'] ?? null;
+
+		if (!$appDirName) return array('status' => 400, 'error' => 'App name required');
+
+		$appsDir = self::appsDir();
+		$appDir = $appsDir . DS . $appDirName;
+		if (!is_dir($appDir)) return array('status' => 404, 'error' => 'App not found');
+
+		$localDir = $appDir . DS . 'local';
+		@mkdir($localDir, 0755, true);
+		$localFile = $localDir . DS . 'app.json';
+
+		$config = array();
+		if (is_file($localFile)) {
+			$config = json_decode(file_get_contents($localFile), true) ?: array();
+		}
+
+		if ($forkMode === null || $forkMode === 'auto') {
+			// Remove the setting (use server default)
+			unset($config['Q']['webserver']['forkPerRequest']);
+			// Clean up empty nesting
+			if (empty($config['Q']['webserver'])) unset($config['Q']['webserver']);
+			if (empty($config['Q'])) unset($config['Q']);
+		} else {
+			$config['Q']['webserver']['forkPerRequest'] = (bool) $forkMode;
+		}
+
+		file_put_contents($localFile, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		return array('ok' => true, 'forkPerRequest' => $forkMode, 'note' => 'Restart the server for changes to take effect.');
 	}
 
 	static function apiCreateApp($parsed)
@@ -895,6 +977,11 @@ class Q_WebServer_Panel
 			'platform' => $platformDir,
 			'appDir' => defined('APP_DIR') ? APP_DIR : null,
 			'hasGit' => self::which('git') !== null,
+			'diskFree' => self::formatBytes(disk_free_space(Q_WebServer::$rootDir ?: '.')),
+			'serverVersion' => defined('QBIX_SERVER_VERSION') ? 'QbixServer/' . QBIX_SERVER_VERSION : null,
+			'sapi' => php_sapi_name(),
+			'pid' => getmypid(),
+			'uid' => function_exists('posix_getuid') ? posix_getuid() : null,
 		);
 	}
 
@@ -1045,7 +1132,1265 @@ class Q_WebServer_Panel
 		return array('opened' => $dir, 'editor' => $editor);
 	}
 
+
+
+
+	// ── Framework Package Management ─────────────────────
+
+	/**
+	 * Get packages/plugins for a detected framework.
+	 * Reads composer.lock, wp plugin dirs, etc.
+	 */
+	static function apiFrameworkPackages($parsed)
+	{
+		$query = [];
+		if (!empty($parsed['query'])) parse_str($parsed['query'], $query);
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$framework = $body['framework'] ?? $query['framework'] ?? '';
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+		$packages = [];
+
+		switch ($framework) {
+
+		case 'laravel':
+		case 'symfony':
+			// Read composer.lock for installed packages
+			$lockFile = $projectDir . '/composer.lock';
+			$jsonFile = $projectDir . '/composer.json';
+
+			$required = [];
+			if (is_file($jsonFile)) {
+				$cj = json_decode(file_get_contents($jsonFile), true);
+				foreach (($cj['require'] ?? []) as $pkg => $ver) {
+					$required[$pkg] = $ver;
+				}
+				foreach (($cj['require-dev'] ?? []) as $pkg => $ver) {
+					$required[$pkg] = $ver . ' (dev)';
+				}
+			}
+
+			if (is_file($lockFile)) {
+				$lock = json_decode(file_get_contents($lockFile), true);
+				foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $pkg) {
+					$name = $pkg['name'] ?? '';
+					$isDev = in_array($pkg, $lock['packages-dev'] ?? []);
+					$packages[] = [
+						'name' => $name,
+						'version' => $pkg['version'] ?? '',
+						'description' => $pkg['description'] ?? '',
+						'type' => $pkg['type'] ?? 'library',
+						'constraint' => $required[$name] ?? null,
+						'dev' => $isDev,
+						'homepage' => $pkg['homepage'] ?? null,
+					];
+				}
+			} elseif (!empty($required)) {
+				// No lock file, show requirements
+				foreach ($required as $pkg => $ver) {
+					$packages[] = [
+						'name' => $pkg,
+						'version' => null,
+						'constraint' => $ver,
+						'description' => '(not installed — run composer install)',
+					];
+				}
+			}
+			return ['framework' => $framework, 'packages' => $packages, 'source' => is_file($lockFile) ? 'composer.lock' : 'composer.json'];
+
+		case 'wordpress':
+			// Try wp-cli first
+			$wpDir = is_file($rootDir . 'wp-config.php') ? rtrim($rootDir, '/') : $projectDir;
+			$wpCli = null;
+			foreach (['wp', $projectDir . '/vendor/bin/wp'] as $p) {
+				if (self::which($p)) {
+					$wpCli = $p; break;
+				}
+			}
+
+			if ($wpCli) {
+				// wp-cli gives structured JSON
+				$pluginJson = shell_exec("cd " . escapeshellarg($wpDir) . " && $wpCli plugin list --format=json 2>/dev/null");
+				$plugins = json_decode($pluginJson ?: '[]', true) ?: [];
+				foreach ($plugins as $p) {
+					$packages[] = [
+						'name' => $p['name'] ?? '',
+						'version' => $p['version'] ?? '',
+						'status' => $p['status'] ?? '',
+						'update' => $p['update'] ?? 'none',
+						'type' => 'plugin',
+					];
+				}
+
+				$themeJson = shell_exec("cd " . escapeshellarg($wpDir) . " && $wpCli theme list --format=json 2>/dev/null");
+				$themes = json_decode($themeJson ?: '[]', true) ?: [];
+				foreach ($themes as $t) {
+					$packages[] = [
+						'name' => $t['name'] ?? '',
+						'version' => $t['version'] ?? '',
+						'status' => $t['status'] ?? '',
+						'update' => $t['update'] ?? 'none',
+						'type' => 'theme',
+					];
+				}
+				return ['framework' => 'wordpress', 'packages' => $packages, 'source' => 'wp-cli'];
+			}
+
+			// Fallback: scan wp-content/plugins/ directory
+			$pluginsDir = $wpDir . '/wp-content/plugins';
+			if (is_dir($pluginsDir)) {
+				foreach (scandir($pluginsDir) as $d) {
+					if ($d === '.' || $d === '..' || !is_dir($pluginsDir . '/' . $d)) continue;
+					// Read plugin header from main PHP file
+					$mainFile = $pluginsDir . '/' . $d . '/' . $d . '.php';
+					if (!is_file($mainFile)) {
+						// Try first .php file
+						foreach (glob($pluginsDir . '/' . $d . '/*.php') as $f) {
+							$mainFile = $f; break;
+						}
+					}
+					$info = ['name' => $d, 'type' => 'plugin'];
+					if (is_file($mainFile)) {
+						$header = file_get_contents($mainFile, false, null, 0, 4096);
+						if (preg_match('/Plugin Name:\s*(.+)/i', $header, $m)) $info['title'] = trim($m[1]);
+						if (preg_match('/Version:\s*(.+)/i', $header, $m)) $info['version'] = trim($m[1]);
+						if (preg_match('/Description:\s*(.+)/i', $header, $m)) $info['description'] = trim($m[1]);
+					}
+					$packages[] = $info;
+				}
+			}
+
+			// Scan themes too
+			$themesDir = $wpDir . '/wp-content/themes';
+			if (is_dir($themesDir)) {
+				foreach (scandir($themesDir) as $d) {
+					if ($d === '.' || $d === '..' || !is_dir($themesDir . '/' . $d)) continue;
+					$styleFile = $themesDir . '/' . $d . '/style.css';
+					$info = ['name' => $d, 'type' => 'theme'];
+					if (is_file($styleFile)) {
+						$header = file_get_contents($styleFile, false, null, 0, 2048);
+						if (preg_match('/Theme Name:\s*(.+)/i', $header, $m)) $info['title'] = trim($m[1]);
+						if (preg_match('/Version:\s*(.+)/i', $header, $m)) $info['version'] = trim($m[1]);
+					}
+					$packages[] = $info;
+				}
+			}
+			return ['framework' => 'wordpress', 'packages' => $packages, 'source' => 'filesystem'];
+
+		case 'drupal':
+			$drush = null;
+			foreach (['drush', $projectDir . '/vendor/bin/drush'] as $p) {
+				if (self::which($p)) {
+					$drush = $p; break;
+				}
+			}
+			if ($drush) {
+				$moduleJson = shell_exec("cd " . escapeshellarg($projectDir) . " && $drush pm:list --format=json 2>/dev/null");
+				$modules = json_decode($moduleJson ?: '{}', true) ?: [];
+				foreach ($modules as $name => $info) {
+					$packages[] = [
+						'name' => $name,
+						'version' => $info['version'] ?? '',
+						'status' => $info['status'] ?? '',
+						'type' => $info['type'] ?? 'module',
+						'description' => $info['display_name'] ?? $name,
+					];
+				}
+				return ['framework' => 'drupal', 'packages' => $packages, 'source' => 'drush'];
+			}
+			// Fallback to composer
+			return self::apiFrameworkPackages(array_merge($parsed, ['body' => json_encode(['framework' => 'symfony'])]));
+
+		case 'joomla':
+			// Read administrator/cache or manifest files
+			$extDir = rtrim($rootDir, '/') . '/administrator/manifests/packages';
+			if (is_dir($extDir)) {
+				foreach (glob($extDir . '/*.xml') as $xml) {
+					$info = ['name' => basename($xml, '.xml'), 'type' => 'package'];
+					$content = file_get_contents($xml, false, null, 0, 4096);
+					if (preg_match('/<version>(.+?)<\/version>/i', $content, $m)) $info['version'] = $m[1];
+					if (preg_match('/<name>(.+?)<\/name>/i', $content, $m)) $info['title'] = $m[1];
+					$packages[] = $info;
+				}
+			}
+			return ['framework' => 'joomla', 'packages' => $packages, 'source' => 'manifests'];
+
+		default:
+			return ['status' => 400, 'error' => 'Unknown framework'];
+		}
+	}
+
+	/**
+	 * Run a composer command (require, update, remove).
+	 */
+	static function apiFrameworkComposer($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$action = $body['action'] ?? '';
+		$package = $body['package'] ?? '';
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+
+		if (!is_file($projectDir . '/composer.json')) {
+			return ['status' => 400, 'error' => 'No composer.json found'];
+		}
+
+		$allowed = ['update', 'install', 'dump-autoload'];
+		if ($package && in_array($action, ['require', 'remove', 'update'])) {
+			// Validate package name (vendor/package format)
+			if (!preg_match('#^[a-z0-9]([a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$#i', $package)) {
+				return ['status' => 400, 'error' => 'Invalid package name'];
+			}
+			$cmd = "cd " . escapeshellarg($projectDir) . " && composer $action " . escapeshellarg($package) . " --no-interaction 2>&1";
+		} elseif (in_array($action, $allowed)) {
+			$cmd = "cd " . escapeshellarg($projectDir) . " && composer $action --no-interaction 2>&1";
+		} else {
+			return ['status' => 400, 'error' => 'Invalid action'];
+		}
+
+		$output = shell_exec($cmd);
+		return ['output' => $output, 'cmd' => "composer $action" . ($package ? " $package" : '')];
+	}
+
+	/**
+	 * Unified package management: install, remove, enable, disable, update.
+	 * Each framework maps these to its own CLI tool.
+	 */
+	static function apiFrameworkPkgAction($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$framework = $body['framework'] ?? '';
+		$action = $body['action'] ?? '';
+		$package = $body['package'] ?? '';
+
+		if (!$framework || !$action || !$package) {
+			return ['status' => 400, 'error' => 'Missing framework, action, or package'];
+		}
+
+		// Validate package name to prevent injection
+		if (!preg_match('#^[a-zA-Z0-9/_.:@^~>=<*-]+$#', $package)) {
+			return ['status' => 400, 'error' => 'Invalid package name'];
+		}
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+		$cmd = null;
+		$cwd = $projectDir;
+
+		switch ($framework) {
+
+		case 'laravel':
+		case 'symfony':
+			// Composer-based
+			switch ($action) {
+				case 'install':
+				case 'require':
+					$cmd = "composer require " . escapeshellarg($package) . " --no-interaction"; break;
+				case 'remove':
+					$cmd = "composer remove " . escapeshellarg($package) . " --no-interaction"; break;
+				case 'update':
+					$cmd = "composer update " . escapeshellarg($package) . " --no-interaction"; break;
+				default:
+					return ['status' => 400, 'error' => "Unknown action '$action' for $framework"];
+			}
+			break;
+
+		case 'wordpress':
+			$wpDir = is_file($rootDir . 'wp-config.php') ? rtrim($rootDir, '/') : $projectDir;
+			$wpCli = null;
+			foreach (['wp', $projectDir . '/vendor/bin/wp'] as $p) {
+				if (self::which($p)) {
+					$wpCli = $p; break;
+				}
+			}
+			if (!$wpCli) {
+				return ['status' => 400, 'error' => 'wp-cli not found. Install it: https://wp-cli.org/'];
+			}
+			$cwd = $wpDir;
+			$pathFlag = ' --path=' . escapeshellarg($wpDir);
+
+			// Determine if it's a theme or plugin from package name prefix
+			$type = 'plugin';
+			if (strpos($package, 'theme:') === 0) {
+				$type = 'theme';
+				$package = substr($package, 6);
+			}
+
+			switch ($action) {
+				case 'install':
+					$cmd = "$wpCli $type install " . escapeshellarg($package) . "$pathFlag"; break;
+				case 'activate':
+					$cmd = "$wpCli $type activate " . escapeshellarg($package) . "$pathFlag"; break;
+				case 'deactivate':
+					$cmd = "$wpCli $type deactivate " . escapeshellarg($package) . "$pathFlag"; break;
+				case 'remove':
+				case 'delete':
+					$cmd = "$wpCli $type delete " . escapeshellarg($package) . "$pathFlag"; break;
+				case 'update':
+					$cmd = "$wpCli $type update " . escapeshellarg($package) . "$pathFlag"; break;
+				default:
+					return ['status' => 400, 'error' => "Unknown action '$action' for WordPress"];
+			}
+			break;
+
+		case 'drupal':
+			$drush = null;
+			foreach (['drush', $projectDir . '/vendor/bin/drush'] as $p) {
+				if (self::which($p)) {
+					$drush = $p; break;
+				}
+			}
+
+			switch ($action) {
+				case 'install':
+				case 'enable':
+					if ($drush) {
+						$cmd = "$drush pm:install " . escapeshellarg($package) . " -y";
+					} else {
+						$cmd = "composer require " . escapeshellarg("drupal/$package") . " --no-interaction";
+					}
+					break;
+				case 'remove':
+				case 'uninstall':
+					if ($drush) {
+						$cmd = "$drush pm:uninstall " . escapeshellarg($package) . " -y";
+					} else {
+						$cmd = "composer remove " . escapeshellarg("drupal/$package") . " --no-interaction";
+					}
+					break;
+				case 'update':
+					$cmd = "composer update " . escapeshellarg("drupal/$package") . " --no-interaction"; break;
+				default:
+					return ['status' => 400, 'error' => "Unknown action '$action' for Drupal"];
+			}
+			break;
+
+		case 'joomla':
+			switch ($action) {
+				case 'install':
+					$cmd = "php cli/joomla.php extension:install --package=" . escapeshellarg($package); break;
+				case 'remove':
+					$cmd = "php cli/joomla.php extension:remove " . escapeshellarg($package); break;
+				default:
+					return ['status' => 400, 'error' => "Unknown action '$action' for Joomla"];
+			}
+			$cwd = rtrim($rootDir, '/');
+			break;
+
+		default:
+			return ['status' => 400, 'error' => "Unknown framework '$framework'"];
+		}
+
+		$fullCmd = "cd " . escapeshellarg($cwd) . " && $cmd 2>&1";
+		$output = shell_exec($fullCmd);
+		return ['output' => $output, 'cmd' => $cmd];
+	}
+
+
+	// ── Package Download (all frameworks) ────────────────
+
+	/**
+	 * Download a plugin/package from a URL (GitHub, zip, etc.)
+	 * or install via composer/npm.
+	 */
+	static function apiFrameworkPkgDownload($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$framework = $body['framework'] ?? '';
+		$source = trim($body['source'] ?? '');
+		$target = $body['target'] ?? '';
+
+		if (!$source) return ['status' => 400, 'error' => 'No source URL provided'];
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+		$output = '';
+		$cmd = '';
+
+		// Determine target directory based on framework
+		switch ($framework) {
+			case 'qbix':
+				// Qbix plugins go into platform/plugins/
+				$pluginsDir = null;
+				foreach ([
+					$projectDir . '/platform/plugins',
+					dirname($projectDir) . '/platform/plugins',
+				] as $pd) {
+					if (is_dir($pd)) { $pluginsDir = $pd; break; }
+				}
+				if (!$pluginsDir) {
+					return ['status' => 400, 'error' => 'Cannot find platform/plugins directory'];
+				}
+				$targetDir = $pluginsDir . '/' . ($target ?: basename($source, '.git'));
+				break;
+			case 'wordpress':
+				$wpDir = is_file($rootDir . 'wp-config.php') ? rtrim($rootDir, '/') : $projectDir;
+				$targetDir = $wpDir . '/wp-content/plugins/' . ($target ?: basename($source, '.git'));
+				break;
+			case 'drupal':
+				$targetDir = $projectDir . '/web/modules/custom/' . ($target ?: basename($source, '.git'));
+				if (!is_dir(dirname($targetDir))) {
+					$targetDir = $projectDir . '/modules/custom/' . ($target ?: basename($source, '.git'));
+				}
+				break;
+			case 'joomla':
+				$targetDir = rtrim($rootDir, '/') . '/plugins/' . ($target ?: basename($source, '.git'));
+				break;
+			default:
+				// Laravel/Symfony: use composer require instead of git clone
+				if (preg_match('#^[a-z0-9]([a-z0-9._-]*/)[a-z0-9][a-z0-9._-]*$#i', $source)) {
+					$cmd = "cd " . escapeshellarg($projectDir) . " && composer require " . escapeshellarg($source) . " --no-interaction 2>&1";
+					$output = shell_exec($cmd);
+					return ['output' => $output, 'cmd' => "composer require $source"];
+				}
+				$targetDir = $projectDir . '/plugins/' . ($target ?: basename($source, '.git'));
+		}
+
+		// If it's a GitHub URL or git URL, clone it
+		if (preg_match('#^(https?://|git@)#', $source)) {
+			if (is_dir($targetDir)) {
+				// Already exists — try git pull
+				$cmd = "cd " . escapeshellarg($targetDir) . " && git pull 2>&1";
+			} else {
+				$cmd = "git clone --depth 1 " . escapeshellarg($source) . " " . escapeshellarg($targetDir) . " 2>&1";
+			}
+			$output = shell_exec($cmd);
+
+			// Check for package.json and composer.json in the downloaded plugin
+			$extras = [];
+			if (is_file($targetDir . '/package.json')) {
+				$extras[] = 'Has package.json — run npm install from the panel';
+			}
+			if (is_file($targetDir . '/composer.json')) {
+				$extras[] = 'Has composer.json — run composer install from the panel';
+			}
+			if (is_file($targetDir . '/config/plugin.json')) {
+				$extras[] = 'Qbix plugin detected — run the installer to set up DB schema';
+			}
+			if ($extras) {
+				$output .= "\n\n" . implode("\n", $extras);
+			}
+
+			return ['output' => $output, 'cmd' => $cmd, 'dir' => $targetDir];
+		}
+
+		// If it looks like a composer package name
+		if (preg_match('#^[a-z0-9]([a-z0-9._-]*/)[a-z0-9][a-z0-9._-]*$#i', $source)) {
+			$cmd = "cd " . escapeshellarg($projectDir) . " && composer require " . escapeshellarg($source) . " --no-interaction 2>&1";
+			$output = shell_exec($cmd);
+			return ['output' => $output, 'cmd' => "composer require $source"];
+		}
+
+		return ['status' => 400, 'error' => 'Source must be a git URL (https:// or git@) or a composer package name (vendor/package)'];
+	}
+
+	// ── Qbix Installer & NPM ────────────────────────────
+
+	/**
+	 * Run the Qbix installer (install.php) with various flags.
+	 */
+	static function apiQbixInstaller($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$action = $body['action'] ?? '';
+		$plugin = $body['plugin'] ?? '';
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+
+		// Find install.php
+		$installScript = null;
+		foreach ([
+			$projectDir . '/scripts/Q/install.php',
+			dirname($projectDir) . '/scripts/Q/install.php',
+		] as $p) {
+			if (is_file($p)) { $installScript = $p; break; }
+		}
+
+		if (!$installScript) {
+			return ['status' => 400, 'error' => 'Cannot find scripts/Q/install.php. Is this a Qbix app?'];
+		}
+
+		$appDir = dirname(dirname($installScript));
+		$allowed = ['--all', '--plugins', '--app', '--composer', '--npm'];
+
+		switch ($action) {
+			case 'all':
+				$flags = '--all';
+				break;
+			case 'plugins':
+				$flags = '--plugins';
+				break;
+			case 'app':
+				$flags = '--app';
+				break;
+			case 'plugin':
+				if (!$plugin || !preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $plugin)) {
+					return ['status' => 400, 'error' => 'Invalid plugin name'];
+				}
+				$flags = '-p ' . escapeshellarg($plugin);
+				break;
+			case 'composer':
+				$flags = '--composer';
+				break;
+			case 'npm':
+				$flags = '--npm';
+				break;
+			case 'plugin-full':
+				// Install a single plugin with its SQL + composer + npm
+				if (!$plugin || !preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $plugin)) {
+					return ['status' => 400, 'error' => 'Invalid plugin name'];
+				}
+				$flags = '-p ' . escapeshellarg($plugin) . ' --composer --npm';
+				break;
+			default:
+				return ['status' => 400, 'error' => "Unknown action: $action. Use: all, plugins, app, plugin, composer, npm, plugin-full"];
+		}
+
+		$cmd = "cd " . escapeshellarg($appDir) . " && php " . escapeshellarg($installScript) . " $flags 2>&1";
+		$output = shell_exec($cmd);
+		return ['output' => $output, 'cmd' => "php scripts/Q/install.php $flags"];
+	}
+
+	/**
+	 * Run npm commands for Qbix plugins or the app.
+	 */
+	static function apiQbixNpm($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$action = $body['action'] ?? 'install';
+		$target = $body['target'] ?? '';  // plugin name or 'app' or 'platform'
+
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+
+		// Determine directory
+		$dir = null;
+		if ($target === 'app' || $target === '') {
+			$dir = $projectDir;
+		} elseif ($target === 'platform') {
+			foreach ([
+				$projectDir . '/platform',
+				dirname($projectDir) . '/platform',
+			] as $pd) {
+				if (is_dir($pd)) { $dir = $pd; break; }
+			}
+		} else {
+			// Plugin name
+			foreach ([
+				$projectDir . '/platform/plugins/' . $target,
+				dirname($projectDir) . '/platform/plugins/' . $target,
+			] as $pd) {
+				if (is_dir($pd)) { $dir = $pd; break; }
+			}
+		}
+
+		if (!$dir || !is_dir($dir)) {
+			return ['status' => 400, 'error' => "Directory not found for target: $target"];
+		}
+
+		if (!is_file($dir . '/package.json')) {
+			return ['status' => 400, 'error' => "No package.json in $dir"];
+		}
+
+		$hasNpm = (bool) self::which('npm');
+		if (!$hasNpm) {
+			return ['status' => 400, 'error' => 'npm is not installed on this system'];
+		}
+
+		$allowed = ['install', 'update', 'audit', 'ls'];
+		if (!in_array($action, $allowed)) {
+			return ['status' => 400, 'error' => "Invalid npm action: $action"];
+		}
+
+		$cmd = "cd " . escapeshellarg($dir) . " && npm $action --ignore-scripts 2>&1";
+		$output = shell_exec($cmd);
+		return ['output' => $output, 'cmd' => "npm $action", 'dir' => $dir];
+	}
+
+	// ── Qbix Plugin Management API ──────────────────────
+
+	/**
+	 * Parse a Qbix JSON file (tolerant of comments and trailing commas).
+	 */
+	private static function parseQbixJson($path)
+	{
+		if (!is_file($path)) return null;
+		$raw = file_get_contents($path);
+		// Remove block comments
+		$raw = preg_replace('#/\*.*?\*/#s', '', $raw);
+		// Remove line comments (outside strings)
+		$lines = explode("\n", $raw);
+		$cleaned = [];
+		foreach ($lines as $line) {
+			$inStr = false;
+			$out = '';
+			for ($i = 0; $i < strlen($line); $i++) {
+				$ch = $line[$i];
+				if ($ch === '"' && ($i === 0 || $line[$i-1] !== '\\'))
+					$inStr = !$inStr;
+				if (!$inStr && $ch === '/' && $i+1 < strlen($line) && $line[$i+1] === '/')
+					break;
+				$out .= $ch;
+			}
+			$cleaned[] = $out;
+		}
+		$raw = implode("\n", $cleaned);
+		// Remove trailing commas before ] or }
+		$raw = preg_replace('/,\s*([\]\}])/', '$1', $raw);
+		return json_decode($raw, true);
+	}
+
+	/**
+	 * Scan all plugin sources and return a unified view.
+	 */
+	static function apiQbixPlugins()
+	{
+		$rootDir = Q_WebServer::$rootDir;
+		$serverDir = Q_WebServer::$serverDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+
+		// 1. Find the app config
+		$appJson = null;
+		$appDir = null;
+		foreach ([
+			$projectDir . '/config/app.json',
+			$rootDir . '../config/app.json',
+		] as $p) {
+			if (is_file($p)) {
+				$appJson = self::parseQbixJson($p);
+				$appDir = dirname(dirname($p));
+				break;
+			}
+		}
+
+		$declaredPlugins = [];
+		$appName = null;
+		$appVersion = null;
+		if ($appJson) {
+			$declaredPlugins = $appJson['Q']['plugins'] ?? [];
+			$appName = $appJson['Q']['app'] ?? basename($appDir);
+			$appVersion = $appJson['Q']['appInfo']['version'] ?? null;
+		}
+
+		// 2. Find local/plugins.json (installed filesystem versions)
+		$localPlugins = [];
+		foreach ([
+			$appDir . '/local/plugins.json',
+			$projectDir . '/local/plugins.json',
+		] as $p) {
+			if (is_file($p)) {
+				$lp = self::parseQbixJson($p);
+				if ($lp) {
+					$localPlugins = $lp['Q']['pluginLocal'] ?? $lp;
+				}
+				break;
+			}
+		}
+
+		// 3. Scan platform/plugins/ for available plugins
+		$available = [];
+		$platformDirs = [
+			$projectDir . '/platform/plugins',
+			$appDir . '/../platform/plugins',
+			dirname($serverDir) . '/Platform/platform/plugins',
+		];
+		$pluginsDir = null;
+		foreach ($platformDirs as $pd) {
+			if (is_dir($pd)) {
+				$pluginsDir = realpath($pd);
+				break;
+			}
+		}
+
+		if ($pluginsDir) {
+			foreach (scandir($pluginsDir) as $pName) {
+				if ($pName === '.' || $pName === '..') continue;
+				$pDir = $pluginsDir . '/' . $pName;
+				if (!is_dir($pDir)) continue;
+				$pJson = self::parseQbixJson($pDir . '/config/plugin.json');
+				if ($pJson) {
+					$pi = $pJson['Q']['pluginInfo'][$pName] ?? [];
+					$available[$pName] = [
+						'version' => $pi['version'] ?? null,
+						'compatible' => $pi['compatible'] ?? null,
+						'requires' => $pi['requires'] ?? [],
+						'connections' => $pi['connections'] ?? [],
+						'dir' => $pDir,
+					];
+				} else {
+					// Directory exists but no parseable plugin.json
+					$available[$pName] = [
+						'version' => null,
+						'dir' => $pDir,
+						'noConfig' => true,
+					];
+				}
+			}
+		}
+
+		// 4. Check database for schema versions
+		$dbPlugins = [];
+		$dbError = null;
+		try {
+			// Try to find SQLite databases in the app
+			$dbPaths = [];
+			foreach ([
+				$appDir . '/local',
+				$projectDir . '/local',
+				$projectDir . '/data',
+				$rootDir . '../data',
+			] as $dir) {
+				if (!is_dir($dir)) continue;
+				foreach (glob($dir . '/*.db') as $dbFile) {
+					$dbPaths[] = $dbFile;
+				}
+				foreach (glob($dir . '/*.sqlite') as $dbFile) {
+					$dbPaths[] = $dbFile;
+				}
+			}
+
+			foreach ($dbPaths as $dbPath) {
+				try {
+					$pdo = new \PDO('sqlite:' . $dbPath);
+					$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+					// Check for Q_plugin table (with any prefix)
+					$tables = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%Q_plugin'")->fetchAll(\PDO::FETCH_COLUMN);
+					foreach ($tables as $table) {
+						$rows = $pdo->query("SELECT * FROM \"$table\"")->fetchAll(\PDO::FETCH_ASSOC);
+						foreach ($rows as $row) {
+							$name = $row['plugin'] ?? null;
+							if (!$name) continue;
+							$dbPlugins[$name] = [
+								'schemaVersion' => $row['version'] ?? null,
+								'schemaPHPVersion' => $row['versionPHP'] ?? null,
+								'extra' => json_decode($row['extra'] ?? '{}', true),
+								'db' => basename($dbPath),
+								'table' => $table,
+							];
+						}
+					}
+				} catch (\Exception $e) {
+					// Skip this database
+				}
+			}
+		} catch (\Exception $e) {
+			$dbError = $e->getMessage();
+		}
+
+		// 5. Build unified plugin list
+		$plugins = [];
+		$allNames = array_unique(array_merge(
+			$declaredPlugins,
+			array_keys($localPlugins),
+			array_keys($available),
+			array_keys($dbPlugins)
+		));
+		sort($allNames);
+
+		foreach ($allNames as $name) {
+			$entry = [
+				'name' => $name,
+				'declared' => in_array($name, $declaredPlugins),
+				'availableVersion' => $available[$name]['version'] ?? null,
+				'installedVersion' => $localPlugins[$name]['version'] ?? null,
+				'schemaVersion' => $dbPlugins[$name]['schemaVersion'] ?? null,
+				'schemaPHPVersion' => $dbPlugins[$name]['schemaPHPVersion'] ?? null,
+				'extra' => $dbPlugins[$name]['extra'] ?? null,
+				'db' => $dbPlugins[$name]['db'] ?? null,
+				'requires' => $available[$name]['requires'] ?? [],
+				'connections' => $available[$name]['connections'] ?? [],
+				'hasDir' => isset($available[$name]['dir']),
+				'hasPackageJson' => $available[$name]['hasPackageJson'] ?? false,
+				'hasComposerJson' => $available[$name]['hasComposerJson'] ?? false,
+				'hasNodeModules' => $available[$name]['hasNodeModules'] ?? false,
+				'hasVendor' => $available[$name]['hasVendor'] ?? false,
+			];
+			// Status
+			if (!$entry['availableVersion'] && !$entry['hasDir']) {
+				$entry['status'] = 'missing';  // declared but not on filesystem
+			} elseif (!$entry['installedVersion']) {
+				$entry['status'] = 'available';  // on filesystem, not installed
+			} elseif ($entry['availableVersion']
+				&& version_compare($entry['installedVersion'], $entry['availableVersion'], '<')) {
+				$entry['status'] = 'upgradable';
+			} else {
+				$entry['status'] = 'installed';
+			}
+			// Schema status
+			if ($entry['schemaVersion'] && $entry['availableVersion']
+				&& version_compare($entry['schemaVersion'], $entry['availableVersion'], '<')) {
+				$entry['schemaStatus'] = 'outdated';
+			} elseif ($entry['schemaVersion']) {
+				$entry['schemaStatus'] = 'current';
+			} else {
+				$entry['schemaStatus'] = 'none';
+			}
+			$plugins[] = $entry;
+		}
+
+		return [
+			'app' => $appName,
+			'appVersion' => $appVersion,
+			'pluginsDir' => $pluginsDir,
+			'plugins' => $plugins,
+			'dbError' => $dbError,
+		];
+	}
+
+	static function apiQbixPluginInstall($parsed)
+	{
+		// Placeholder — full install requires Q_Plugin::installPlugin()
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$name = $body['plugin'] ?? '';
+		if (!$name) return ['status' => 400, 'error' => 'Missing plugin name'];
+		return ['status' => 501, 'error' => 'Plugin installation from the panel requires the Qbix Platform. Use: php scripts/Q/install.php --plugin=' . $name];
+	}
+
+	static function apiQbixPluginSchema($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$name = $body['plugin'] ?? '';
+		if (!$name) return ['status' => 400, 'error' => 'Missing plugin name'];
+
+		// Find the plugin's SQL scripts
+		$result = self::apiQbixPlugins();
+		$scripts = [];
+		foreach ($result['plugins'] as $p) {
+			if ($p['name'] === $name && $p['hasDir']) {
+				$pluginsDir = $result['pluginsDir'];
+				$scriptsDir = $pluginsDir . '/' . $name . '/scripts/' . $name;
+				if (is_dir($scriptsDir)) {
+					foreach (scandir($scriptsDir) as $f) {
+						if ($f === '.' || $f === '..') continue;
+						$scripts[] = $f;
+					}
+					sort($scripts);
+				}
+				break;
+			}
+		}
+
+		return [
+			'plugin' => $name,
+			'scripts' => $scripts,
+			'schemaVersion' => $result['plugins'][array_search($name, array_column($result['plugins'], 'name'))]['schemaVersion'] ?? null,
+		];
+	}
+
+
+	// ── Frameworks API ───────────────────────────────────
+
+	static function apiFrameworks()
+	{
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+		$detected = [];
+
+		// Laravel: artisan file at project root, public/ as web root
+		$artisan = $projectDir . '/artisan';
+		if (is_file($artisan)) {
+			$version = '';
+			$envFile = $projectDir . '/.env';
+			$env = is_file($envFile) ? parse_ini_file($envFile) : [];
+			$detected[] = [
+				'framework' => 'laravel',
+				'name' => 'Laravel',
+				'dir' => $projectDir,
+				'webRoot' => $projectDir . '/public',
+				'appName' => $env['APP_NAME'] ?? basename($projectDir),
+				'appEnv' => $env['APP_ENV'] ?? 'unknown',
+				'debug' => ($env['APP_DEBUG'] ?? 'false') === 'true',
+				'commands' => [
+					['name' => 'Clear cache', 'cmd' => 'cache:clear'],
+					['name' => 'Clear config', 'cmd' => 'config:clear'],
+					['name' => 'Clear routes', 'cmd' => 'route:clear'],
+					['name' => 'Clear views', 'cmd' => 'view:clear'],
+					['name' => 'Migrate', 'cmd' => 'migrate --force'],
+					['name' => 'Migrate status', 'cmd' => 'migrate:status'],
+					['name' => 'Route list', 'cmd' => 'route:list --compact'],
+					['name' => 'Queue restart', 'cmd' => 'queue:restart'],
+					['name' => 'Storage link', 'cmd' => 'storage:link'],
+					['name' => 'Optimize', 'cmd' => 'optimize'],
+				],
+			];
+		}
+
+		// Symfony: bin/console at project root
+		$console = $projectDir . '/bin/console';
+		if (is_file($console)) {
+			$detected[] = [
+				'framework' => 'symfony',
+				'name' => 'Symfony',
+				'dir' => $projectDir,
+				'webRoot' => $projectDir . '/public',
+				'commands' => [
+					['name' => 'Clear cache', 'cmd' => 'cache:clear'],
+					['name' => 'Cache warmup', 'cmd' => 'cache:warmup'],
+					['name' => 'Route list', 'cmd' => 'debug:router --no-interaction'],
+					['name' => 'Container', 'cmd' => 'debug:container --no-interaction'],
+					['name' => 'Migrate', 'cmd' => 'doctrine:migrations:migrate --no-interaction'],
+					['name' => 'Migration status', 'cmd' => 'doctrine:migrations:status'],
+					['name' => 'Assets install', 'cmd' => 'assets:install'],
+				],
+			];
+		}
+
+		// WordPress: wp-config.php in web root or project root
+		$wpConfig = is_file($rootDir . 'wp-config.php') ? $rootDir : null;
+		if (!$wpConfig && is_file($projectDir . '/wp-config.php')) $wpConfig = $projectDir . '/';
+		if ($wpConfig) {
+			$wpCli = null;
+			foreach (['wp', $projectDir . '/vendor/bin/wp'] as $p) {
+				if (is_executable($p) || self::which($p)) {
+					$wpCli = $p; break;
+				}
+			}
+			$detected[] = [
+				'framework' => 'wordpress',
+				'name' => 'WordPress',
+				'dir' => rtrim($wpConfig, '/'),
+				'webRoot' => $wpConfig,
+				'hasCli' => (bool) $wpCli,
+				'cliPath' => $wpCli,
+				'commands' => $wpCli ? [
+					['name' => 'Plugin list', 'cmd' => 'plugin list'],
+					['name' => 'Theme list', 'cmd' => 'theme list'],
+					['name' => 'Core version', 'cmd' => 'core version --extra'],
+					['name' => 'Cache flush', 'cmd' => 'cache flush'],
+					['name' => 'Rewrite flush', 'cmd' => 'rewrite flush'],
+					['name' => 'DB check', 'cmd' => 'db check'],
+					['name' => 'Cron list', 'cmd' => 'cron event list'],
+					['name' => 'User list', 'cmd' => 'user list --fields=ID,user_login,user_email,roles'],
+				] : [],
+			];
+		}
+
+		// Drupal: drush or vendor/bin/drush
+		$drush = null;
+		foreach (['drush', $projectDir . '/vendor/bin/drush'] as $p) {
+			if (is_executable($p) || self::which($p)) {
+				$drush = $p; break;
+			}
+		}
+		if ($drush || is_dir($projectDir . '/core/modules')) {
+			$detected[] = [
+				'framework' => 'drupal',
+				'name' => 'Drupal',
+				'dir' => $projectDir,
+				'webRoot' => $projectDir . '/web',
+				'hasCli' => (bool) $drush,
+				'commands' => $drush ? [
+					['name' => 'Cache rebuild', 'cmd' => 'cache:rebuild'],
+					['name' => 'Status', 'cmd' => 'status'],
+					['name' => 'Module list', 'cmd' => 'pm:list --status=enabled'],
+					['name' => 'Update DB', 'cmd' => 'updatedb'],
+					['name' => 'Cron run', 'cmd' => 'cron'],
+				] : [],
+			];
+		}
+
+		// Joomla: configuration.php in web root
+		if (is_file($rootDir . 'configuration.php') && is_dir($rootDir . 'administrator')) {
+			$detected[] = [
+				'framework' => 'joomla',
+				'name' => 'Joomla',
+				'dir' => rtrim($rootDir, '/'),
+				'webRoot' => $rootDir,
+				'commands' => [
+					['name' => 'Clear cache', 'cmd' => 'cache:clean'],
+					['name' => 'Extension list', 'cmd' => 'extension:list'],
+					['name' => 'Check updates', 'cmd' => 'update:extensions:check'],
+					['name' => 'Site info', 'cmd' => 'site:info'],
+				],
+			];
+		}
+
+		return ['frameworks' => $detected];
+	}
+
+	static function apiFrameworkRun($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$framework = $body['framework'] ?? '';
+		$cmd = $body['cmd'] ?? '';
+		if (!$framework || !$cmd) return ['status' => 400, 'error' => 'Missing framework or cmd'];
+
+		// Detect the CLI tool
+		$rootDir = Q_WebServer::$rootDir;
+		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
+		$cli = '';
+		$cwd = $projectDir;
+		switch ($framework) {
+			case 'laravel':
+				$cli = 'php artisan';
+				break;
+			case 'symfony':
+				$cli = 'php bin/console';
+				break;
+			case 'wordpress':
+				$cli = self::which('wp') ? 'wp' : $projectDir . '/vendor/bin/wp';
+				$cwd = is_file($rootDir . 'wp-config.php') ? rtrim($rootDir, '/') : $projectDir;
+				$cli .= ' --path=' . escapeshellarg($cwd);
+				break;
+			case 'drupal':
+				$cli = self::which('drush') ? 'drush' : $projectDir . '/vendor/bin/drush';
+				break;
+			case 'joomla':
+				$cli = 'php cli/joomla.php';
+				break;
+			default:
+				return ['status' => 400, 'error' => 'Unknown framework'];
+		}
+
+		// Whitelist check: only allow commands from the detected list
+		$allowed = false;
+		$fwData = self::apiFrameworks();
+		foreach ($fwData['frameworks'] as $fw) {
+			if ($fw['framework'] === $framework) {
+				foreach ($fw['commands'] as $c) {
+					if ($c['cmd'] === $cmd) { $allowed = true; break 2; }
+				}
+			}
+		}
+		if (!$allowed) return ['status' => 403, 'error' => 'Command not in allowed list'];
+
+		$fullCmd = "cd " . escapeshellarg($cwd) . " && " . $cli . " " . $cmd . " 2>&1";
+		$output = shell_exec($fullCmd);
+		return ['output' => $output, 'cmd' => $cli . ' ' . $cmd];
+	}
+
+
 	// ── Helpers ──────────────────────────────────────────
+
+	// ── Domains API ──────────────────────────────────────
+
+	static function apiListDomains()
+	{
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		// Merge domains from panel config (added via UI)
+		$configPath = self::panelConfigPath();
+		if (file_exists($configPath)) {
+			$panelConfig = json_decode(file_get_contents($configPath), true);
+			if (!empty($panelConfig['domains'])) {
+				$domains = array_merge($domains, $panelConfig['domains']);
+			}
+		}
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$result = [];
+		foreach ($domains as $name => $conf) {
+			$certPath = rtrim($certDir, '/') . '/' . $name . '/fullchain.pem';
+			$entry = [
+				'domain' => $name,
+				'root' => $conf['root'] ?? null,
+				'app' => $conf['app'] ?? null,
+				'tls' => $conf['tls'] ?? 'none',
+				'aliases' => $conf['aliases'] ?? [],
+			];
+			if (is_file($certPath)) {
+				$expiry = Q_WebServer_Acme::certExpiry($certPath);
+				$entry['certExpires'] = $expiry ? date('Y-m-d', $expiry) : null;
+				$entry['certDaysLeft'] = $expiry ? max(0, (int) (($expiry - time()) / 86400)) : null;
+				$entry['certDomains'] = Q_WebServer_Acme::certDomains($certPath);
+				$entry['certStatus'] = ($expiry && $expiry > time())
+					? ($expiry - time() < 30 * 86400 ? 'expiring' : 'valid')
+					: 'expired';
+			} else {
+				$entry['certStatus'] = 'none';
+			}
+			$result[] = $entry;
+		}
+		// Also check for certs without config entries
+		if (is_dir($certDir)) {
+			foreach (scandir($certDir) as $d) {
+				if ($d === '.' || $d === '..' || $d === 'account.pem') continue;
+				if (!is_dir($certDir . '/' . $d)) continue;
+				if (isset($domains[$d])) continue; // already listed
+				$certPath = $certDir . '/' . $d . '/fullchain.pem';
+				if (!is_file($certPath)) continue;
+				$expiry = Q_WebServer_Acme::certExpiry($certPath);
+				$result[] = [
+					'domain' => $d,
+					'tls' => 'manual',
+					'certExpires' => $expiry ? date('Y-m-d', $expiry) : null,
+					'certDaysLeft' => $expiry ? max(0, (int) (($expiry - time()) / 86400)) : null,
+					'certStatus' => ($expiry && $expiry > time()) ? 'valid' : 'expired',
+					'certDomains' => Q_WebServer_Acme::certDomains($certPath),
+					'unconfigured' => true,
+				];
+			}
+		}
+		return ['domains' => $result];
+	}
+
+	static function apiAddDomain($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$domain = $body['domain'] ?? '';
+		if (!$domain || !preg_match('/^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/i', $domain)) {
+			return ['status' => 400, 'error' => 'Invalid domain name'];
+		}
+		$configPath = self::panelConfigPath();
+		$config = file_exists($configPath)
+			? json_decode(file_get_contents($configPath), true) : [];
+		$config['domains'][$domain] = [
+			'root' => $body['root'] ?? null,
+			'app' => $body['app'] ?? null,
+			'tls' => $body['tls'] ?? 'auto',
+			'aliases' => $body['aliases'] ?? [],
+		];
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		return ['added' => $domain];
+	}
+
+	static function apiRemoveDomain($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$domain = $body['domain'] ?? '';
+		$configPath = self::panelConfigPath();
+		$config = file_exists($configPath)
+			? json_decode(file_get_contents($configPath), true) : [];
+		unset($config['domains'][$domain]);
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		return ['removed' => $domain];
+	}
+
+	static function apiProvisionCert($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$domain = $body['domain'] ?? '';
+		if (!$domain) return ['status' => 400, 'error' => 'Missing domain'];
+
+		$email = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
+		if (!$email) return ['status' => 400, 'error' => 'Set Q.webserver.tls.acmeEmail first'];
+
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$staging = (bool) Q_Config::get('Q', 'webserver', 'tls', 'acmeStaging', false);
+
+		$domains = [$domain];
+		$conf = Q_Config::get('Q', 'webserver', 'domains', $domain, []);
+		if (!empty($conf['aliases'])) $domains = array_merge($domains, $conf['aliases']);
+
+		$result = Q_WebServer_Acme::provision($domains, $certDir, $email, $staging);
+		return $result;
+	}
+
+	// ── Workers API ──────────────────────────────────────
+
+	static function apiWorkerStatus()
+	{
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['mode' => 'in-process', 'workers' => 0];
+		}
+		$stats = Q_WebServer_Dashboard::getStats();
+		return [
+			'mode' => 'persistent',
+			'workers' => $stats['workers'] ?? 0,
+			'activeWorkers' => $stats['activeWorkers'] ?? 0,
+			'totalRequests' => $stats['totalRequests'] ?? 0,
+			'uptime' => $stats['uptime'] ?? 0,
+			'memoryUsage' => memory_get_usage(true),
+			'memoryPeak' => memory_get_peak_usage(true),
+			'pid' => getmypid(),
+		];
+	}
+
+	static function apiWorkerResize($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$count = (int) ($body['workers'] ?? 0);
+		if ($count < 1 || $count > 10000) {
+			return ['status' => 400, 'error' => 'Worker count must be 1-10000'];
+		}
+		// Worker resize requires pool support
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['status' => 400, 'error' => 'No worker pool (in-process mode)'];
+		}
+		if (method_exists($pool, 'resize')) {
+			$pool->resize($count);
+			return ['resized' => $count];
+		}
+		return ['status' => 501, 'error' => 'Pool does not support dynamic resize yet'];
+	}
+
+	// ── Logs API ─────────────────────────────────────────
+
+	static function apiLogs($parsed)
+	{
+		$query = $parsed['query'] ?? [];
+		parse_str($query, $params);
+		$lines = (int) ($params['lines'] ?? 50);
+		$lines = max(1, min($lines, 500));
+		$type = $params['type'] ?? 'access'; // access or error
+
+		$logDir = Q_Config::get('Q', 'webserver', 'log', 'dir', 'logs');
+		$file = $logDir . '/' . ($type === 'error' ? 'error.log' : 'access.log');
+
+		if (!is_file($file)) {
+			return ['lines' => [], 'file' => $file, 'exists' => false];
+		}
+
+		// Tail the file efficiently
+		$result = [];
+		$fp = fopen($file, 'r');
+		if ($fp) {
+			$size = filesize($file);
+			$chunk = min($size, $lines * 512); // rough estimate
+			fseek($fp, max(0, $size - $chunk));
+			$content = fread($fp, $chunk);
+			fclose($fp);
+			$allLines = explode("\n", trim($content));
+			$result = array_slice($allLines, -$lines);
+		}
+
+		return ['lines' => $result, 'file' => $file, 'exists' => true, 'size' => filesize($file)];
+	}
+
+	// ── Cron / Scheduler API ─────────────────────────────
+
+	static function apiCronStatus()
+	{
+		$tasks = Q_Config::get('Q', 'scheduler', array());
+		$result = [];
+		foreach ($tasks as $name => $conf) {
+			$entry = [
+				'name' => $name,
+				'handler' => $conf['handler'] ?? $name,
+				'every' => $conf['every'] ?? null,
+				'times' => $conf['times'] ?? null,
+				'weekdays' => $conf['weekdays'] ?? null,
+				'monthdays' => $conf['monthdays'] ?? null,
+			];
+			$result[] = $entry;
+		}
+		return ['tasks' => $result];
+	}
+
+	static function apiCronRun($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$name = $body['task'] ?? '';
+		$tasks = Q_Config::get('Q', 'scheduler', array());
+		if (!isset($tasks[$name])) {
+			return ['status' => 404, 'error' => "Task '{$name}' not found"];
+		}
+		$handler = $tasks[$name]['handler'] ?? $name;
+		// Dispatch in a forked process
+		if (function_exists('pcntl_fork')) {
+			$pid = pcntl_fork();
+			if ($pid === 0) {
+				Q::event($handler);
+				exit(0);
+			}
+			return ['dispatched' => $name, 'handler' => $handler, 'pid' => $pid];
+		}
+		return ['status' => 501, 'error' => 'pcntl_fork not available'];
+	}
 
 	static function appsDir()
 	{
@@ -1070,6 +2415,15 @@ class Q_WebServer_Panel
 		$path = trim(shell_exec((PHP_OS_FAMILY === 'Windows' ? 'where' : 'which')
 			. ' ' . escapeshellarg($cmd) . ' 2>/dev/null') ?? '');
 		return $path ?: null;
+	}
+
+	static function formatBytes($bytes)
+	{
+		if ($bytes === false) return 'N/A';
+		$units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		$i = 0;
+		while ($bytes >= 1024 && $i < 4) { $bytes /= 1024; $i++; }
+		return round($bytes, 1) . ' ' . $units[$i];
 	}
 
 	static function copyDir($src, $dst)
@@ -1299,8 +2653,13 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 </div>
 <div class="tabs">
   <div class="tab active" onclick="showTab('apps')">Apps</div>
+  <div class="tab" onclick="showTab('domains')">Domains</div>
   <div class="tab" onclick="showTab('scripts')">Scripts</div>
   <div class="tab" onclick="showTab('plugins')">Plugins</div>
+  <div class="tab" onclick="showTab('workers')">Workers</div>
+  <div class="tab" onclick="showTab('logs')">Logs</div>
+  <div class="tab" onclick="showTab('cron')">Cron</div>
+  <div class="tab" onclick="showTab('frameworks')">Frameworks</div>
   <div class="tab" onclick="showTab('playground')">Playground</div>
   <div class="tab" onclick="showTab('system')">System</div>
   <div class="tab" onclick="showTab('servers')">Servers</div>
@@ -1334,6 +2693,20 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div id="apps-list"></div>
 </div>
 
+<!-- DOMAINS TAB -->
+<div id="tab-domains" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Domains &amp; Certificates</h2>
+  <div id="domains-list"></div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Add Domain</h3>
+    <div class="form-row"><label>Domain</label><input id="dom-name" placeholder="example.com"></div>
+    <div class="form-row"><label>Root</label><input id="dom-root" placeholder="/var/www/myapp/web"></div>
+    <div class="form-row"><label>App dir</label><input id="dom-app" placeholder="/var/www/myapp (optional)"></div>
+    <div class="form-row"><label>TLS</label><select id="dom-tls"><option value="auto">Auto (ACME)</option><option value="manual">Manual (drop certs)</option><option value="self-signed">Self-signed</option><option value="">HTTP only</option></select></div>
+    <button onclick="addDomain()">Add Domain</button>
+  </div>
+</div>
+
 <!-- SCRIPTS TAB -->
 <div id="tab-scripts" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Run Scripts</h2>
@@ -1359,36 +2732,11 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 
 <!-- PLUGINS TAB -->
 <div id="tab-plugins" class="content hidden">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <h2 style="font-size:16px">Plugins</h2>
-    <button class="btn btn-primary" onclick="showAddPlugin()">+ Add Plugin</button>
-  </div>
-  <div id="add-plugin-form" class="card hidden" style="margin-bottom:14px">
-    <h3>Add Plugin</h3>
-    <div class="form-row"><label>Plugin name</label><input id="plugin-name" placeholder="e.g. Calendars, Communities, AI"></div>
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="addPlugin()">Install from GitHub</button>
-      <button class="btn btn-ghost" onclick="hideAddPlugin()">Cancel</button>
-    </div>
-    <pre id="plugin-log" style="display:none;margin-top:10px;font-size:11px;color:var(--dim);max-height:200px;overflow:auto;background:rgba(0,0,0,.2);padding:8px;border-radius:4px"></pre>
-  </div>
-  <div id="plugin-private-dialog" class="card hidden" style="margin-bottom:14px;text-align:center;padding:24px">
-    <div style="font-size:36px;margin-bottom:12px">🔒</div>
-    <h3 style="margin-bottom:8px">Private Plugin</h3>
-    <p style="color:var(--dim);font-size:13px;margin-bottom:16px">
-      The <strong id="plugin-private-name"></strong> plugin is in a private repository.
-      Contact the Qbix team to request access.
-    </p>
-    <div class="btn-row" style="justify-content:center">
-      <a id="plugin-contact-link" href="#" class="btn btn-primary" target="_blank" style="text-decoration:none">✉ Contact Us</a>
-      <button class="btn btn-ghost" onclick="hidePrivateDialog()">Close</button>
-    </div>
-  </div>
-  <div id="plugins-platform" style="font-size:12px;color:var(--dim);margin-bottom:14px"></div>
-  <div id="plugins-list"></div>
+  <h2 style="font-size:16px;margin-bottom:16px">Qbix Plugins</h2>
+  <div id="qbix-plugins-info"></div>
+  <div id="qbix-plugins-list"></div>
 </div>
 
-<!-- PLAYGROUND TAB -->
 <div id="tab-playground" class="content hidden">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <h2 style="font-size:16px">PHP Playground</h2>
@@ -1427,6 +2775,11 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <h2 style="font-size:16px;margin-bottom:16px">System Info</h2>
   <div class="grid-2" id="system-info"></div>
 
+  <div style="margin-top:16px">
+    <button class="btn btn-ghost" style="font-size:12px" onclick="var f=document.getElementById('phpinfo-frame');f.style.display=f.style.display==='none'?'block':'none';if(f.style.display==='block')f.src='/Q/phpinfo'">Show phpinfo()</button>
+    <iframe id="phpinfo-frame" style="display:none;width:100%;height:500px;border:1px solid var(--brd);border-radius:6px;margin-top:8px;background:#fff"></iframe>
+  </div>
+
   <div id="platform-install" style="margin-top:20px">
     <h2 style="font-size:16px;margin-bottom:12px">Qbix Platform</h2>
     <div id="platform-status" class="card"></div>
@@ -1455,6 +2808,49 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     </div>
   </div>
   <div id="servers-list"></div>
+</div>
+
+<!-- FRAMEWORKS TAB -->
+<div id="tab-frameworks" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Framework Management</h2>
+  <div id="fw-list"><p style="color:var(--dim)">Detecting frameworks...</p></div>
+</div>
+
+<!-- WORKERS TAB -->
+<div id="tab-workers" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Worker Pool</h2>
+  <div id="workers-info"></div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Resize Pool</h3>
+    <div class="form-row"><label>Workers</label><input id="worker-count" type="number" min="1" max="10000" placeholder="200"></div>
+    <button onclick="resizeWorkers()">Resize</button>
+    <p style="font-size:11px;color:var(--dim);margin-top:8px">Takes effect gradually as workers finish their current requests.</p>
+  </div>
+</div>
+
+<!-- LOGS TAB -->
+<div id="tab-logs" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Logs</h2>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="btn btn-primary" onclick="loadLogs('access')">Access Log</button>
+    <button class="btn btn-ghost" onclick="loadLogs('error')">Error Log</button>
+    <select id="log-lines" style="margin-left:auto;padding:6px;background:var(--card);color:var(--txt);border:1px solid var(--bdr);border-radius:6px">
+      <option value="50">50 lines</option>
+      <option value="100">100 lines</option>
+      <option value="200">200 lines</option>
+      <option value="500">500 lines</option>
+    </select>
+  </div>
+  <pre id="logs-output" style="max-height:500px;overflow:auto;font-size:11px;padding:12px;background:rgba(0,0,0,.3);border-radius:8px;white-space:pre-wrap;word-break:break-all"></pre>
+</div>
+
+<!-- CRON TAB -->
+<div id="tab-cron" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Scheduled Tasks</h2>
+  <p style="font-size:12px;color:var(--dim);margin-bottom:14px">
+    Tasks configured in <code>Q.scheduler</code>. Each runs as a forked process via <code>Q::event()</code>.
+  </p>
+  <div id="cron-list"></div>
 </div>
 
 <script>
@@ -1695,6 +3091,11 @@ function showTab(name) {
   if (name==='plugins') loadPlugins();
   if (name==='system') loadSystem();
   if (name==='servers') loadServers();
+  if (name==='domains') loadDomains();
+  if (name==='workers') loadWorkers();
+  if (name==='logs') loadLogs('access');
+  if (name==='cron') loadCron();
+  if (name==='frameworks') loadFrameworks();
   if (name==='scripts') loadAppSelect();
 }
 
@@ -1718,11 +3119,18 @@ async function loadApps() {
     var badgeHtml = badges.map(function(b){return '<span style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;color:var(--dim)">'+b+'</span>'}).join(' ');
     var statusText = isServing ? '<span style="color:var(--grn)">serving on this port</span>'
       : (a.url ? a.url : (a.configured ? 'configured' : 'not configured'));
+    var forkLabel = a.forkPerRequest === true ? 'fork' : (a.forkPerRequest === false ? 'persistent' : 'auto');
+    var forkColor = a.forkPerRequest === true ? 'var(--yel)' : (a.forkPerRequest === false ? 'var(--grn)' : 'var(--dim)');
+    var forkHtml = '<select style="font-size:10px;padding:1px 4px;background:var(--card);color:' + forkColor + ';border:1px solid var(--brd);border-radius:3px;cursor:pointer" onchange="setForkMode(\'' + a.dirName + '\',this.value)">'
+      + '<option value="auto"' + (a.forkPerRequest === null ? ' selected' : '') + '>auto</option>'
+      + '<option value="false"' + (a.forkPerRequest === false ? ' selected' : '') + '>persistent workers</option>'
+      + '<option value="true"' + (a.forkPerRequest === true ? ' selected' : '') + '>fork per request</option>'
+      + '</select>';
     return ''
     + '<div class="app-row">'
     + '<span class="dot '+(isServing?'on':(a.configured?'on':'off'))+'"></span>'
     + '<span class="app-name">'+a.name+'</span>'
-    + '<span class="app-url">'+statusText+' '+badgeHtml+'</span>'
+    + '<span class="app-url">'+statusText+' '+badgeHtml+' '+forkHtml+'</span>'
     + '<div class="btn-row">'
     + (a.hasWeb && !isServing ? '<button class="btn btn-sm btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
     + (isServing ? '<button class="btn btn-sm btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop</button>' : '')
@@ -1735,6 +3143,16 @@ async function loadApps() {
 
 function showCreate(){document.getElementById('create-form').classList.remove('hidden')}
 function hideCreate(){document.getElementById('create-form').classList.add('hidden')}
+
+async function setForkMode(app, value) {
+  var forkVal = value === 'true' ? true : (value === 'false' ? false : null);
+  var r = await api('apps/fork-mode', {app: app, forkPerRequest: forkVal});
+  if (r.note) {
+    var out = document.getElementById('fw-output-' + app) || null;
+    if (!out) alert(r.note);
+  }
+  loadApps();
+}
 async function createApp() {
   var name = document.getElementById('new-name').value.trim();
   var template = document.getElementById('new-template').value;
@@ -1890,38 +3308,160 @@ async function addPlugin() {
 }
 
 async function loadPlugins() {
-  var d = await api('plugins');
-  var pEl = document.getElementById('plugins-platform');
-  pEl.textContent = d.platformDir
-    ? 'Platform: ' + d.platformDir + ' · ' + (d.plugins||[]).length + ' plugins'
-    : 'No Qbix Platform detected. Plugins show when connected to a Platform app.';
-  var el = document.getElementById('plugins-list');
-  if (!d.plugins || !d.plugins.length) {
-    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No plugins found.</p></div>';
+  var r = await api('qbix/plugins');
+  var info = document.getElementById('qbix-plugins-info');
+  var list = document.getElementById('qbix-plugins-list');
+  
+  var topHtml = '';
+  if (r.app) {
+    topHtml += '<div class="card" style="margin-bottom:12px"><strong>' + r.app + '</strong> v' + (r.appVersion||'?')
+      + (r.pluginsDir ? '<span style="color:var(--dim);font-size:11px;margin-left:8px">' + r.pluginsDir + '</span>' : '')
+      + (r.dbError ? '<div style="color:var(--red);font-size:12px;margin-top:4px">DB: ' + r.dbError + '</div>' : '')
+      + '</div>';
+  } else {
+    topHtml += '<div class="card" style="margin-bottom:12px;color:var(--dim)">No Qbix app detected. Point --app or --root at a Qbix app directory.</div>';
+  }
+  
+  // Download from URL
+  topHtml += '<div class="card" style="margin-bottom:12px">';
+  topHtml += '<div style="font-size:12px;margin-bottom:6px;color:var(--dim)">Download plugin from GitHub or URL</div>';
+  topHtml += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+  topHtml += '<input id="qbix-dl-url" type="text" placeholder="https://github.com/Qbix/PluginName" style="flex:1;min-width:200px;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+  topHtml += '<input id="qbix-dl-name" type="text" placeholder="PluginName (optional)" style="width:140px;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+  topHtml += '<button class="btn btn-primary" style="font-size:11px;padding:5px 12px" onclick="downloadPlugin()">Clone</button>';
+  topHtml += '</div></div>';
+  
+  // Installer controls
+  topHtml += '<div class="card" style="margin-bottom:12px">';
+  topHtml += '<div style="font-size:12px;margin-bottom:6px;color:var(--dim)">Qbix Installer (scripts/Q/install.php)</div>';
+  topHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+  topHtml += '<button class="btn btn-primary" style="font-size:11px;padding:5px 12px" onclick="qbixInstall(\'all\')">Install All (--all)</button>';
+  topHtml += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="qbixInstall(\'plugins\')">--plugins</button>';
+  topHtml += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="qbixInstall(\'app\')">--app</button>';
+  topHtml += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="qbixInstall(\'composer\')">--composer</button>';
+  topHtml += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="qbixInstall(\'npm\')">--npm</button>';
+  topHtml += '</div>';
+  topHtml += '<pre id="qbix-install-output" style="display:none;margin-top:8px;font-size:11px;max-height:300px;overflow:auto;white-space:pre-wrap"></pre>';
+  topHtml += '</div>';
+  
+  info.innerHTML = topHtml;
+  
+  if (!r.plugins || !r.plugins.length) {
+    list.innerHTML = '<div class="card"><p style="color:var(--dim)">No plugins found.</p></div>';
     return;
   }
-  el.innerHTML = (d.plugins||[]).map(function(p) {
-    var ver = p.version ? ' v' + p.version : '';
-    var compat = p.compatible ? ' (compat: ' + p.compatible + ')' : '';
-    var status = p.installed ? 'installed' : (p.inApp ? 'in config' : 'available');
-    var deps = (p.requires && Object.keys(p.requires).length)
-      ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">requires: ' + Object.keys(p.requires).join(', ') + '</div>'
-      : '';
-    var conns = (p.connections && p.connections.length)
-      ? '<div style="font-size:11px;color:var(--dim)">db: ' + p.connections.join(', ') + '</div>'
-      : '';
-    return ''
-    + '<div class="app-row" style="flex-wrap:wrap">'
-    + '<span class="dot '+(p.installed?'on':(p.inApp?'on':'off'))+'"></span>'
-    + '<span class="app-name">'+p.name+ver+'</span>'
-    + '<span class="app-url">'+status+compat+'</span>'
-    + '<div class="btn-row">'
-    + (p.dir ? '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+p.dir+'\',\'folder\')">📂</button>' : '')
-    + (p.dir ? '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+p.dir+'\',\'vscode\')">VS</button>' : '')
-    + '</div>'
-    + deps + conns
-    + '</div>';
+  
+  list.innerHTML = r.plugins.map(function(p) {
+    var statusBadge = {
+      'installed': '<span style="color:var(--grn)">\u2713 installed</span>',
+      'available': '<span style="color:var(--dim)">available</span>',
+      'upgradable': '<span style="color:var(--yel)">\u2191 upgrade</span>',
+      'missing': '<span style="color:var(--red)">\u2717 missing</span>'
+    }[p.status] || p.status;
+    
+    var schemaBadge = '';
+    if (p.schemaVersion) {
+      schemaBadge = p.schemaStatus === 'current'
+        ? ' <span style="color:var(--grn);font-size:11px">schema ' + p.schemaVersion + '</span>'
+        : ' <span style="color:var(--yel);font-size:11px">schema ' + p.schemaVersion + ' \u2191</span>';
+      if (p.db) schemaBadge += ' <span style="color:var(--dim);font-size:10px">(' + p.db + ')</span>';
+    }
+    
+    var versions = '';
+    if (p.availableVersion) versions += '<span style="font-size:11px;color:var(--dim)">v' + p.availableVersion + '</span> ';
+    if (p.installedVersion && p.installedVersion !== p.availableVersion) versions += '<span style="font-size:11px;color:var(--dim)">installed: ' + p.installedVersion + '</span> ';
+    
+    // Package manager badges
+    var pkgBadges = '';
+    if (p.hasPackageJson) pkgBadges += ' <span style="font-size:9px;padding:1px 4px;border-radius:2px;background:#cb3837;color:#fff" title="Has package.json">npm</span>';
+    if (p.hasComposerJson) pkgBadges += ' <span style="font-size:9px;padding:1px 4px;border-radius:2px;background:#885630;color:#fff" title="Has composer.json">composer</span>';
+    if (p.hasNodeModules) pkgBadges += ' <span style="font-size:9px;color:var(--grn)" title="node_modules exists">\u2713npm</span>';
+    if (p.hasVendor) pkgBadges += ' <span style="font-size:9px;color:var(--grn)" title="vendor exists">\u2713vendor</span>';
+    
+    var requires = '';
+    if (p.requires && Object.keys(p.requires).length) {
+      requires = ' <span style="font-size:10px;color:var(--dim)">needs ' + Object.keys(p.requires).join(', ') + '</span>';
+    }
+    
+    var extra = '';
+    if (p.extra && Object.keys(p.extra).length) {
+      extra = '<details style="margin-top:4px"><summary style="font-size:11px;color:var(--dim);cursor:pointer">extra</summary><pre style="font-size:10px;margin-top:4px;max-height:80px;overflow:auto">' + JSON.stringify(p.extra, null, 2) + '</pre></details>';
+    }
+    
+    // Action buttons
+    var bs = 'font-size:10px;padding:2px 7px;margin-left:3px';
+    var btns = '';
+    if (p.hasDir) {
+      btns += '<button class="btn btn-ghost" style="' + bs + '" onclick="viewPluginSchema(\'' + p.name + '\')">Scripts</button>';
+      if (p.status === 'available' || p.status === 'upgradable') {
+        btns += '<button class="btn btn-primary" style="' + bs + '" onclick="qbixInstall(\'plugin-full\',\'' + p.name + '\')">' + (p.status === 'upgradable' ? 'Upgrade' : 'Install') + '</button>';
+      }
+      if (p.hasPackageJson && !p.hasNodeModules) {
+        btns += '<button class="btn btn-ghost" style="' + bs + '" onclick="qbixNpm(\'install\',\'' + p.name + '\')">npm install</button>';
+      }
+      if (p.hasPackageJson && p.hasNodeModules) {
+        btns += '<button class="btn btn-ghost" style="' + bs + '" onclick="qbixNpm(\'update\',\'' + p.name + '\')">npm update</button>';
+      }
+    }
+    
+    return '<div class="card" style="margin-bottom:4px;padding:8px 12px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">'
+      + '<div><strong>' + p.name + '</strong>'
+      + (p.declared ? ' <span style="font-size:9px;background:var(--dim);color:var(--bg);padding:1px 4px;border-radius:2px">declared</span>' : '')
+      + ' ' + statusBadge + schemaBadge + pkgBadges + ' ' + versions + requires + '</div>'
+      + '<div>' + btns + '</div>'
+      + '</div>'
+      + extra
+      + '<pre id="plugin-scripts-' + p.name + '" style="display:none;margin-top:4px;font-size:10px;max-height:120px;overflow:auto"></pre>'
+      + '</div>';
   }).join('');
+}
+
+async function downloadPlugin() {
+  var url = document.getElementById('qbix-dl-url').value.trim();
+  var name = document.getElementById('qbix-dl-name').value.trim();
+  if (!url) { alert('Enter a URL'); return; }
+  var out = document.getElementById('qbix-install-output');
+  out.style.display = 'block';
+  out.textContent = 'Downloading ' + url + '...';
+  var r = await api('frameworks/pkg-download', {framework: 'qbix', source: url, target: name});
+  out.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  if (!r.error) setTimeout(function(){ loadPlugins(); }, 500);
+}
+
+async function qbixInstall(action, plugin) {
+  var out = document.getElementById('qbix-install-output');
+  out.style.display = 'block';
+  out.textContent = 'Running installer (' + action + (plugin ? ' ' + plugin : '') + ')...';
+  var r = await api('qbix/installer', {action: action, plugin: plugin || ''});
+  out.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  if (!r.error) setTimeout(function(){ loadPlugins(); }, 500);
+}
+
+async function qbixNpm(action, target) {
+  var out = document.getElementById('qbix-install-output');
+  out.style.display = 'block';
+  out.textContent = 'Running npm ' + action + ' for ' + target + '...';
+  var r = await api('qbix/npm', {action: action, target: target});
+  out.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  if (!r.error) setTimeout(function(){ loadPlugins(); }, 500);
+}
+
+async function installQbixPlugin(name) {
+  qbixInstall('plugin-full', name);
+}
+
+async function viewPluginSchema(name) {
+  var el = document.getElementById('plugin-scripts-' + name);
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = 'Loading...';
+  var r = await api('qbix/plugins/schema', {plugin: name});
+  if (r.scripts && r.scripts.length) {
+    el.textContent = 'Schema version: ' + (r.schemaVersion || 'none') + '\n\nInstall scripts:\n' + r.scripts.join('\n');
+  } else {
+    el.textContent = 'No install scripts found for ' + name;
+  }
 }
 
 // System
@@ -1971,18 +3511,39 @@ async function loadServers() {
 async function loadSystem() {
   var d = await detectTools();
   var el = document.getElementById('system-info');
+  
+  // Key extensions to highlight
+  var keyExts = ['pdo_sqlite','pdo_mysql','pdo_pgsql','openssl','curl','mbstring','gd','zip','sockets','pcntl','posix','readline'];
+  var extStatus = keyExts.map(function(e) {
+    var has = d.extensions && d.extensions.indexOf(e) !== -1;
+    return (has ? '<span style="color:var(--grn)">✅</span>' : '<span style="color:var(--red)">❌</span>') + ' ' + e;
+  }).join('&nbsp;&nbsp;');
+  var extCount = d.extensions ? d.extensions.length : 0;
+  
   var items = [
-    ['PHP', d.php], ['OS', d.os+' '+d.arch], ['Memory Limit', d.memoryLimit],
-    ['pcntl', d.hasPcntl?'✅':'❌'], ['APCu', d.hasApcu?'✅':'❌'],
-    ['Composer', d.hasComposer?'✅ installed':'❌ not found'],
-    ['Node.js', d.hasNode?'✅ installed':'<span style="color:var(--red)">❌ not found</span> — <a href="https://nodejs.org/" target="_blank" style="color:var(--ac)">install</a>'],
-    ['npm', d.hasNpm?'✅ installed':'❌ requires Node.js'],
+    ['PHP', d.php + ' <span style="font-size:11px;color:var(--dim)">' + extCount + ' extensions</span>'],
+    ['OS', d.os + ' ' + d.arch],
+    ['Memory Limit', d.memoryLimit],
+    ['pcntl', d.hasPcntl ? '✅' : '❌'],
+    ['APCu', d.hasApcu ? '✅' : '❌'],
+    ['Composer', d.hasComposer ? '✅ installed' : '❌ not found'],
+    ['Node.js', d.hasNode ? '✅ installed' : '<span style="color:var(--red)">❌ not found</span>'],
+    ['npm', d.hasNpm ? '✅ installed' : '❌ requires Node.js'],
+    ['Git', d.hasGit ? '✅ installed' : '❌ not found'],
   ];
   if (d.platform) items.push(['Platform', d.platform]);
   if (d.appDir) items.push(['App Dir', d.appDir]);
+  if (d.diskFree) items.push(['Disk Free', d.diskFree]);
+  if (d.serverVersion) items.push(['Server', d.serverVersion]);
+  
   el.innerHTML = items.map(function(i) {
     return '<div class="card"><div class="stat-lbl">'+i[0]+'</div><div class="stat-val" style="font-size:16px">'+i[1]+'</div></div>';
   }).join('');
+  
+  // Extensions detail
+  el.innerHTML += '<div class="card" style="grid-column:1/-1"><div class="stat-lbl">Key Extensions</div><div style="font-size:12px;line-height:2;margin-top:4px">' + extStatus + '</div>'
+    + '<details style="margin-top:8px"><summary style="font-size:11px;color:var(--dim);cursor:pointer">All ' + extCount + ' extensions</summary>'
+    + '<div style="font-size:11px;color:var(--dim);margin-top:4px;column-count:3;column-gap:12px">' + (d.extensions||[]).sort().join('<br>') + '</div></details></div>';
 
   // Platform install section
   var pEl = document.getElementById('platform-status');
@@ -2014,6 +3575,303 @@ async function installPlatform() {
     else { log.textContent += r.output + '\n✅ Done! Refresh to see plugins.'; log.style.color = 'var(--grn)'; }
   } catch(e) { log.textContent += '\nError: ' + e.message; log.style.color = 'var(--red)'; }
   btn.disabled = false; btn.textContent = 'Clone from GitHub';
+}
+
+// ── Domains ─────────────────────────────────────────
+async function loadDomains() {
+  var r = await api('domains');
+  var el = document.getElementById('domains-list');
+  if (!r.domains || !r.domains.length) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No domains configured. Add one below, or set <code>Q.webserver.domains</code> in config.</p></div>';
+    return;
+  }
+  el.innerHTML = r.domains.map(function(d) {
+    var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
+      : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
+      : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
+      : '<span style="color:var(--dim)">no cert</span>';
+    var btns = '';
+    if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Provision</button>';
+    else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Renew</button>';
+    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
+    return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + d.domain + '</strong></div><div>' + badge + btns + '</div></div>'
+      + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + d.root + '</div>' : '')
+      + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + d.certExpires + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+async function addDomain() {
+  var name = document.getElementById('dom-name').value.trim();
+  if (!name) return alert('Enter a domain');
+  await api('domains/add', {domain:name, root:document.getElementById('dom-root').value.trim()||null, app:document.getElementById('dom-app').value.trim()||null, tls:document.getElementById('dom-tls').value});
+  document.getElementById('dom-name').value=''; loadDomains();
+}
+async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
+async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+
+// ── Workers ─────────────────────────────────────────
+async function loadWorkers() {
+  var r = await api('workers');
+  var el = document.getElementById('workers-info');
+  if (r.mode==='in-process') { el.innerHTML='<div class="card"><p>In-process mode (no pool).</p></div>'; return; }
+  function s(l,v){return '<div><div style="font-size:18px;font-weight:700">'+v+'</div><div style="font-size:11px;color:var(--dim)">'+l+'</div></div>';}
+  function fmt(b){return b>1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB';}
+  function fmtT(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h?h+'h '+m+'m':m+'m';}
+  el.innerHTML='<div class="card"><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">'
+    +s('Workers',r.workers)+s('Active',r.activeWorkers||0)+s('Requests',(r.totalRequests||0).toLocaleString())
+    +s('Memory',fmt(r.memoryUsage||0))+s('Peak',fmt(r.memoryPeak||0))+s('Uptime',fmtT(r.uptime||0))
+    +'</div></div>';
+  document.getElementById('worker-count').value=r.workers;
+}
+async function resizeWorkers() {
+  var c=parseInt(document.getElementById('worker-count').value);
+  if(!c||c<1)return alert('Enter a number');
+  var r=await api('workers/resize',{workers:c});
+  alert(r.error||'Resizing to '+c); loadWorkers();
+}
+
+// ── Logs ────────────────────────────────────────────
+async function loadLogs(type) {
+  type=type||'access';
+  var lines=document.getElementById('log-lines').value;
+  var r=await api('logs?type='+type+'&lines='+lines);
+  var el=document.getElementById('logs-output');
+  if(!r.exists){el.textContent='Log file not found: '+r.file;return;}
+  el.textContent=r.lines.join('\n');
+  el.scrollTop=el.scrollHeight;
+}
+
+// ── Cron ────────────────────────────────────────────
+async function loadCron() {
+  var r=await api('cron');
+  var el=document.getElementById('cron-list');
+  if(!r.tasks||!r.tasks.length){el.innerHTML='<div class="card"><p style="color:var(--dim)">No scheduled tasks configured.</p></div>';return;}
+  el.innerHTML=r.tasks.map(function(t){
+    var sched=t.every?'Every '+t.every+'s':t.times?t.times.join(', '):'manual';
+    return '<div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'
+      +'<div><strong>'+t.name+'</strong><div style="font-size:11px;color:var(--dim)">'+t.handler+' · '+sched+'</div></div>'
+      +'<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="runCron(\''+t.name+'\')">Run Now</button></div>';
+  }).join('');
+}
+async function runCron(n){var r=await api('cron/run',{task:n});alert(r.error||'Dispatched '+n);}
+
+
+// ── Frameworks ──────────────────────────────────────
+async function loadFrameworks() {
+  var r = await api('frameworks');
+  var el = document.getElementById('fw-list');
+  if (!r.frameworks || !r.frameworks.length) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No known frameworks detected in the current document root.</p><p style="font-size:12px;color:var(--dim);margin-top:8px">Supported: Laravel, Symfony, WordPress, Drupal, Joomla</p></div>';
+    return;
+  }
+  el.innerHTML = r.frameworks.map(function(fw) {
+    var info = '<div class="card" style="margin-bottom:12px">';
+    info += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">';
+    info += '<h3 style="font-size:15px;margin-bottom:0">' + fw.name + '</h3>';
+    info += '<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="loadFwPackages(\'' + fw.framework + '\')">Packages</button>';
+    info += '</div>';
+    info += '<div style="font-size:12px;color:var(--dim);margin:6px 0">' + fw.dir + '</div>';
+    if (fw.appName) info += '<div style="font-size:12px;margin-bottom:4px">App: <strong>' + fw.appName + '</strong> (' + (fw.appEnv||'') + ')' + (fw.debug ? ' <span style="color:var(--yel)">DEBUG ON</span>' : '') + '</div>';
+    if (fw.hasCli === false) {
+      info += '<div style="color:var(--yel);font-size:12px;margin:8px 0">CLI tool not found. Install it for full management.</div>';
+    }
+    if (fw.commands && fw.commands.length) {
+      info += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
+      fw.commands.forEach(function(cmd) {
+        info += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="runFwCmd(\'' + fw.framework + '\',\'' + cmd.cmd.replace(/'/g,"\\'") + '\',this)">' + cmd.name + '</button>';
+      });
+      info += '</div>';
+    }
+    info += '<pre id="fw-output-' + fw.framework + '" style="display:none;margin-top:12px;max-height:300px;overflow:auto;font-size:11px;white-space:pre-wrap"></pre>';
+    info += '<div id="fw-packages-' + fw.framework + '" style="display:none;margin-top:12px"></div>';
+    info += '</div>';
+    return info;
+  }).join('');
+}
+
+async function runFwCmd(framework, cmd, btn) {
+  var el = document.getElementById('fw-output-' + framework);
+  el.style.display = 'block';
+  el.textContent = 'Running ' + cmd + '...';
+  btn.disabled = true;
+  try {
+    var r = await api('frameworks/run', {framework: framework, cmd: cmd});
+    el.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  } catch(e) {
+    el.textContent = 'Error: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+async function loadFwPackages(framework) {
+  var el = document.getElementById('fw-packages-' + framework);
+  if (el.style.display !== 'none' && el.innerHTML && !el.dataset.reload) {
+    el.style.display = 'none';
+    return;
+  }
+  delete el.dataset.reload;
+  el.style.display = 'block';
+  el.innerHTML = '<p style="color:var(--dim);font-size:12px">Loading packages...</p>';
+  
+  var r = await api('frameworks/packages?framework=' + framework);
+  if (r.error) { el.innerHTML = '<p style="color:var(--red);font-size:12px">' + r.error + '</p>'; return; }
+  
+  var isComposer = (framework === 'laravel' || framework === 'symfony');
+  var isWP = (framework === 'wordpress');
+  var isDrupal = (framework === 'drupal');
+  
+  var html = '<div style="font-size:11px;color:var(--dim);margin-bottom:6px">' + (r.packages||[]).length + ' packages (source: ' + (r.source||'?') + ')</div>';
+  
+  // Add new package form
+  if (isComposer) {
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-add-pkg-' + framework + '" type="text" placeholder="vendor/package" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-primary" style="font-size:11px;padding:5px 12px" onclick="pkgAction(\'' + framework + '\',\'require\',document.getElementById(\'fw-add-pkg-' + framework + '\').value)">composer require</button>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-dl-url-' + framework + '" type="text" placeholder="https://github.com/author/package" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="fwDownload(\'' + framework + '\')">Clone from URL</button>';
+    html += '</div>';
+  } else if (isWP) {
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-add-pkg-' + framework + '" type="text" placeholder="plugin-slug" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-primary" style="font-size:11px;padding:5px 12px" onclick="pkgAction(\'' + framework + '\',\'install\',document.getElementById(\'fw-add-pkg-' + framework + '\').value)">Install Plugin</button>';
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="pkgAction(\'' + framework + '\',\'install\',\'theme:\'+document.getElementById(\'fw-add-pkg-' + framework + '\').value)">Install Theme</button>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-dl-url-' + framework + '" type="text" placeholder="https://github.com/author/plugin-name" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="fwDownload(\'' + framework + '\')">Clone from URL</button>';
+    html += '</div>';
+  } else if (isDrupal) {
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-add-pkg-' + framework + '" type="text" placeholder="module_name" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-primary" style="font-size:11px;padding:5px 12px" onclick="pkgAction(\'' + framework + '\',\'install\',document.getElementById(\'fw-add-pkg-' + framework + '\').value)">Install Module</button>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:6px;margin-bottom:8px;align-items:center">';
+    html += '<input id="fw-dl-url-' + framework + '" type="text" placeholder="https://github.com/author/module" style="flex:1;padding:5px 8px;font-size:12px;background:var(--card);border:1px solid var(--brd);color:var(--fg);border-radius:4px">';
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="fwDownload(\'' + framework + '\')">Clone from URL</button>';
+    html += '</div>';
+  }
+  
+  if (!r.packages || !r.packages.length) {
+    html += '<p style="color:var(--dim);font-size:12px">No packages found.</p>';
+    el.innerHTML = html;
+    return;
+  }
+  
+  html += '<div style="max-height:400px;overflow:auto">';
+  html += '<table style="width:100%;font-size:11px;border-collapse:collapse">';
+  html += '<tr style="background:rgba(255,255,255,.05)"><th style="text-align:left;padding:5px 8px">Name</th><th style="padding:5px 8px">Version</th>';
+  if (isWP) html += '<th style="padding:5px 8px">Status</th>';
+  html += '<th style="padding:5px 8px;text-align:right">Actions</th></tr>';
+  
+  r.packages.forEach(function(p) {
+    var name = p.title || p.name;
+    var pkgId = p.name;
+    var rowStyle = 'border-bottom:1px solid rgba(255,255,255,.06)';
+    html += '<tr style="' + rowStyle + '">';
+    html += '<td style="padding:4px 8px">' + name;
+    if (p.dev) html += ' <span style="color:var(--yel);font-size:10px">dev</span>';
+    if (p.constraint) html += ' <span style="color:var(--dim);font-size:10px">' + p.constraint + '</span>';
+    html += '</td>';
+    html += '<td style="padding:4px 8px;text-align:center">' + (p.version||'-');
+    if (p.update && p.update !== 'none') html += ' <span style="color:var(--yel)">→ ' + p.update + '</span>';
+    html += '</td>';
+    
+    // Status column for WP
+    if (isWP) {
+      var sBadge = p.status === 'active' ? '<span style="color:var(--grn)">active</span>' : '<span style="color:var(--dim)">' + (p.status||'?') + '</span>';
+      html += '<td style="padding:4px 8px;text-align:center">' + sBadge + '</td>';
+    }
+    
+    // Action buttons
+    html += '<td style="padding:3px 8px;text-align:right;white-space:nowrap">';
+    var bs = 'font-size:10px;padding:2px 7px;margin-left:3px';
+    
+    if (isWP) {
+      var wpPkg = (p.type === 'theme' ? 'theme:' : '') + pkgId;
+      if (p.status === 'active') {
+        html += '<button class="btn btn-ghost" style="' + bs + '" onclick="pkgAction(\'' + framework + '\',\'deactivate\',\'' + wpPkg + '\')">Deactivate</button>';
+      } else if (p.status === 'inactive') {
+        html += '<button class="btn btn-ghost" style="' + bs + '" onclick="pkgAction(\'' + framework + '\',\'activate\',\'' + wpPkg + '\')">Activate</button>';
+      }
+      if (p.update && p.update !== 'none') {
+        html += '<button class="btn btn-primary" style="' + bs + '" onclick="pkgAction(\'' + framework + '\',\'update\',\'' + wpPkg + '\')">Update</button>';
+      }
+      html += '<button class="btn btn-ghost" style="' + bs + ';color:var(--red)" onclick="if(confirm(\'Delete ' + pkgId + '?\'))pkgAction(\'' + framework + '\',\'delete\',\'' + wpPkg + '\')">Delete</button>';
+    } else if (isComposer) {
+      html += '<button class="btn btn-ghost" style="' + bs + '" onclick="pkgAction(\'' + framework + '\',\'update\',\'' + pkgId + '\')">Update</button>';
+      if (pkgId.indexOf('/') !== -1) {
+        html += '<button class="btn btn-ghost" style="' + bs + ';color:var(--red)" onclick="if(confirm(\'Remove ' + pkgId + '?\'))pkgAction(\'' + framework + '\',\'remove\',\'' + pkgId + '\')">Remove</button>';
+      }
+    } else if (isDrupal) {
+      if (p.status === 'Enabled' || p.status === 'enabled') {
+        html += '<button class="btn btn-ghost" style="' + bs + ';color:var(--red)" onclick="if(confirm(\'Uninstall ' + pkgId + '?\'))pkgAction(\'' + framework + '\',\'uninstall\',\'' + pkgId + '\')">Uninstall</button>';
+      } else {
+        html += '<button class="btn btn-ghost" style="' + bs + '" onclick="pkgAction(\'' + framework + '\',\'enable\',\'' + pkgId + '\')">Enable</button>';
+      }
+    }
+    html += '</td></tr>';
+  });
+  html += '</table></div>';
+  
+  // Global actions
+  html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+  if (isComposer) {
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="pkgAction(\'' + framework + '\',\'update\',\'--all\')">Update All</button>';
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="composerAction(\'dump-autoload\',\'\',\'' + framework + '\')">Dump Autoload</button>';
+  }
+  if (isWP) {
+    html += '<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="runFwCmd(\'' + framework + '\',\'plugin update --all\',this)">Update All Plugins</button>';
+  }
+  html += '</div>';
+  html += '<pre id="fw-pkg-output-' + framework + '" style="display:none;margin-top:8px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap"></pre>';
+  
+  el.innerHTML = html;
+}
+
+async function pkgAction(framework, action, pkg) {
+  if (!pkg) { alert('Enter a package name'); return; }
+  var isUpdateAll = (pkg === '--all');
+  
+  var output = document.getElementById('fw-pkg-output-' + framework);
+  if (!output) output = document.getElementById('fw-output-' + framework);
+  output.style.display = 'block';
+  output.textContent = (isUpdateAll ? 'Updating all packages' : action + ' ' + pkg) + '...';
+  
+  var r;
+  if (isUpdateAll) {
+    r = await api('frameworks/composer', {action: 'update', package: ''});
+  } else {
+    r = await api('frameworks/pkg-action', {framework: framework, action: action, package: pkg});
+  }
+  output.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  
+  // Reload package list
+  var el = document.getElementById('fw-packages-' + framework);
+  if (el) { el.dataset.reload = '1'; setTimeout(function(){ loadFwPackages(framework); }, 500); }
+}
+
+async function composerAction(action, pkg, framework) {
+  var output = document.getElementById('fw-pkg-output-' + framework) || document.getElementById('fw-output-' + framework);
+  output.style.display = 'block';
+  output.textContent = 'Running composer ' + action + (pkg ? ' ' + pkg : '') + '...';
+  var r = await api('frameworks/composer', {action: action, package: pkg || ''});
+  output.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+}
+
+async function fwDownload(framework) {
+  var urlEl = document.getElementById('fw-dl-url-' + framework);
+  if (!urlEl || !urlEl.value.trim()) { alert('Enter a URL'); return; }
+  var out = document.getElementById('fw-pkg-output-' + framework) || document.getElementById('fw-output-' + framework);
+  out.style.display = 'block';
+  out.textContent = 'Cloning ' + urlEl.value.trim() + '...';
+  var r = await api('frameworks/pkg-download', {framework: framework, source: urlEl.value.trim()});
+  out.textContent = (r.cmd ? '$ ' + r.cmd + '\n\n' : '') + (r.output || r.error || 'Done');
+  if (!r.error) {
+    var el = document.getElementById('fw-packages-' + framework);
+    if (el) { el.dataset.reload = '1'; setTimeout(function(){ loadFwPackages(framework); }, 500); }
+  }
 }
 
 // Init

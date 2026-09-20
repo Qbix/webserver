@@ -20,7 +20,8 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '1.1.0');
+define('QBIX_SERVER_VERSION', '1.3.0');
+define('QBIX_SERVER_DIR', __DIR__);
 
 // ── Parse CLI args ──────────────────────────────────
 
@@ -42,6 +43,8 @@ $opts = array(
 	'generate-key' => null, // Generate keypair: --generate-key=NAME
 	'policy'  => null,  // Set M-of-N policy: --policy=2
 	'pid'     => null,
+	'pack'    => null,  // --pack=DIR : bundle app files into binary
+	'output'  => null,  // --output=FILE : output path for --pack
 	'debug'   => false,
 );
 
@@ -72,6 +75,8 @@ foreach ($argv as $i => $arg) {
 		echo "  --sign=DIR       Generate/sign a manifest for a directory\n";
 		echo "  --verify=DIR     Verify a directory against its manifest\n";
 		echo "  --generate-key=NAME  Generate RSA-2048 keypair for signing\n";
+		echo "  --pack=DIR       Bundle app files into this binary as a standalone\n";
+		echo "  --output=FILE    Output path for --pack (default: ./myapp)\n";
 		echo "  --version        Print version\n";
 		echo "\nQuick start:\n";
 		echo "  mkdir -p web && echo '<?php echo \"Hello!\";' > web/index.php\n";
@@ -211,8 +216,73 @@ if ($opts['app']) {
 // If --root isn't specified, prefer the phar's web/ over the disk's.
 $pharRoot = Phar::running(false); // '' if not in a phar
 $servingFromPhar = false;
+$servingFromZip = false;
+$appendedZipPath = null;
 
-if ($pharRoot && !$opts['root'] && !$qbixMode) {
+// ── Detect appended zip (redbean-like: cp binary myapp && cd www && zip -r ../myapp .) ──
+// When running as a phpmicro binary, users can append a zip to the executable.
+// The server detects it by scanning for the ZIP End-of-Central-Directory signature
+// near the end of its own executable. If found, files are extracted to a temp dir
+// and served as the web root.
+$selfPath = $_SERVER['SCRIPT_FILENAME'] ?? ($argv[0] ?? '');
+if ($selfPath && !$opts['root'] && !$opts['app']) {
+	$selfReal = realpath($selfPath) ?: $selfPath;
+	if (is_file($selfReal) && filesize($selfReal) > 100) {
+		$fh = fopen($selfReal, 'rb');
+		if ($fh) {
+			$fsize = filesize($selfReal);
+			$scanLen = min($fsize, 65557);
+			fseek($fh, -$scanLen, SEEK_END);
+			$tail = fread($fh, $scanLen);
+			fclose($fh);
+			$eocdSig = "\x50\x4b\x05\x06";
+			$eocdPos = strrpos($tail, $eocdSig);
+			if ($eocdPos !== false) {
+				$eocdAbsolute = $fsize - $scanLen + $eocdPos;
+				$eocd = substr($tail, $eocdPos, 22);
+				$d = unpack('Vsig/vdisk/vdiskCD/ventriesDisk/ventries/VcdSize/VcdOffset/vcommentLen', $eocd);
+				if ($d && $d['entries'] > 0) {
+					$zipStart = $eocdAbsolute - $d['cdOffset'] - $d['cdSize'];
+					// Only treat as appended if the zip doesn't start at byte 0
+					// (that would mean the whole file is a zip, not an appended one)
+					if ($zipStart > 1000) {
+						// Extract the zip portion to a temp file
+						$zipData = file_get_contents($selfReal, false, null, $zipStart);
+						$tmpZip = sys_get_temp_dir() . '/qbix_app_' . md5($selfReal) . '.zip';
+						file_put_contents($tmpZip, $zipData);
+						if (class_exists('ZipArchive')) {
+							$za = new ZipArchive();
+							if ($za->open($tmpZip) === true) {
+								// Extract to a temp directory
+								$extractDir = sys_get_temp_dir() . '/qbix_app_' . md5($selfReal);
+								@mkdir($extractDir, 0755, true);
+								$za->extractTo($extractDir);
+								$za->close();
+								// Use web/ subdir if it exists, otherwise the extract root
+								if (is_dir($extractDir . '/web')) {
+									$webDir = $extractDir . '/web';
+								} else {
+									$webDir = $extractDir;
+								}
+								$servingFromZip = true;
+								$appendedZipPath = $extractDir;
+								fwrite(STDERR, "  Loaded " . $d['entries'] . " files from appended zip\n");
+								// Register cleanup
+								register_shutdown_function(function() use ($extractDir, $tmpZip) {
+									// Clean up on normal exit (not on kill)
+									@unlink($tmpZip);
+								});
+							}
+						}
+						if (!$servingFromZip) @unlink($tmpZip);
+					}
+				}
+			}
+		}
+	}
+}
+
+if ($pharRoot && !$opts['root'] && !$qbixMode && !$servingFromZip) {
 	$pharWebDir = 'phar://' . $pharRoot . '/web';
 	if (is_dir($pharWebDir)) {
 		$webDir = $pharWebDir;
@@ -470,6 +540,92 @@ if ($opts['verify']) {
 		}
 		exit(1);
 	}
+}
+
+// ── Pack: bundle app files into this binary ──
+if ($opts['pack']) {
+	$packDir = realpath($opts['pack']);
+	if (!$packDir || !is_dir($packDir)) {
+		fwrite(STDERR, "Directory not found: {$opts['pack']}\n");
+		exit(1);
+	}
+	$selfPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $argv[0]);
+	if (!$selfPath) {
+		fwrite(STDERR, "Cannot determine own binary path\n");
+		exit(1);
+	}
+
+	$isPhar = (bool) Phar::running(false);
+
+	if ($isPhar) {
+		// Running as a phar: use build-app.php approach (embed files into phar)
+		$output = $opts['output'] ?? './app.phar';
+		fwrite(STDERR, "Packing $packDir into $output (phar mode)...\n");
+		if (ini_get('phar.readonly')) {
+			fwrite(STDERR, "Error: phar.readonly is on. Run with: php -d phar.readonly=0 " . basename($selfPath) . " --pack=$packDir\n");
+			exit(1);
+		}
+		$phar = new Phar($output);
+		$phar->startBuffering();
+		// Copy server files from current phar
+		$currentPhar = new Phar($selfPath);
+		foreach (new RecursiveIteratorIterator($currentPhar) as $file) {
+			$rel = str_replace('phar://' . $selfPath . '/', '', $file->getPathname());
+			if (strpos($rel, 'web/') === 0) continue; // skip default web/
+			$phar->addFromString($rel, file_get_contents($file->getPathname()));
+		}
+		// Add app files
+		$fileCount = 0;
+		$iter = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($packDir, FilesystemIterator::SKIP_DOTS)
+		);
+		foreach ($iter as $file) {
+			$rel = substr($file->getPathname(), strlen($packDir) + 1);
+			$rel = str_replace(DIRECTORY_SEPARATOR, '/', $rel);
+			$phar->addFile($file->getPathname(), $rel);
+			$fileCount++;
+		}
+		$phar->setStub("#!/usr/bin/env php\n<?php Phar::mapPhar('qbixserver.phar');\nrequire 'phar://qbixserver.phar/qbixserver.php';\n__HALT_COMPILER();");
+		$phar->stopBuffering();
+		$sizeKb = round(filesize($output) / 1024);
+		fwrite(STDERR, "Built: $output ({$sizeKb}KB, $fileCount app files)\n");
+		fwrite(STDERR, "Run:   php $output\n");
+		fwrite(STDERR, "Or:    spc micro:combine $output -O myapp && ./myapp\n");
+	} else {
+		// Running as a binary or plain PHP: append a zip
+		$output = $opts['output'] ?? './myapp' . (PHP_OS_FAMILY === 'Windows' ? '.exe' : '');
+		fwrite(STDERR, "Packing $packDir into $output (zip-append mode)...\n");
+		copy($selfPath, $output);
+		if (!class_exists('ZipArchive')) {
+			fwrite(STDERR, "ZipArchive extension required for --pack\n");
+			exit(1);
+		}
+		$tmpZip = sys_get_temp_dir() . '/qbix_pack_' . uniqid() . '.zip';
+		$za = new ZipArchive();
+		$za->open($tmpZip, ZipArchive::CREATE);
+		$iter = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($packDir, FilesystemIterator::SKIP_DOTS),
+			RecursiveIteratorIterator::SELF_FIRST
+		);
+		$fileCount = 0;
+		foreach ($iter as $file) {
+			$relPath = str_replace(DIRECTORY_SEPARATOR, '/', substr($file->getPathname(), strlen($packDir) + 1));
+			if ($file->isDir()) {
+				$za->addEmptyDir($relPath);
+			} else {
+				$za->addFile($file->getPathname(), $relPath);
+				$fileCount++;
+			}
+		}
+		$za->close();
+		file_put_contents($output, file_get_contents($tmpZip), FILE_APPEND);
+		@unlink($tmpZip);
+		if (PHP_OS_FAMILY !== 'Windows') chmod($output, 0755);
+		$sizeKb = round(filesize($output) / 1024);
+		fwrite(STDERR, "Built: $output ({$sizeKb}KB, $fileCount app files)\n");
+		fwrite(STDERR, "Run:   " . (PHP_OS_FAMILY === 'Windows' ? $output : "./$output") . "\n");
+	}
+	exit(0);
 }
 
 // Initialize trust at startup (verify app and plugins)
@@ -757,6 +913,133 @@ if (!$opts['workers'] && function_exists('pcntl_fork')) {
 	}
 }
 
+// ── System limits check ──────────────────────────────────────────────
+// Workers need: 2 fds each (socket pair) + ~10 fds per worker for
+// open files, plus the parent needs fds for the listen socket, logs, etc.
+// Each worker is also a process, so nproc/maxproc limits apply.
+if ($opts['workers'] > 0) {
+	$needed = $opts['workers'];
+	$neededFds = $needed * 2 + 128; // socket pairs + headroom
+	$warnings = [];
+	$fatal = false;
+
+	// Read current soft limits
+	$fdLimit = 0;
+	$procLimit = 0;
+
+	if (PHP_OS_FAMILY === 'Darwin') {
+		// macOS: kern.maxprocperuid, kern.maxfilesperproc
+		$procLimit = (int) trim(shell_exec('sysctl -n kern.maxprocperuid 2>/dev/null') ?: '0');
+		$fdLimit = (int) trim(shell_exec('sysctl -n kern.maxfilesperproc 2>/dev/null') ?: '0');
+		if (!$fdLimit) $fdLimit = (int) trim(shell_exec('ulimit -n 2>/dev/null') ?: '0');
+		if (!$procLimit) $procLimit = (int) trim(shell_exec('ulimit -u 2>/dev/null') ?: '0');
+	} else {
+		// Linux: read soft limits from /proc/self/limits (more reliable than ulimit in scripts)
+		$limitsFile = @file_get_contents('/proc/self/limits');
+		if ($limitsFile) {
+			if (preg_match('/Max open files\s+(\d+)/', $limitsFile, $m))
+				$fdLimit = (int) $m[1];
+			if (preg_match('/Max processes\s+(\d+)/', $limitsFile, $m))
+				$procLimit = (int) $m[1];
+		}
+		if (!$fdLimit) $fdLimit = (int) trim(shell_exec('ulimit -n 2>/dev/null') ?: '0');
+		if (!$procLimit) $procLimit = (int) trim(shell_exec('ulimit -u 2>/dev/null') ?: '0');
+	}
+
+	// Try to raise fd limit if needed
+	if ($fdLimit > 0 && $neededFds > $fdLimit) {
+		$raised = false;
+		if (function_exists('posix_setrlimit') && defined('POSIX_RLIMIT_NOFILE')) {
+			// Try to raise soft limit to hard limit
+			$hard = 0;
+			if (PHP_OS_FAMILY !== 'Darwin') {
+				$limitsFile = $limitsFile ?? @file_get_contents('/proc/self/limits');
+				if ($limitsFile && preg_match('/Max open files\s+\d+\s+(\d+)/', $limitsFile, $m))
+					$hard = (int) $m[1];
+			}
+			$target = max($neededFds, 65536);
+			if ($hard > 0 && $target <= $hard) {
+				@posix_setrlimit(POSIX_RLIMIT_NOFILE, $target, $hard);
+				// Re-read
+				$newFd = (int) trim(shell_exec('ulimit -n 2>/dev/null') ?: '0');
+				if ($newFd >= $neededFds) {
+					$fdLimit = $newFd;
+					$raised = true;
+				}
+			}
+		}
+		if (!$raised) {
+			$warnings[] = [
+				"File descriptor limit too low: {$fdLimit} (need ~{$neededFds} for {$needed} workers)",
+				PHP_OS_FAMILY === 'Darwin'
+					? "  sudo sysctl -w kern.maxfilesperproc=65536"
+					: "  ulimit -n 65536\n  # Or add to /etc/security/limits.conf:\n  *  soft  nofile  65536\n  *  hard  nofile  65536"
+			];
+			$fatal = true;
+		}
+	}
+
+	// Try to raise process limit if needed
+	if ($procLimit > 0 && $needed > $procLimit - 64) { // leave 64 headroom
+		$raised = false;
+		if (function_exists('posix_setrlimit') && defined('POSIX_RLIMIT_NPROC')) {
+			$target = max($needed + 256, 65536);
+			@posix_setrlimit(POSIX_RLIMIT_NPROC, $target, $target);
+			$newProc = (int) trim(shell_exec('ulimit -u 2>/dev/null') ?: '0');
+			if ($newProc >= $needed + 64) {
+				$procLimit = $newProc;
+				$raised = true;
+			}
+		}
+		if (!$raised) {
+			$warnings[] = [
+				"Process limit too low: {$procLimit} (need ~{$needed} workers + headroom)",
+				PHP_OS_FAMILY === 'Darwin'
+					? "  sudo sysctl -w kern.maxprocperuid=4096"
+					: "  ulimit -u 65536\n  # Or add to /etc/security/limits.conf:\n  *  soft  nproc  65536\n  *  hard  nproc  65536"
+			];
+			$fatal = true;
+		}
+	}
+
+	// Linux: check pid_max
+	if (PHP_OS_FAMILY !== 'Darwin') {
+		$pidMax = (int) @file_get_contents('/proc/sys/kernel/pid_max');
+		if ($pidMax > 0 && $needed > $pidMax * 0.5) {
+			$warnings[] = [
+				"System PID limit is {$pidMax} — {$needed} workers would use over half",
+				"  sudo sysctl -w kernel.pid_max=131072"
+			];
+			// Not fatal — just a warning
+		}
+	}
+
+	if (!empty($warnings)) {
+		fwrite(STDERR, "\n");
+		foreach ($warnings as $w) {
+			fwrite(STDERR, "  ⚠  {$w[0]}\n");
+			fwrite(STDERR, "     Fix:\n{$w[1]}\n\n");
+		}
+		if ($fatal) {
+			// Cap workers to what the system allows
+			$safeFd = $fdLimit > 0 ? max(0, (int) (($fdLimit - 128) / 2)) : PHP_INT_MAX;
+			$safeProc = $procLimit > 0 ? max(0, $procLimit - 64) : PHP_INT_MAX;
+			$safeWorkers = max(4, min($safeFd, $safeProc));
+
+			if ($safeWorkers < $opts['workers']) {
+				fwrite(STDERR, "  Requested {$opts['workers']} workers but system limits allow ~{$safeWorkers}.\n");
+				fwrite(STDERR, "  Start with {$safeWorkers} workers? [Y/n] ");
+				$answer = trim(fgets(STDIN));
+				if ($answer !== '' && strtolower($answer[0]) !== 'y') {
+					fwrite(STDERR, "  Aborted. Raise the limits above and try again.\n");
+					exit(1);
+				}
+				$opts['workers'] = $safeWorkers;
+			}
+		}
+	}
+}
+
 fwrite(STDERR, "  ┌" . str_repeat('─', $W) . "┐\n");
 fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n");
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
@@ -769,14 +1052,15 @@ if ($httpsAvailable) {
 	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
 	fwrite(STDERR, "  │" . str_pad($httpsLine, $W) . "│\n");
 }
-$rootLabel = $servingFromPhar ? 'web (phar)' : basename($webDir);
+$rootLabel = $servingFromPhar ? 'web (phar)' : ($servingFromZip ? 'web (appended zip)' : basename($webDir));
 fwrite(STDERR, "  │" . str_pad("  Root: " . $rootLabel, $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
 if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 	$preset = $opts['preset'] ?: 'custom';
 	fwrite(STDERR, "  │" . str_pad("  Compat: $preset (source transform active)", $W) . "│\n");
 }
-fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process'), $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process')
+	. ' (' . (class_exists('Q_WebServer_Fork') ? Q_WebServer_Fork::method() : 'detecting...') . ')', $W) . "│\n");
 $nClasses = count(get_declared_classes());
 $nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
 $preloadLabel = $nHandlers > 0
@@ -786,6 +1070,7 @@ fwrite(STDERR, "  │" . str_pad($preloadLabel, $W) . "│\n");
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
 fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");

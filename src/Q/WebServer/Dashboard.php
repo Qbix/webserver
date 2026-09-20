@@ -208,6 +208,10 @@ class Q_WebServer_Dashboard
 			'memory' => round(memory_get_usage(true)/1048576, 1),
 			'memoryPeak' => round(memory_get_peak_usage(true)/1048576, 1),
 			'workers' => $pool ? $pool->idleCount().'/'.$pool->targetSize : 'fork',
+			'workerStats' => $pool ? self::cachedWorkerStats($pool) : null,
+			'systemRam' => self::cachedSystemRam(),
+			'parentPid' => getmypid(),
+			'forkMode' => !$pool,
 			'wsClients' => Q_WebSocket::clientCount(),
 			'wsConnections' => $wsConnections,
 			'wsRooms' => $wsRooms,
@@ -266,6 +270,117 @@ class Q_WebServer_Dashboard
 			return true;
 		}
 		return false;
+	}
+
+	// ── Cached stats (avoid shell calls every heartbeat) ──
+
+	private static $cachedRam = null;
+	private static $cachedRamTime = 0;
+	private static $cachedWs = null;
+	private static $cachedWsTime = 0;
+
+	static function cachedSystemRam()
+	{
+		$now = time();
+		if (self::$cachedRam && ($now - self::$cachedRamTime) < 5) {
+			return self::$cachedRam;
+		}
+		self::$cachedRam = self::getSystemRam();
+		self::$cachedRamTime = $now;
+		return self::$cachedRam;
+	}
+
+	static function cachedWorkerStats($pool)
+	{
+		$now = time();
+		if (self::$cachedWs && ($now - self::$cachedWsTime) < 3) {
+			// Update idle count (cheap) even on cache hit
+			self::$cachedWs['idle'] = $pool->idleCount();
+			return self::$cachedWs;
+		}
+		self::$cachedWs = $pool->getWorkerStats();
+		self::$cachedWsTime = $now;
+		return self::$cachedWs;
+	}
+
+	static function getSystemRam()
+	{
+		// Linux: read /proc/meminfo
+		$meminfo = @file_get_contents('/proc/meminfo');
+		if ($meminfo) {
+			$info = array();
+			foreach (explode("\n", $meminfo) as $line) {
+				if (preg_match('/^(\w+):\s+(\d+)/', $line, $m)) {
+					$info[$m[1]] = (int) $m[2]; // kB
+				}
+			}
+			$total = ($info['MemTotal'] ?? 0) / 1024;
+			$available = ($info['MemAvailable'] ?? 0) / 1024;
+			$used = $total - $available;
+			return array(
+				'totalMb' => round($total),
+				'usedMb' => round($used),
+				'availableMb' => round($available),
+				'percent' => $total > 0 ? round($used / $total * 100) : 0,
+			);
+		}
+		// macOS: sysctl + vm_stat
+		if (PHP_OS_FAMILY === 'Darwin') {
+			$totalBytes = (int) trim(shell_exec('sysctl -n hw.memsize 2>/dev/null') ?? '0');
+			$vmstat = @shell_exec('vm_stat 2>/dev/null');
+			if ($totalBytes && $vmstat) {
+				$pageSize = 4096;
+				if (preg_match('/page size of (\d+)/', $vmstat, $ps)) $pageSize = (int) $ps[1];
+				preg_match('/Pages free:\s+(\d+)/', $vmstat, $mf);
+				preg_match('/Pages active:\s+(\d+)/', $vmstat, $ma);
+				preg_match('/Pages inactive:\s+(\d+)/', $vmstat, $mi);
+				preg_match('/Pages speculative:\s+(\d+)/', $vmstat, $ms);
+				preg_match('/Pages wired down:\s+(\d+)/', $vmstat, $mw);
+				preg_match('/Pages occupied by compressor:\s+(\d+)/', $vmstat, $mc);
+				$total = $totalBytes / 1048576;
+				$used = ((int)($ma[1] ?? 0) + (int)($mw[1] ?? 0) + (int)($mc[1] ?? 0)) * $pageSize / 1048576;
+				$available = $total - $used;
+				return array(
+					'totalMb' => round($total),
+					'usedMb' => round($used),
+					'availableMb' => round($available),
+					'percent' => $total > 0 ? round($used / $total * 100) : 0,
+				);
+			}
+		}
+		// Windows: wmic or powershell
+		if (PHP_OS_FAMILY === 'Windows') {
+			$out = @shell_exec('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /VALUE 2>NUL');
+			if ($out) {
+				$total = 0;
+				$free = 0;
+				if (preg_match('/TotalVisibleMemorySize=(\d+)/', $out, $m)) $total = (int) $m[1] / 1024;
+				if (preg_match('/FreePhysicalMemory=(\d+)/', $out, $m)) $free = (int) $m[1] / 1024;
+				$used = $total - $free;
+				return array(
+					'totalMb' => round($total),
+					'usedMb' => round($used),
+					'availableMb' => round($free),
+					'percent' => $total > 0 ? round($used / $total * 100) : 0,
+				);
+			}
+			// Fallback: PowerShell
+			$out = @shell_exec('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json" 2>NUL');
+			if ($out) {
+				$d = json_decode($out, true);
+				if ($d) {
+					$total = ($d['TotalVisibleMemorySize'] ?? 0) / 1024;
+					$free = ($d['FreePhysicalMemory'] ?? 0) / 1024;
+					return array(
+						'totalMb' => round($total),
+						'usedMb' => round($total - $free),
+						'availableMb' => round($free),
+						'percent' => $total > 0 ? round(($total - $free) / $total * 100) : 0,
+					);
+				}
+			}
+		}
+		return null;
 	}
 
 	static function fmtUp($s) {
@@ -374,8 +489,10 @@ transition:background .1s}
 <div class="card"><div class="l">Total requests</div><div class="v" id="sr">0</div><div class="s" id="srps">0 avg req/s</div></div>
 <div class="card"><div class="l">Current RPS</div><div class="v" id="crps" style="color:var(--cyn)">0</div><div class="s">last 5 sec</div></div>
 <div class="card"><div class="l">Avg response</div><div class="v" id="avg">0<span style="font-size:12px;font-weight:400">ms</span></div><div class="s">slowest: <span id="slow">0ms</span></div></div>
-<div class="card"><div class="l">Memory</div><div class="v" id="sm">\u2014</div><div class="s">peak <span id="smp">\u2014</span></div></div>
+<div class="card"><div class="l">Parent Memory</div><div class="v" id="sm">\u2014</div><div class="s">peak <span id="smp">\u2014</span></div></div>
 <div class="card"><div class="l">Workers</div><div class="v" id="sw">\u2014</div><div class="s" id="phpn">0 PHP / 0 static</div></div>
+<div class="card"><div class="l">System RAM</div><div class="v" id="sysram">\u2014</div><div class="s" id="sysram-detail">\u2014</div></div>
+<div class="card"><div class="l">Worker Memory (COW)</div><div class="v" id="cow-total">\u2014</div><div class="s" id="cow-detail">\u2014</div></div>
 <div class="card"><div class="l">WebSocket</div><div class="v" id="wsc" style="color:var(--pur)">0</div><div class="s"><span id="wsr">0</span> rooms</div></div>
 <div class="card"><div class="l">Data out</div><div class="v" id="bout">0</div><div class="s"><span id="conn">0</span> conn \u00B7 <span id="ka">0</span> keep-alive</div></div>
 <div class="card"><div class="l">Status codes</div><div class="v" style="font-size:12px;line-height:1.8">
@@ -446,7 +563,28 @@ el('crps',s.currentRps);
 el('avg',s.avgMs+'<span style="font-size:12px;font-weight:400">ms</span>');
 el('slow',s.slowest+'ms');
 el('sm',s.memory+' MB');el('smp',s.memoryPeak+' MB');
-el('sw',s.workers);el('wsc',s.wsConnections);el('wsr',s.wsRooms);
+el('sw',s.workers+(s.forkMode?' <span style="font-size:10px;color:var(--yel)">(fork mode)</span>':''));el('wsc',s.wsConnections);el('wsr',s.wsRooms);
+// System RAM
+if(s.systemRam){
+  el('sysram',s.systemRam.percent+'%');
+  el('sysram-detail',Math.round(s.systemRam.usedMb/1024*10)/10+' / '+Math.round(s.systemRam.totalMb/1024*10)/10+' GB');
+  var re=document.getElementById('sysram');
+  if(re)re.style.color=s.systemRam.percent>85?'var(--red)':(s.systemRam.percent>70?'var(--yel)':'var(--grn)');
+}
+// Worker COW stats
+if(s.workerStats){
+  var ws=s.workerStats;
+  var totalKb=ws.totalRssKb;
+  var avgKb=ws.count>0?Math.round(totalKb/ws.count):0;
+  var fpmEquiv=ws.count*50;
+  el('cow-total',fmtMem(totalKb*1024));
+  el('cow-detail',ws.idle+'/'+ws.count+' idle \u00B7 avg '+fmtMem(avgKb*1024)+'/worker \u00B7 fpm would use ~'+fpmEquiv+'MB');
+  var ce=document.getElementById('cow-total');
+  if(ce)ce.style.color='var(--grn)';
+}else if(s.forkMode){
+  el('cow-total','fork');
+  el('cow-detail','each request forks a fresh process (~120KB COW)');
+}
 el('s2',s.status2xx);el('s3',s.status3xx);el('s4',s.status4xx);el('s5',s.status5xx);
 el('bout',s.bytesFormatted);el('conn',s.connections);el('ka',s.keepAlive||0);
 el('srps',(s.rps)+' avg req/s');

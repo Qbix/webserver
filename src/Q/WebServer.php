@@ -96,6 +96,7 @@ class Q_WebServer
 	static $pool = null;
 	/** @property $rootDir Document root with trailing DS */
 	public static $rootDir;
+	public static $serverDir;
 	/** @property $host Bound host */
 	public static $host;
 	/** @property $port Bound port */
@@ -130,14 +131,21 @@ class Q_WebServer
 	 */
 	static function requireIsolation()
 	{
-		if (function_exists('pcntl_fork')) {
+		// Load Fork abstraction
+		$forkFile = dirname(__DIR__) . '/Q/WebServer/Fork.php';
+		if (!class_exists('Q_WebServer_Fork', false) && is_file($forkFile)) {
+			require_once $forkFile;
+		}
+		if (class_exists('Q_WebServer_Fork', false) && Q_WebServer_Fork::available()) {
 			return true;
 		}
 		$bin = Q_Config::get('Q', 'webserver', 'cgi', 'binary', null);
 		if (!$bin) {
 			foreach (array('php-cgi','php-cgi8.3','php-cgi8.2','php-cgi8.1') as $b) {
-				$w = @shell_exec("command -v $b 2>/dev/null");
-				if (trim((string) $w) !== '') { $bin = trim($w); break; }
+					$whichCmd = PHP_OS_FAMILY === 'Windows' ? 'where' : 'command -v';
+					$nullDev = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+					$w = @shell_exec("$whichCmd $b 2>$nullDev");
+					if (trim((string) $w) !== '') { $bin = trim(explode("\n", $w)[0]); break; }
 			}
 		}
 		if ($bin) {
@@ -172,6 +180,7 @@ class Q_WebServer
 			throw new Exception("Invalid document root: $dir");
 		}
 		self::$rootDir = rtrim(str_replace(array('/','\\'), DS, $root), DS) . DS;
+		self::$serverDir = defined('QBIX_SERVER_DIR') ? QBIX_SERVER_DIR : dirname(__DIR__, 2);
 		self::$host = $host;
 		self::$port = $port;
 
@@ -282,6 +291,40 @@ class Q_WebServer
 			}
 		}
 
+		// ── Auto-TLS: provision certificates for configured domains ──
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		$acmeEmail = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$acmeStaging = (bool) Q_Config::get('Q', 'webserver', 'tls', 'acmeStaging', false);
+		if (!empty($domains) && $acmeEmail) {
+			foreach ($domains as $domainName => $domainConf) {
+				$tlsMode = $domainConf['tls'] ?? null;
+				if ($tlsMode !== 'auto') continue;
+
+				$certPath = rtrim($certDir, '/') . '/' . $domainName . '/fullchain.pem';
+				if (!Q_WebServer_Acme::needsRenewal($certPath)) continue;
+
+				$action = is_file($certPath) ? 'Renewing' : 'Provisioning';
+				fwrite(STDERR, "  [ACME] {$action} certificate for {$domainName}...\n");
+
+				$alts = $domainConf['aliases'] ?? [];
+				$allDomains = array_merge([$domainName], $alts);
+				$result = Q_WebServer_Acme::provision($allDomains, $certDir, $acmeEmail, $acmeStaging);
+
+				if ($result['success']) {
+					fwrite(STDERR, "  [ACME] ✓ Certificate ready for {$domainName}\n");
+					// If HTTPS wasn't started yet, start it now
+					if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
+						Q_WebServer_Certs::init($domainName);
+						self::$httpsPort = $httpsPort ?: 443;
+						self::startTls($host, self::$httpsPort);
+					}
+				} else {
+					fwrite(STDERR, "  [ACME] ✗ Failed for {$domainName}: {$result['error']}\n");
+				}
+			}
+		}
+
 		// ── Preload classes (before forking) ─────────────
 		$preload = Q_Config::get('Q', 'webserver', 'preload', array());
 		if (!empty($preload)) {
@@ -324,7 +367,7 @@ class Q_WebServer
 		// ── Worker pool ──────────────────────────────────
 		// Workers are auto-detected in qbixserver.php before start() is called.
 		// If $workers > 0, create the pool.
-		if ($workers > 0 && function_exists('pcntl_fork')) {
+		if ($workers > 0 && Q_WebServer_Fork::available()) {
 			self::$pool = new Q_WebServer_Pool($workers);
 		}
 
@@ -565,7 +608,7 @@ class Q_WebServer
 			});
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
-				while (($pid = pcntl_waitpid(-1, $st, WNOHANG)) > 0) {
+				while (($pid = Q_WebServer_Fork::waitpid(-1, $st, 1)) > 0) {
 					$info = Q_WebServer::$workerPids[$pid] ?? null;
 					unset(Q_WebServer::$workerPids[$pid]);
 					if (!$info) continue;
@@ -1050,6 +1093,65 @@ class Q_WebServer
 				'body' => '{"enabled":false}',
 				'headers' => array('Content-Type' => 'application/json'));
 		}
+		// ── Documentation viewer ──
+		if ($path === '/Q/docs/marked.min.js') {
+			$jsPath = self::$serverDir . '/web/js/marked.min.js';
+			if (is_file($jsPath)) {
+				return array('status' => 200,
+					'body' => file_get_contents($jsPath),
+					'headers' => array('Content-Type' => 'application/javascript; charset=utf-8',
+						'Cache-Control' => 'public, max-age=86400'));
+			}
+		}
+		if ($path === '/Q/docs' || $path === '/Q/docs/') {
+			return array('status' => 200,
+				'body' => self::renderDocsViewer(),
+				'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
+		}
+		if (strpos($path, '/Q/docs/raw/') === 0) {
+			$docFile = substr($path, strlen('/Q/docs/raw/'));
+			$docFile = str_replace('..', '', $docFile); // prevent traversal
+			$docPath = self::$serverDir . '/docs/' . $docFile;
+			if (is_file($docPath) && pathinfo($docPath, PATHINFO_EXTENSION) === 'md') {
+				return array('status' => 200,
+					'body' => file_get_contents($docPath),
+					'headers' => array('Content-Type' => 'text/plain; charset=utf-8'));
+			}
+			// Also check README.md at root
+			if ($docFile === 'README.md') {
+				$readmePath = self::$serverDir . '/README.md';
+				if (is_file($readmePath)) {
+					return array('status' => 200,
+						'body' => file_get_contents($readmePath),
+						'headers' => array('Content-Type' => 'text/plain; charset=utf-8'));
+				}
+			}
+			return array('status' => 404, 'body' => 'Not found');
+		}
+		if ($path === '/Q/docs/index.json') {
+			// List available doc files
+			$docsDir = self::$serverDir . '/docs';
+			$files = array();
+			if (is_dir($docsDir)) {
+				foreach (scandir($docsDir) as $f) {
+					if (pathinfo($f, PATHINFO_EXTENSION) === 'md') {
+						$files[] = $f;
+					}
+				}
+			}
+			return array('status' => 200,
+				'body' => json_encode(array('files' => $files, 'hasReadme' => is_file(self::$serverDir . '/README.md'))),
+				'headers' => array('Content-Type' => 'application/json'));
+		}
+
+		if ($path === '/Q/phpinfo') {
+			ob_start();
+			phpinfo();
+			$html = ob_get_clean();
+			return array('status' => 200, 'body' => $html,
+				'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
+		}
+
 		if ($path === '/Q/dashboard' || $path === '/Q/dashboard/') {
 			if (Q_Config::get('Q', 'dashboard', null) === false) {
 				return array('status' => 404, 'body' => 'Not found');
@@ -1280,6 +1382,17 @@ class Q_WebServer
 		$method = $parsed['method'];
 		$path = $parsed['path'];
 
+		// ACME HTTP-01 challenge handler (for automatic TLS)
+		if (strpos($path, '/.well-known/acme-challenge/') === 0) {
+			$token = substr($path, strlen('/.well-known/acme-challenge/'));
+			$response = Q_WebServer_Acme::getChallengeResponse($token);
+			if ($response !== null) {
+				return self::sendResponse($client, 200, $response, array(
+					'Content-Type' => 'text/plain'
+				));
+			}
+		}
+
 		// Virtual hosts — override rootDir based on Host header
 		$host = $parsed['headers']['host'] ?? '';
 		$host = strtolower(preg_replace('/:\d+$/', '', $host)); // strip port
@@ -1407,6 +1520,52 @@ class Q_WebServer
 					$client, $parsed['headers'], null, 'dashboard'
 				);
 				return $upgraded; // true = keep open
+			}
+			// Documentation viewer
+			if ($path === '/Q/docs/marked.min.js') {
+				$jsPath = self::$serverDir . '/web/js/marked.min.js';
+				if (is_file($jsPath)) {
+					self::sendResponse($client, 200, file_get_contents($jsPath),
+						'application/javascript; charset=utf-8',
+						array('Cache-Control' => 'public, max-age=86400'));
+					return false;
+				}
+			}
+			if ($path === '/Q/phpinfo') {
+				ob_start();
+				phpinfo();
+				$html = ob_get_clean();
+				self::sendResponse($client, 200, $html, 'text/html; charset=utf-8');
+				return false;
+			}
+			if ($path === '/Q/docs' || $path === '/Q/docs/') {
+				self::sendResponse($client, 200, self::renderDocsViewer(), 'text/html; charset=utf-8');
+				return false;
+			}
+			if (strpos($path, '/Q/docs/raw/') === 0) {
+				$docFile = str_replace('..', '', substr($path, strlen('/Q/docs/raw/')));
+				$docPath = ($docFile === 'README.md')
+					? self::$serverDir . '/README.md'
+					: self::$serverDir . '/docs/' . $docFile;
+				if (is_file($docPath) && pathinfo($docPath, PATHINFO_EXTENSION) === 'md') {
+					self::sendResponse($client, 200, file_get_contents($docPath), 'text/plain; charset=utf-8');
+				} else {
+					self::sendResponse($client, 404, 'Not found');
+				}
+				return false;
+			}
+			if ($path === '/Q/docs/index.json') {
+				$docsDir = self::$serverDir . '/docs';
+				$files = array();
+				if (is_dir($docsDir)) {
+					foreach (scandir($docsDir) as $f) {
+						if (pathinfo($f, PATHINFO_EXTENSION) === 'md') $files[] = $f;
+					}
+				}
+				self::sendResponse($client, 200,
+					json_encode(array('files' => $files, 'hasReadme' => is_file(self::$serverDir . '/README.md'))),
+					'application/json');
+				return false;
 			}
 			if ($path === '/Q/health') {
 				if (Q_Config::get('Q', 'dashboard', null) === false) {
@@ -1717,8 +1876,8 @@ class Q_WebServer
 		}
 
 		// If pcntl available, fork to isolate
-		if (function_exists('pcntl_fork')) {
-			$pid = pcntl_fork();
+		if (Q_WebServer_Fork::available()) {
+			$pid = Q_WebServer_Fork::fork();
 			if ($pid === 0) {
 				// ── CHILD: run dispatch pipeline ──
 				while (ob_get_level()) ob_end_clean();
@@ -1770,7 +1929,7 @@ class Q_WebServer
 					'method' => $parsed['method'],
 					'uri' => $parsed['uri'],
 				);
-				pcntl_waitpid($pid, $st, WNOHANG);
+				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = -1; // -1 = delegated to child, don't record in parent
 				list($_SERVER, $_GET, $_POST, $_REQUEST, $_COOKIE) = $saved;
 				return false;
@@ -1850,16 +2009,18 @@ class Q_WebServer
 			// isolation can only come from php-cgi. Default to routing ALL php
 			// through it there; `patterns` then means "exceptions". With pcntl
 			// available the carveout stays opt-in.
-			$_cgiDefault = function_exists('pcntl_fork') ? array() : array('*');
+			$_cgiDefault = Q_WebServer_Fork::available() ? array() : array('*');
 			$cgiPatterns = Q_Config::get('Q', 'webserver', 'cgi', 'patterns', $_cgiDefault);
 			$cgiBinary = Q_Config::get('Q', 'webserver', 'cgi', 'binary', null);
 			if (!$cgiBinary) {
 				// Auto-detect php-cgi
 				foreach (array('php-cgi', 'php-cgi8.3', 'php-cgi8.2', 'php-cgi8.1') as $bin) {
-					$path = trim(shell_exec("which $bin 2>/dev/null") ?? '');
-					if ($path && is_executable($path)) {
-						$cgiBinary = $path;
-						break;
+					$whichCmd = PHP_OS_FAMILY === 'Windows' ? 'where' : 'which';
+					$nullDev = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+					$path = trim(shell_exec("$whichCmd $bin 2>$nullDev") ?? '');
+					if ($path) {
+						$path = explode("\n", $path)[0]; // Windows 'where' may return multiple lines
+						if (is_file($path)) { $cgiBinary = trim($path); break; }
 					}
 				}
 			}
@@ -1887,8 +2048,8 @@ class Q_WebServer
 		// No pool — fork a single child if pcntl is available.
 		// This protects the server from exit()/die() in scripts
 		// and prevents blocking the event loop during PHP execution.
-		if (function_exists('pcntl_fork')) {
-			$pid = pcntl_fork();
+		if (Q_WebServer_Fork::available()) {
+			$pid = Q_WebServer_Fork::fork();
 			if ($pid === -1) {
 				// Fork failed — fall through to in-process execution
 			} elseif ($pid === 0) {
@@ -1981,7 +2142,7 @@ class Q_WebServer
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
 				self::$workerPids[$pid] = microtime(true);
 				// Non-blocking reap — don't wait for child
-				pcntl_waitpid($pid, $st, WNOHANG);
+				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = 200;
 				return false;
 			}
@@ -2498,12 +2659,12 @@ WORKER;
 		// event loop isn't blocked by the writeAll() loop. The child inherits
 		// the client socket, writes the full response, and exits.
 		// Threshold: 1MB (below this, inline write is faster than fork overhead).
-		if ($size > 1048576 && $method !== 'HEAD' && function_exists('pcntl_fork')) {
+		if ($size > 1048576 && $method !== 'HEAD' && Q_WebServer_Fork::available()) {
 			$connHeader = 'close'; // forked child always closes
 			$out = "HTTP/1.1 200 OK\r\n" . $baseHeaders
 				. "Content-Length: $size\r\n"
 				. "Connection: close\r\n\r\n";
-			$pid = pcntl_fork();
+			$pid = Q_WebServer_Fork::fork();
 			if ($pid === 0) {
 				// Child: write headers + stream file in chunks
 				stream_set_blocking($client, true);
@@ -3937,6 +4098,135 @@ HTML;
 	private static function render404($path)
 	{
 		return self::renderErrorPage(404, $path);
+	}
+
+	/**
+	 * Render the documentation viewer — a single-page app that fetches
+	 * and renders markdown files from /Q/docs/raw/*.
+	 */
+	private static function renderDocsViewer()
+	{
+		return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Qbix Server — Documentation</title>
+<script src="/Q/docs/marked.min.js"></script>
+<script>if(typeof marked==="undefined"){marked={parse:function(s){
+s=s.replace(/^### (.+)$/gm,"<h3>$1</h3>").replace(/^## (.+)$/gm,"<h2>$1</h2>").replace(/^# (.+)$/gm,"<h1>$1</h1>");
+s=s.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/`([^`]+)`/g,"<code>$1</code>");
+s=s.replace(/```[\s\S]*?```/g,function(m){return "<pre>"+m.slice(3,-3).replace(/^\w*\n/,"")+"</pre>"});
+s=s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,"<a href=\"$2\">$1</a>");
+s=s.replace(/^[-*] (.+)$/gm,"<li>$1</li>").replace(/(<li>[\s\S]+?<\/li>)/g,"<ul>$1</ul>");
+s=s.replace(/\n{2,}/g,"</p><p>");return "<p>"+s+"</p>"}}}</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
+nav{width:260px;min-width:260px;background:#161b22;border-right:1px solid #30363d;padding:20px 16px;overflow-y:auto;position:sticky;top:0;height:100vh}
+nav h2{font-size:14px;color:#8b949e;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:#c9d1d9;font-size:13px;margin:1px 0}
+nav a:hover,nav a.active{background:#21262d;text-decoration:none;color:#58a6ff}
+nav .logo{font-size:16px;font-weight:700;color:#fff;margin-bottom:16px;display:block}
+main{flex:1;max-width:820px;padding:32px 40px;line-height:1.7}
+main h1{font-size:28px;border-bottom:1px solid #30363d;padding-bottom:12px;margin-bottom:20px}
+main h2{font-size:22px;margin:28px 0 12px;border-bottom:1px solid #21262d;padding-bottom:8px}
+main h3{font-size:17px;margin:20px 0 8px}
+main p{margin:10px 0}
+main pre{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;overflow-x:auto;font-size:13px;line-height:1.5;margin:12px 0}
+main code{background:#161b22;padding:2px 6px;border-radius:3px;font-size:87%}
+main pre code{background:none;padding:0}
+main table{border-collapse:collapse;width:100%;margin:12px 0}
+main th,main td{border:1px solid #30363d;padding:8px 12px;text-align:left;font-size:13px}
+main th{background:#161b22}
+main blockquote{border-left:3px solid #30363d;padding-left:16px;color:#8b949e;margin:12px 0}
+main img{max-width:100%}
+main ul,main ol{margin:8px 0 8px 24px}
+main li{margin:4px 0}
+main hr{border:none;border-top:1px solid #30363d;margin:24px 0}
+.back{display:inline-block;margin-bottom:16px;font-size:13px;color:#8b949e}
+@media(max-width:700px){nav{display:none}main{padding:20px 16px}}
+</style></head><body>
+<nav>
+<a class="logo" href="/Q/docs">⚡ Qbix Server</a>
+<div id="nav-links"></div>
+<div style="margin-top:24px;padding-top:16px;border-top:1px solid #30363d">
+<a href="/Q/dashboard">Dashboard</a>
+<a href="/Q/panel">Control Panel</a>
+<a href="/Q/health">Health</a>
+</div>
+</nav>
+<main id="content"><p>Loading...</p></main>
+<script>
+var docTitles = {
+  "README.md": "Overview",
+  "why.md": "Why Not php-fpm?",
+  "headers.md": "Server Headers",
+  "http.md": "HTTP Mode",
+  "websocket.md": "WebSocket & Rooms",
+  "routing.md": "Routing",
+  "framework.md": "PHP Framework",
+  "configuration.md": "Configuration",
+  "running.md": "Running & Building",
+  "architecture.md": "Architecture",
+  "dashboard.md": "Dashboard & Panel",
+  "deploy.md": "Deploy & Federation",
+  "api-discovery.md": "API Discovery",
+  "compatibility.md": "Compatibility",
+  "BENCHMARKS.md": "Benchmarks",
+  "reset.md": "State Reset",
+  "TestResults.md": "Test Results",
+  "roadmap.md": "Roadmap",
+  "license.md": "License"
+};
+var order = Object.keys(docTitles);
+
+async function init() {
+  var r = await fetch("/Q/docs/index.json").then(function(x){return x.json()});
+  var nav = document.getElementById("nav-links");
+  var html = "";
+  if (r.hasReadme) html += \'<a href="#README.md" onclick="load(\\\'README.md\\\');return false">Overview</a>\';
+  var sections = {"Getting Started":["why.md","running.md","configuration.md"],
+    "Features":["headers.md","http.md","websocket.md","routing.md","framework.md"],
+    "Operations":["architecture.md","dashboard.md","deploy.md","api-discovery.md"],
+    "Reference":["compatibility.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
+  for (var sec in sections) {
+    html += "<h2>"+sec+"</h2>";
+    sections[sec].forEach(function(f) {
+      if (r.files.indexOf(f) !== -1 || f === "README.md") {
+        html += \'<a href="#\'+f+\'" onclick="load(\\\'\'+f+\'\\\');return false">\' + (docTitles[f]||f) + "</a>";
+      }
+    });
+  }
+  nav.innerHTML = html;
+  var hash = location.hash.slice(1);
+  load(hash && (r.files.indexOf(hash)!==-1 || hash==="README.md") ? hash : "README.md");
+}
+
+async function load(file) {
+  var url = file === "README.md" ? "/Q/docs/raw/README.md" : "/Q/docs/raw/" + file;
+  var md = await fetch(url).then(function(r){return r.ok ? r.text() : "# Not found\\n\\nFile `"+file+"` not found."});
+  // Fix relative links: [text](docs/foo.md) -> onclick load
+  md = md.replace(/\\]\\(docs\\/([^)]+\\.md)\\)/g, "](#$1)");
+  md = md.replace(/\\]\\(\\.\\.\\/README\\.md\\)/g, "](#README.md)");
+  document.getElementById("content").innerHTML = marked.parse(md);
+  // Fix anchor clicks
+  document.querySelectorAll("#content a").forEach(function(a) {
+    var href = a.getAttribute("href") || "";
+    if (href.charAt(0)==="#" && href.endsWith(".md")) {
+      a.onclick = function(e){e.preventDefault();load(href.slice(1));};
+    }
+  });
+  location.hash = file;
+  // Highlight nav
+  document.querySelectorAll("nav a").forEach(function(a){a.classList.remove("active")});
+  var active = document.querySelector(\'nav a[href="#\'+file+\'"]\');
+  if (active) active.classList.add("active");
+  window.scrollTo(0,0);
+}
+window.addEventListener("hashchange", function(){
+  var h = location.hash.slice(1);
+  if (h && h.endsWith(".md")) load(h);
+});
+init();
+</script></body></html>';
 	}
 
 	// ── Path resolution ──────────────────────────────────
