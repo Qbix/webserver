@@ -1147,7 +1147,7 @@ class Q_WebServer
 		if ($path === '/Q/phpinfo') {
 			ob_start();
 			phpinfo();
-			$html = ob_get_clean();
+			$html = self::phpinfoHtml(ob_get_clean());
 			return array('status' => 200, 'body' => $html,
 				'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
 		}
@@ -1534,7 +1534,7 @@ class Q_WebServer
 			if ($path === '/Q/phpinfo') {
 				ob_start();
 				phpinfo();
-				$html = ob_get_clean();
+				$html = self::phpinfoHtml(ob_get_clean());
 				self::sendResponse($client, 200, $html, 'text/html; charset=utf-8');
 				return false;
 			}
@@ -3977,6 +3977,41 @@ HTML;
 	}
 
 	// ── Response helpers ─────────────────────────────────
+
+	/**
+	 * Make phpinfo() output presentable.
+	 *
+	 * The CLI-family SAPIs, phpmicro among them, make phpinfo() emit plain
+	 * text rather than the HTML page mod_php produces, and no ini setting
+	 * changes that. Labelling text as text/html leaves the browser showing
+	 * one collapsed paragraph, so wrap it instead. Output that is already
+	 * HTML comes back untouched.
+	 *
+	 * @method phpinfoHtml
+	 * @static
+	 * @param {string} $out Raw phpinfo() output
+	 * @return {string}
+	 */
+	static function phpinfoHtml($out)
+	{
+		if (class_exists('Q_WebServer_Compat', false)
+		and method_exists('Q_WebServer_Compat', 'phpinfoAsHtml')) {
+			return Q_WebServer_Compat::phpinfoAsHtml($out);
+		}
+		$out = (string) $out;
+		if (stripos($out, '<table') !== false or stripos($out, '<!DOCTYPE') !== false) {
+			return $out;
+		}
+		return '<!DOCTYPE html><html><head><meta charset="utf-8">'
+			. '<title>phpinfo()</title><style>'
+			. 'body{margin:0;padding:24px;background:#fff;color:#222;'
+			. 'font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}'
+			. 'pre{margin:0;white-space:pre-wrap;word-break:break-word}'
+			. '@media(prefers-color-scheme:dark){body{background:#16181d;color:#d6d9e0}}'
+			. '</style></head><body><pre>'
+			. htmlspecialchars($out, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+			. '</pre></body></html>';
+	}
 
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
 	{
