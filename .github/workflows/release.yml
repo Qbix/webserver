@@ -23,23 +23,23 @@ jobs:
             name: linux-x86_64
             spc_os: linux
             spc_arch: x86_64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd"
           - os: ubuntu-24.04-arm
             name: linux-aarch64
             spc_os: linux
             spc_arch: aarch64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd"
           - os: macos-latest
             name: macos-arm64
             spc_os: macos
             spc_arch: aarch64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd"
           - os: windows-latest
             name: windows-x64
             spc_os: windows
             spc_arch: x64
             # No pcntl or posix on Windows
-            extensions: "sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,session"
+            extensions: "sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,session,gd"
 
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.name }}
@@ -190,7 +190,7 @@ jobs:
         env:
           SPC_SKIP_DOCTOR_CHECK_ITEMS: "pkg-config,musl-wrapper"
         run: |
-          ./spc build "${{ matrix.extensions }}" --build-cli --build-micro
+          ./spc build "${{ matrix.extensions }}" --build-cli --build-micro --with-libs=libjpeg,libwebp,freetype
 
       - name: Build static PHP CLI + phpmicro (Windows)
         if: runner.os == 'Windows'
@@ -200,7 +200,7 @@ jobs:
           $exts = Get-Content "win_exts.txt" -ErrorAction SilentlyContinue
           if (-not $exts) { $exts = "${{ matrix.extensions }}" }
           Write-Host "Building with extensions: $exts"
-          php spc-src\bin\spc build "$exts" --build-cli --build-micro
+          php spc-src\bin\spc build "$exts" --build-cli --build-micro --with-libs=libjpeg,libwebp,freetype
 
       - name: Build qbix_fork.dll (Windows)
         if: runner.os == 'Windows'

@@ -107,7 +107,7 @@ build_with_docker() {
     [ -d "$SCRIPT_DIR/web" ] && cp -r "$SCRIPT_DIR/web" "$TMPDIR/web"
 
     # Keep in sync with .github/workflows/release.yml
-    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd"
 
     cat > "$TMPDIR/Dockerfile" << DOCKERFILE
 FROM php:8.3-cli-alpine AS builder
@@ -125,7 +125,17 @@ WORKDIR /build
 # server's PHP code reuses the cached layer instead of rebuilding PHP.
 RUN spc doctor --auto-fix 2>/dev/null || true
 RUN spc download --with-php=8.3 --for-extensions=$EXTS
-RUN spc build "$EXTS" --build-micro
+# gd's libraries have to be named. The download step pulls an extension's
+# suggested sources by default, but the build links none of them unless
+# asked, so gd came out able to read PNG only and imagejpeg() was an
+# undefined function at runtime.
+#
+# Named rather than --with-suggested-libs, which also drags in libaom for
+# AVIF; spc 2.8.5 cannot unpack it -- "Patch file
+# [libaom_posix_implict.patch] failed to apply" -- and the build dies.
+# AVIF output stays unavailable until that is fixed upstream, which
+# Image.php already handles: it guards imageavif and declines.
+RUN spc build "$EXTS" --build-micro --with-libs=libjpeg,libwebp,freetype
 
 COPY src/ src/
 COPY web/ web/
