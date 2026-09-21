@@ -552,6 +552,12 @@ class Q_WebServer_Pool
 		$json = substr($buf, 4, $len);
 		$response = json_decode($json, true);
 
+		// Binary bodies travel base64-encoded; see writeMsg().
+		if ($response and !empty($response['b64'])) {
+			$response['body'] = base64_decode($response['body']);
+			unset($response['b64']);
+		}
+
 		// Check for cache messages piggybacked on the response
 		if ($response && !empty($response['_cacheMessages'])) {
 			foreach ($response['_cacheMessages'] as $msg) {
@@ -796,7 +802,28 @@ class Q_WebServer_Pool
 
 	protected static function writeMsg($sock, $status, $body, $headers)
 	{
+		// json_encode() returns false on bytes that are not valid UTF-8, and
+		// strlen(false) is 0, so a binary body used to go out as a length
+		// prefix of zero and nothing else: the parent read an empty frame and
+		// answered with an empty response while still logging 200. Anything a
+		// script generated that was not text -- an image, a PDF, a zip --
+		// vanished silently. Base64 carries those bytes through, and only
+		// those: text responses keep their exact previous shape and cost.
 		$j = json_encode(compact('status', 'body', 'headers'));
+		if ($j === false) {
+			$b64 = true;
+			$body = base64_encode($body);
+			$j = json_encode(compact('status', 'body', 'headers', 'b64'));
+		}
+		if ($j === false) {
+			// Headers themselves are not encodable. Say so rather than
+			// hanging up on the client.
+			$j = json_encode(array(
+				'status' => 500,
+				'body' => 'Response could not be encoded',
+				'headers' => array('Content-Type' => 'text/plain')
+			));
+		}
 		fwrite($sock, pack('N', strlen($j)) . $j);
 	}
 }
