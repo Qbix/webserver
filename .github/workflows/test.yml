@@ -31,6 +31,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: Shimmed calls inside namespaces
+        run: bash tests/namespaced-scripts.sh
+
       - name: End-to-end probe (standalone only)
         run: bash tests/run-probe.sh
         continue-on-error: true
