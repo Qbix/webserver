@@ -119,17 +119,19 @@ RUN curl -sL https://github.com/crazywhalecc/static-php-cli/releases/latest/down
     | tar xz -C /usr/local/bin/ && chmod +x /usr/local/bin/spc
 
 WORKDIR /build
+
+# Build the PHP micro SAPI BEFORE copying any source. This is the expensive
+# step (tens of minutes); keeping it above the COPY lines means editing the
+# server's PHP code reuses the cached layer instead of rebuilding PHP.
+RUN spc doctor --auto-fix 2>/dev/null || true
+RUN spc download --with-php=8.3 --for-extensions=$EXTS
+RUN spc build "$EXTS" --build-micro
+
 COPY src/ src/
 COPY web/ web/
 COPY build-phar.php qbixserver.php ./
 
-# Build PHAR first
 RUN mkdir -p bin && php -d phar.readonly=0 build-phar.php
-
-# Download PHP sources and build micro SAPI
-RUN spc doctor --auto-fix 2>/dev/null || true
-RUN spc download --with-php=8.3 --for-extensions=$EXTS
-RUN spc build "$EXTS" --build-micro
 
 # Combine. micro:combine appends the phar as an ELF overlay that phpmicro
 # locates by reading its own file at runtime -- never UPX-pack the result.
