@@ -150,9 +150,21 @@ class Q_WebServer_Snapshot
 			// own state via shutdown()/init().
 			if ($cls === 'Q_WebServer_Compat') continue;
 			foreach ($props as $name => $val) {
-				self::$reflectors[$cls][$name]->setValue(
-					null, is_object($val) ? clone $val : $val
-				);
+				$prop = self::$reflectors[$cls][$name];
+				// A closure in a static is behaviour installed once, never
+				// request data. Composer's ClassLoader keeps its include helper
+				// there and builds it behind a null check, so putting the
+				// declared null back left the loader calling null on the next
+				// request.
+				//
+				// Only closures. Skipping the class entirely, or sparing every
+				// object, both left an application's request state standing:
+				// Exponential keeps the requested route in an object static, so
+				// every later request came back with the first one's page.
+				try {
+					if ($prop->getValue(null) instanceof \Closure) continue;
+				} catch (\Throwable $ignore) { /* uninitialized typed property */ }
+				$prop->setValue(null, is_object($val) ? clone $val : $val);
 			}
 		}
 	}
