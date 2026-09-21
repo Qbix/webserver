@@ -12,6 +12,14 @@
 # the chain wins, a directory with no .htaccess still falls through to
 # the config, and the .htaccess itself stays unreachable.
 #
+# Also the Q.web.indexed.allowOverride cap, which exists because a
+# writable document root otherwise lets anyone who can drop a file in it
+# expose a directory:
+#
+#   true        .htaccess may enable and disable (default)
+#   "restrict"  .htaccess may only disable; +Indexes is ignored
+#   false       .htaccess is ignored here entirely
+#
 #   ./tests/htaccess-indexes.sh
 #
 # Exits non-zero on any failure.
@@ -22,7 +30,15 @@ WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PHP="${PHP:-php}"
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"
-PORT=$(( 9300 + RANDOM % 300 ))
+# Pick a port nothing else holds. Fixed ranges collide with whatever the
+# machine happens to run -- a container on the same number makes every
+# assertion here fail with an empty reply and no hint why.
+PORT=0
+for _ in $(seq 1 60); do
+    _p=$(( 19000 + RANDOM % 900 ))
+    ss -ltn 2>/dev/null | grep -q ":$_p " || { PORT=$_p; break; }
+done
+[ "$PORT" = "0" ] && { echo "  no free port found"; exit 1; }
 trap 'rm -rf "$TMP"; pkill -f "qbixserver.php.*--port=$PORT" 2>/dev/null' EXIT
 
 ok()  { PASS=$((PASS+1)); printf "  ok   %s\n" "$1"; }
@@ -89,6 +105,36 @@ check ".htaccess stays hidden"          /on/.htaccess  403
 
 # Without any .htaccess the config default (/img/) still applies.
 check "config default still works"      /img/          200
+
+# ── Q.web.indexed.allowOverride ──────────────────────────────────────
+# /img/ is on by config default and carries "-Indexes", which is the case
+# that tells "false" (ignore .htaccess) from "restrict" (deny still counts).
+printf 'Options -Indexes\n' > "$ROOT/img/.htaccess"
+
+override() { # override <json> <label> <on-code> <img-code>
+    local cfg="$TMP/ovr.json" port=$(( 9700 + RANDOM % 200 ))
+    printf '%s\n' "$1" > "$cfg"
+    ( setsid "$PHP" "$WS/qbixserver.php" --root="$ROOT" --config="$cfg" \
+        --port=$port --workers=2 >"$TMP/ovr$port.log" 2>&1 </dev/null & )
+    for _ in $(seq 1 25); do
+        sleep 0.4
+        curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/plain/f.txt" 2>/dev/null && break
+    done
+    local a b
+    a=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "http://127.0.0.1:$port/on/" 2>/dev/null)
+    b=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "http://127.0.0.1:$port/img/" 2>/dev/null)
+    [ "$a" = "$3" ] && ok "$2: +Indexes -> $3" || bad "$2: +Indexes expected $3, got $a"
+    [ "$b" = "$4" ] && ok "$2: -Indexes on a config-enabled dir -> $4" \
+                    || bad "$2: -Indexes expected $4, got $b"
+    pkill -f "qbixserver.php.*--port=$port" 2>/dev/null
+}
+
+override '{"Q":{"web":{"indexed":{"paths":{"#^/img/#":true},"allowOverride":true}}}}' \
+    "allowOverride true" 200 403
+override '{"Q":{"web":{"indexed":{"paths":{"#^/img/#":true},"allowOverride":"restrict"}}}}' \
+    "allowOverride restrict" 403 403
+override '{"Q":{"web":{"indexed":{"paths":{"#^/img/#":true},"allowOverride":false}}}}' \
+    "allowOverride false" 403 200
 
 echo
 echo "  passed: $PASS  failed: $FAIL"
