@@ -186,7 +186,8 @@ class Q_WebServer_Pool
 
 			// Execute the PHP script
 			$resp = self::executeScript($req);
-			self::writeMsg($socket, $resp['status'], $resp['body'], $resp['headers']);
+			self::writeMsg($socket, $resp['status'], $resp['body'],
+				$resp['headers'], $resp['cookies'] ?? array());
 			$handled++;
 
 			if (!$octane) break;
@@ -459,7 +460,17 @@ class Q_WebServer_Pool
 			@ob_clean();
 		}
 		while (@ob_end_clean()) { /* drop removable buffers */ }
-		return compact('status', 'body', 'headers');
+
+		// Cookies live in Q_Response, which is the worker's memory. The
+		// parent used to read its own copy when writing the response and so
+		// found nothing: setcookie() reached the client from no script at
+		// all. Carry them across with the response.
+		$cookies = array();
+		if (class_exists('Q_WebServer_State', false)
+		and method_exists('Q_WebServer_State', 'cookieHeaders')) {
+			$cookies = (array) Q_WebServer_State::cookieHeaders();
+		}
+		return compact('status', 'body', 'headers', 'cookies');
 	}
 
 	// ── Parent-side dispatch ─────────────────────────────
@@ -794,9 +805,10 @@ class Q_WebServer_Pool
 		return $buf;
 	}
 
-	protected static function writeMsg($sock, $status, $body, $headers)
+	protected static function writeMsg($sock, $status, $body, $headers,
+		$cookies = array())
 	{
-		$j = json_encode(compact('status', 'body', 'headers'));
+		$j = json_encode(compact('status', 'body', 'headers', 'cookies'));
 		fwrite($sock, pack('N', strlen($j)) . $j);
 	}
 }
