@@ -131,6 +131,13 @@ COPY src/ src/
 COPY web/ web/
 COPY build-phar.php qbixserver.php ./
 
+# Parse every file before packaging it. build-phar.php only copies files
+# in, so a syntax error travels into the binary and surfaces as a runtime
+# fatal from a phar:// path -- after a full build, and with the build
+# itself reporting success.
+RUN find src qbixserver.php -name '*.php' -print0 \
+    | xargs -0 -n1 php -l > /dev/null
+
 RUN mkdir -p bin && php -d phar.readonly=0 build-phar.php
 
 # Combine. micro:combine appends the phar as an ELF overlay that phpmicro
