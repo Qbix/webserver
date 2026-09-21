@@ -31,6 +31,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: What a 500 tells you
+        run: bash tests/error-diagnostics.sh
+
       - name: End-to-end probe (standalone only)
         run: bash tests/run-probe.sh
         continue-on-error: true

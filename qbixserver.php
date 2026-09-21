@@ -705,6 +705,9 @@ $opts['https-port'] = $httpsPort;
 
 // Store HTTP port in config too (for anything that reads it)
 Q_Config::set('Q', 'webserver', 'port', $httpPort);
+// --debug was parsed and then never read by anything. It reaches the
+// server now, where it decides how much of a fatal is reported.
+Q_Config::set('Q', 'webserver', 'debug', !empty($opts['debug']));
 
 // Unix domain socket: --socket > Q.webserver.socket > null (TCP only)
 $socketPath = $opts['socket'] ?: Q_Config::get('Q', 'webserver', 'socket', null);
