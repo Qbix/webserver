@@ -2829,14 +2829,19 @@ WORKER;
 	 * Check if a URL path allows directory listing.
 	 *
 	 * Directory listings are OFF by default (more secure).
-	 * Only paths matching regexes in
-	 * Q.web.indexed.paths get listings. Default: /img/.
 	 *
-	 * Config:
-	 *   "Q": { "web": { "indexed": { "paths": {
-	 *     "#^/img/#": true,
-	 *     "#^/downloads/#": true
-	 *   }}}}
+	 * Two ways to turn them on, checked in this order:
+	 *
+	 * 1. An .htaccess in the directory or above it:
+	 *      Options +Indexes      (and -Indexes to switch back off)
+	 *    The deepest file wins, as the nearer directive does in Apache.
+	 *
+	 * 2. Otherwise, paths matching regexes in Q.web.indexed.paths:
+	 *      "Q": { "web": { "indexed": { "paths": {
+	 *        "#^/img/#": true,
+	 *        "#^/downloads/#": true
+	 *      }}}}
+	 *    The first matching pattern decides. Default: /img/.
 	 *
 	 * For actual access control, use X-Accel-Redirect.
 	 *
@@ -2847,6 +2852,18 @@ WORKER;
 	 */
 	static function isIndexed($urlPath)
 	{
+		// An .htaccess in the directory (or above it) wins, the way the
+		// nearer directive does under Apache: "Options +Indexes" turns
+		// listings on for that subtree, "-Indexes" off again. Nothing in
+		// the chain says anything -> fall through to the config.
+		if (class_exists('Q_WebServer_Compat', false)
+		and method_exists('Q_WebServer_Compat', 'htaccessIndexes')) {
+			$fromHtaccess = Q_WebServer_Compat::htaccessIndexes(
+				$urlPath, self::$rootDir
+			);
+			if ($fromHtaccess !== null) return $fromHtaccess;
+		}
+
 		static $patterns = null;
 		if ($patterns === null) {
 			$patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(

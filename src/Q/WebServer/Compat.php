@@ -1338,17 +1338,8 @@ class Q_WebServer_Compat
 	{
 		if (!is_file($htaccessPath)) return null;
 
-		static $cache = array();
-		$cacheKey = $htaccessPath;
-		if (!isset($cache[$cacheKey]) || filemtime($htaccessPath) > ($cache[$cacheKey]['mtime'] ?? 0)) {
-			$cache[$cacheKey] = array(
-				'mtime' => filemtime($htaccessPath),
-				'rules' => self::parseHtaccess(file_get_contents($htaccessPath)),
-			);
-		}
-
-		$parsed = $cache[$cacheKey]['rules'];
-		if (!$parsed['engine']) return null;
+		$parsed = self::htaccessRules($htaccessPath);
+		if (!$parsed or !$parsed['engine']) return null;
 
 		$base = $parsed['base'] ?: '/';
 		$env = array();
@@ -1377,17 +1368,59 @@ class Q_WebServer_Compat
 	}
 
 	/**
+	 * Parsed rules for one .htaccess, cached until the file changes.
+	 * Shared by the rewrite chain and the Options lookup so a file is
+	 * read and parsed once per worker rather than once per caller.
+	 *
+	 * @method htaccessRules
+	 * @static
+	 * @param {string} $htaccessPath
+	 * @return {array|null} null when the file is gone
+	 */
+	static function htaccessRules($htaccessPath)
+	{
+		static $cache = array();
+		if (!is_file($htaccessPath)) return null;
+		$mtime = filemtime($htaccessPath);
+		if (!isset($cache[$htaccessPath])
+		or $mtime > $cache[$htaccessPath]['mtime']) {
+			$cache[$htaccessPath] = array(
+				'mtime' => $mtime,
+				'rules' => self::parseHtaccess(file_get_contents($htaccessPath)),
+			);
+		}
+		return $cache[$htaccessPath]['rules'];
+	}
+
+	/**
 	 * Parse .htaccess content into structured rules.
 	 */
 	private static function parseHtaccess($content)
 	{
-		$result = array('engine' => false, 'base' => '', 'blocks' => array());
+		$result = array('engine' => false, 'base' => '', 'blocks' => array(),
+			'indexes' => null);
 		$lines = preg_split('/\r?\n/', $content);
 		$pendingConds = array();
 
 		foreach ($lines as $line) {
 			$line = trim($line);
 			if ($line === '' || $line[0] === '#') continue;
+
+			// Options [+|-]Indexes — the one Options token that means
+			// anything here. Apache reads the whole line, so "Options
+			// -Indexes +FollowSymLinks" is honoured for the part we know
+			// and the rest ignored. Bare "Options Indexes" sets it, and
+			// "Options None" clears it.
+			if (preg_match('/^Options\s+(.+)$/i', $line, $m)) {
+				foreach (preg_split('/\s+/', trim($m[1])) as $opt) {
+					if (strcasecmp($opt, 'None') === 0) {
+						$result['indexes'] = false;
+					} else if (preg_match('/^([+-]?)Indexes$/i', $opt, $o)) {
+						$result['indexes'] = ($o[1] !== '-');
+					}
+				}
+				continue;
+			}
 
 			// RewriteEngine On/Off
 			if (preg_match('/^RewriteEngine\s+(On|Off)/i', $line, $m)) {
@@ -1619,6 +1652,47 @@ class Q_WebServer_Compat
 		}
 
 		return null;
+	}
+
+	/**
+	 * Whether .htaccess turns directory listings on or off for a URL path.
+	 *
+	 * Walks the chain the way Apache does — the document root first, then
+	 * each directory down to the requested one — with the deepest file
+	 * winning, so a subdirectory can switch listings back off.
+	 *
+	 * @method htaccessIndexes
+	 * @static
+	 * @param {string} $urlPath The request path
+	 * @param {string} $rootDir Document root, with a trailing separator
+	 * @return {boolean|null} null when no .htaccess in the chain says
+	 */
+	static function htaccessIndexes($urlPath, $rootDir)
+	{
+		$rootDir = rtrim((string) $rootDir, '/\\') . DIRECTORY_SEPARATOR;
+		$found = null;
+
+		$read = function ($dir) {
+			$file = $dir . '.htaccess';
+			if (!is_file($file)) return null;
+			$rules = self::htaccessRules($file);
+			return isset($rules['indexes']) ? $rules['indexes'] : null;
+		};
+
+		$v = $read($rootDir);
+		if ($v !== null) $found = $v;
+
+		$parts = explode('/', trim((string) $urlPath, '/'));
+		$dir = $rootDir;
+		foreach ($parts as $part) {
+			if ($part === '' or $part === '.' or $part === '..') continue;
+			$dir .= $part . DIRECTORY_SEPARATOR;
+			if (!is_dir($dir)) break;
+			$v = $read($dir);
+			if ($v !== null) $found = $v; // deepest wins
+		}
+
+		return $found;
 	}
 
 	// ── Helpers ─────────────────────────────────────────
