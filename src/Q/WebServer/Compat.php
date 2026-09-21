@@ -1649,6 +1649,18 @@ class Q_WebServer_Compat
  */
 class Q_WebServer_CompatFileWrapper
 {
+	/**
+	 * Set by PHP on every wrapper instance that is opened with a stream
+	 * context. Declaring it keeps PHP 8.2+ from reporting the assignment
+	 * as a dynamic property -- a deprecation notice that, with the default
+	 * display_errors, is written into the response body. Text responses
+	 * merely carried a stray paragraph; a generated image came out with
+	 * 1.5KB of notices in front of its PNG signature and would not open.
+	 *
+	 * @var resource|null
+	 */
+	public $context;
+
 	/** @var resource The underlying file handle */
 	private $handle;
 	/** @var string Buffered transformed content for reading */

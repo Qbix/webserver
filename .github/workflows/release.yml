@@ -271,6 +271,13 @@ jobs:
             Write-Host "Binary not built — skipping smoke test"
           }
 
+      # Runs against the built binary on purpose: the notices this catches
+      # only appear when the server runs from the phar, so the same check
+      # in the test workflow, which runs from source, would pass blind.
+      - name: Response bodies carry no diagnostics (Unix)
+        if: runner.os != 'Windows'
+        run: QB=./qbixserver-${{ matrix.name }} bash tests/clean-body.sh
+
       # ── Upload ───────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
