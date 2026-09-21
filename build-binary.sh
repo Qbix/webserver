@@ -144,7 +144,10 @@ DOCKERFILE
     docker create --name qbix-extract qbixserver-builder
     docker cp qbix-extract:/build/bin/qbixserver "$BIN_DIR/qbixserver"
     docker rm qbix-extract
-    docker rmi qbixserver-builder 2>/dev/null || true
+    # The builder image is deliberately kept. Deleting it drops its layers,
+    # and with them the cached PHP build -- which is the whole point of
+    # building the micro SAPI before the COPY lines above. Remove it by hand
+    # (docker rmi qbixserver-builder) when you want the space back.
 
     rm -rf "$TMPDIR"
 
