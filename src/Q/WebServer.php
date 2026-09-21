@@ -1203,8 +1203,11 @@ class Q_WebServer
 				if (is_file($ip)) { $fsPath = $ip; break; }
 			}
 			if (is_dir($fsPath)) {
-				// Root path with no index → show welcome page
-				if ($path === '/') {
+				// Root path with no index → welcome page, unless the root was
+				// explicitly made listable. The welcome page used to return
+				// unconditionally, which left the listing below unreachable
+				// for '/' however it was configured.
+				if ($path === '/' and !self::isIndexed($path)) {
 					$welcome = __DIR__ . DS . 'welcome.php';
 					if (file_exists($welcome)) {
 						ob_start();
@@ -1214,7 +1217,7 @@ class Q_WebServer
 					}
 				}
 				// Show directory listing if indexed
-				if (self::isIndexed($path) || $path === '/') {
+				if (self::isIndexed($path)) {
 					return array('status'=>200,
 						'body'=>self::renderDirectoryListing($fsPath, $path),
 						'headers'=>array('Content-Type'=>'text/html; charset=utf-8',
@@ -1674,8 +1677,11 @@ class Q_WebServer
 				}
 			}
 			if (is_dir($fsPath)) {
-				// Root path with no index → show welcome page
-				if ($path === '/') {
+				// Root path with no index → welcome page, unless the root was
+				// explicitly made listable. The welcome page used to return
+				// unconditionally, which left the listing below unreachable
+				// for '/' however it was configured.
+				if ($path === '/' and !self::isIndexed($path)) {
 					$welcome = __DIR__ . DS . 'welcome.php';
 					if (file_exists($welcome)) {
 						ob_start();
@@ -1685,8 +1691,8 @@ class Q_WebServer
 						return false;
 					}
 				}
-				// Show directory listing if indexed OR if it's the root path
-				if (self::isIndexed($path) || $path === '/') {
+				// Show directory listing if indexed
+				if (self::isIndexed($path)) {
 					$html = self::renderDirectoryListing($fsPath, $path);
 					self::sendResponse($client, 200, $html, 'text/html; charset=utf-8',
 						array('Cache-Control' => 'no-store'));
