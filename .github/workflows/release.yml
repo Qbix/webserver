@@ -271,6 +271,11 @@ jobs:
             Write-Host "Binary not built — skipping smoke test"
           }
 
+      # Needs the binary: from a source checkout there is no phar to lose.
+      - name: Server stream wrappers survive scripts (Unix)
+        if: runner.os != 'Windows'
+        run: QB=./qbixserver-${{ matrix.name }} bash tests/stream-wrappers.sh
+
       # ── Upload ───────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

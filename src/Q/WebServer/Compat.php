@@ -58,6 +58,7 @@ class Q_WebServer_Compat
 		'spl_autoload_register'=> 'Q_WebServer_Compat::_spl_autoload_register',
 		'spl_autoload_unregister' => 'Q_WebServer_Compat::_spl_autoload_unregister',
 		'putenv'               => 'Q_WebServer_Compat::_putenv',
+		'stream_wrapper_unregister' => 'Q_WebServer_Compat::_stream_wrapper_unregister',
 	);
 
 	/** @var array In-memory transform cache: realpath → ['source' => ..., 'mtime' => ...] */
@@ -1010,6 +1011,47 @@ class Q_WebServer_Compat
 			}
 		}
 		return $result;
+	}
+
+	/**
+	 * Replacement for stream_wrapper_unregister().
+	 *
+	 * Hardened applications drop the phar wrapper -- eZ Publish, Drupal and
+	 * others have done it since the 2018 phar deserialisation work:
+	 *
+	 *     if (PHP_SAPI !== 'cli' && in_array('phar', stream_get_wrappers())) {
+	 *         stream_wrapper_unregister('phar');
+	 *     }
+	 *
+	 * Under a single-file build the server itself lives in that phar and
+	 * autoloads its own classes from phar:// paths, so the call takes the
+	 * server down with it. Not visibly: the classes already preloaded keep
+	 * working and only a request that needs a new one fails, with whatever
+	 * that request happened to be looking for -- "Class eZDB not found" for
+	 * a missing autoloader, nothing pointing at the wrapper. And a worker
+	 * outlives the request, so one page view degrades every later request
+	 * that worker handles, for every site it serves.
+	 *
+	 * So phar and file are kept. The call reports success, because an
+	 * application that hardens itself has no way to carry on if it fails and
+	 * nothing useful to do about a refusal.
+	 *
+	 * The application's intent is not served by this, and cannot be while
+	 * the server runs from a phar: the wrapper it wants gone is the one the
+	 * runtime is read through. What that hardening protects against --
+	 * deserialisation via an attacker-supplied phar:// path -- remains worth
+	 * handling where such paths are accepted.
+	 *
+	 * @param {string} $protocol
+	 * @return {boolean}
+	 */
+	static function _stream_wrapper_unregister($protocol)
+	{
+		$p = strtolower((string) $protocol);
+		if ($p === 'phar' or $p === 'file') {
+			return true;
+		}
+		return stream_wrapper_unregister($protocol);
 	}
 
 	/**
