@@ -465,6 +465,38 @@ class Q_WebServer_Pool
 	// ── Parent-side dispatch ─────────────────────────────
 
 	/**
+	 * The URL path of a script, for SCRIPT_NAME and PHP_SELF.
+	 *
+	 * This used to be '/' . basename($scriptPath), which is right only for a
+	 * script sitting in the document root. Anything in a subdirectory lost
+	 * it: an application under /shop/ was told it lived at /, and every
+	 * absolute URL it built from SCRIPT_NAME -- stylesheets, form actions,
+	 * redirects -- pointed one or more directories too high. The page still
+	 * rendered, which is what made it hard to see: it just arrived without
+	 * its styling, and posting a form landed somewhere else.
+	 *
+	 * mod_php and fpm report the script's path below the document root, so
+	 * that is what is built here.
+	 *
+	 * @method scriptName
+	 * @static
+	 * @protected
+	 * @param {string} $scriptPath Absolute path of the script on disk
+	 * @return {string}
+	 */
+	protected static function scriptName($scriptPath)
+	{
+		$root = rtrim(str_replace('\\', '/', (string) (Q_WebServer::$rootDir ?? '')), '/');
+		$path = str_replace('\\', '/', (string) $scriptPath);
+		if ($root !== '' and strpos($path, $root . '/') === 0) {
+			return '/' . ltrim(substr($path, strlen($root)), '/');
+		}
+		// Outside the document root -- an alias or a rewrite target. The
+		// basename is all that can honestly be said about it.
+		return '/' . basename($path);
+	}
+
+	/**
 	 * Send a request to an idle worker. Queues if all busy.
 	 */
 	function dispatch($client, $parsed, $scriptPath)
@@ -507,8 +539,8 @@ class Q_WebServer_Pool
 			'rawHeaders'     => $parsed['rawHeaders'] ?? array(),
 			'body'           => $parsed['body'],
 			'scriptFilename' => $scriptPath,
-			'scriptName'     => '/' . basename($scriptPath),
-			'documentRoot'   => Q_WebServer::$rootDir ?? '',
+			'scriptName'     => self::scriptName($scriptPath),
+			'documentRoot'   => rtrim(Q_WebServer::$rootDir ?? '', '/\\'),
 			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
 			'remoteAddr'     => '127.0.0.1'
 		));
