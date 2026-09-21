@@ -245,20 +245,22 @@ jobs:
           }
 
       # ── Compress ─────────────────────────────────────────
-      - name: Compress with UPX (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get install -y -qq upx-ucl 2>/dev/null || true
-          if command -v upx &>/dev/null; then
-            cp qbixserver-${{ matrix.name }} qbixserver-${{ matrix.name }}-uncompressed
-            upx --best --lzma qbixserver-${{ matrix.name }} || echo "UPX failed (continuing)"
-          fi
+      # NOTE: Do NOT UPX-pack the combined binary. `spc micro:combine`
+      # appends the phar as an ELF overlay which phpmicro locates by
+      # reading its own file at runtime; UPX rewrites the ELF and drops
+      # that overlay, so the binary starts and tries to parse its own
+      # compressed image as PHP (syntax error, unexpected token "!").
 
       # ── Smoke test ───────────────────────────────────────
       - name: Smoke test (Unix)
         if: runner.os != 'Windows'
         run: |
-          ./qbixserver-${{ matrix.name }} --help 2>&1 | head -5 || true
+          set -o pipefail
+          out=$(./qbixserver-${{ matrix.name }} --help 2>&1)
+          echo "$out" | head -5
+          case "$out" in
+            *"Parse error"*|*"Fatal error"*) echo "::error::binary is corrupt"; exit 1 ;;
+          esac
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'

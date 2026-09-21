@@ -98,12 +98,18 @@ build_with_static_php_cli() {
 build_with_docker() {
     echo "Using Docker for isolated build..."
 
-    # Create a temporary Dockerfile
+    # Create a temporary build context
     TMPDIR=$(mktemp -d)
     cp -r "$SRC_DIR" "$TMPDIR/src"
     cp "$SCRIPT_DIR/build-phar.php" "$TMPDIR/"
+    # build-phar.php requires these too
+    cp "$SCRIPT_DIR/qbixserver.php" "$TMPDIR/"
+    [ -d "$SCRIPT_DIR/web" ] && cp -r "$SCRIPT_DIR/web" "$TMPDIR/web"
 
-    cat > "$TMPDIR/Dockerfile" << 'DOCKERFILE'
+    # Keep in sync with .github/workflows/release.yml
+    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+
+    cat > "$TMPDIR/Dockerfile" << DOCKERFILE
 FROM php:8.3-cli-alpine AS builder
 
 RUN apk add --no-cache curl bash tar
@@ -114,27 +120,27 @@ RUN curl -sL https://github.com/crazywhalecc/static-php-cli/releases/latest/down
 
 WORKDIR /build
 COPY src/ src/
-COPY build-phar.php .
+COPY web/ web/
+COPY build-phar.php qbixserver.php ./
 
 # Build PHAR first
 RUN mkdir -p bin && php -d phar.readonly=0 build-phar.php
 
 # Download PHP sources and build micro SAPI
 RUN spc doctor --auto-fix 2>/dev/null || true
-RUN spc download --with-php=8.3 --for-extensions=pcntl,sockets,openssl,mbstring,filter
-RUN spc build pcntl,sockets,openssl,mbstring,filter --build-micro
+RUN spc download --with-php=8.3 --for-extensions=$EXTS
+RUN spc build "$EXTS" --build-micro
 
-# Combine
-RUN cat buildroot/bin/micro.sfx bin/qbixserver.phar > bin/qbixserver && \
+# Combine. micro:combine appends the phar as an ELF overlay that phpmicro
+# locates by reading its own file at runtime -- never UPX-pack the result.
+RUN spc micro:combine bin/qbixserver.phar -O bin/qbixserver && \
     chmod +x bin/qbixserver
-
-FROM scratch
-COPY --from=builder /build/bin/qbixserver /qbix-server
 DOCKERFILE
 
+    docker rm -f qbix-extract >/dev/null 2>&1 || true
     docker build -t qbixserver-builder "$TMPDIR"
     docker create --name qbix-extract qbixserver-builder
-    docker cp qbix-extract:/qbixserver "$BIN_DIR/qbixserver"
+    docker cp qbix-extract:/build/bin/qbixserver "$BIN_DIR/qbixserver"
     docker rm qbix-extract
     docker rmi qbixserver-builder 2>/dev/null || true
 
