@@ -29,8 +29,9 @@ for arg in "$@"; do
     case $arg in
         --arch=*) ARCH="${arg#*=}" ;;
         --os=*)   OS="${arg#*=}" ;;
+        --php=*)  PHP_VERSION="${arg#*=}" ;;
         --help)
-            echo "Usage: $0 [--arch=x86_64|aarch64] [--os=linux|macos]"
+            echo "Usage: $0 [--arch=x86_64|aarch64] [--os=linux|macos] [--php=8.3|8.4]"
             echo ""
             echo "Builds a self-contained Qbix Server binary."
             echo "Requires Docker for cross-compilation."
@@ -110,7 +111,7 @@ build_with_docker() {
     EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
 
     cat > "$TMPDIR/Dockerfile" << DOCKERFILE
-FROM php:8.3-cli-alpine AS builder
+FROM php:$PHP_VERSION-cli-alpine AS builder
 
 RUN apk add --no-cache curl bash tar
 
@@ -124,7 +125,7 @@ WORKDIR /build
 # step (tens of minutes); keeping it above the COPY lines means editing the
 # server's PHP code reuses the cached layer instead of rebuilding PHP.
 RUN spc doctor --auto-fix 2>/dev/null || true
-RUN spc download --with-php=8.3 --for-extensions=$EXTS
+RUN spc download --with-php=$PHP_VERSION --for-extensions=$EXTS
 RUN spc build "$EXTS" --build-micro
 
 COPY src/ src/
@@ -139,9 +140,12 @@ RUN spc micro:combine bin/qbixserver.phar -O bin/qbixserver && \
     chmod +x bin/qbixserver
 DOCKERFILE
 
+    # One builder image per PHP version: a single tag would make every
+    # switch throw away the other version's compiled PHP.
+    IMAGE="qbixserver-builder:php$PHP_VERSION"
     docker rm -f qbix-extract >/dev/null 2>&1 || true
-    docker build -t qbixserver-builder "$TMPDIR"
-    docker create --name qbix-extract qbixserver-builder
+    docker build -t "$IMAGE" "$TMPDIR"
+    docker create --name qbix-extract "$IMAGE"
     docker cp qbix-extract:/build/bin/qbixserver "$BIN_DIR/qbixserver"
     docker rm qbix-extract
     # The builder image is deliberately kept. Deleting it drops its layers,
