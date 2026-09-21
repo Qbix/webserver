@@ -563,44 +563,26 @@ class Q_WebServer_Compat
 	 *
 	 * phpinfo() renders an HTML page under mod_php and fpm, but the CLI-family
 	 * SAPIs — phpmicro included — emit plain text instead, and the choice is a
-	 * SAPI flag no ini setting reaches. Served as text/html that collapses into
-	 * one unreadable paragraph in a browser; served as text/plain it is at
-	 * least legible but nothing like the page people expect.
-	 *
-	 * So: capture the output, and when it came back as text, wrap it in a
-	 * minimal page that keeps the formatting. Output that already contains
-	 * markup is passed through untouched.
+	 * SAPI flag no ini setting reaches. Q_WebServer_PhpInfo parses that text
+	 * back into the familiar tables.
 	 */
 	static function _phpinfo($flags = INFO_ALL)
 	{
 		ob_start();
 		phpinfo($flags);
-		$out = (string) ob_get_clean();
-
-		echo self::phpinfoAsHtml($out);
+		echo self::phpinfoAsHtml((string) ob_get_clean());
 		return true;
 	}
 
 	/**
-	 * Wrap plain-text phpinfo() output in a readable page. Returns HTML
-	 * unchanged, so it is safe to call on either form.
+	 * Render phpinfo() output as HTML. Markup is returned unchanged, so this
+	 * is safe to call whatever the SAPI produced.
 	 * @param {string} $out Raw phpinfo() output
 	 * @return {string}
 	 */
 	static function phpinfoAsHtml($out)
 	{
-		if (stripos($out, '<table') !== false or stripos($out, '<!DOCTYPE') !== false) {
-			return $out; // already HTML — nothing to do
-		}
-		return '<!DOCTYPE html><html><head><meta charset="utf-8">'
-			. '<title>phpinfo()</title><style>'
-			. 'body{margin:0;padding:24px;background:#fff;color:#222;'
-			. 'font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}'
-			. 'pre{margin:0;white-space:pre-wrap;word-break:break-word}'
-			. '@media(prefers-color-scheme:dark){body{background:#16181d;color:#d6d9e0}}'
-			. '</style></head><body><pre>'
-			. htmlspecialchars($out, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
-			. '</pre></body></html>';
+		return Q_WebServer_PhpInfo::render($out);
 	}
 
 	/**
