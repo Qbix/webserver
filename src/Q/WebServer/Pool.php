@@ -167,6 +167,11 @@ class Q_WebServer_Pool
 	protected static function childRun($socket, $octane = false, $maxReqs = 0)
 	{
 		stream_set_blocking($socket, true);
+		// An octane worker blocks on readExact() between requests, sometimes
+		// for minutes. Without this, PHP's default_socket_timeout (60s) makes
+		// that read return '' and the worker exits, so the first request after
+		// an idle period gets a 502. There is no deadline on waiting for work.
+		stream_set_timeout($socket, 86400);
 		$handled = 0;
 
 		do {
@@ -788,7 +793,15 @@ class Q_WebServer_Pool
 		$buf = '';
 		while (strlen($buf) < $n) {
 			$c = fread($sock, $n - strlen($buf));
-			if ($c === false || $c === '') return false;
+			if ($c === false || $c === '') {
+				// '' means EOF only when feof() says so. A read timeout —
+				// or a signal interrupting the read — also yields '', and
+				// treating that as EOF kills a perfectly healthy worker.
+				if (feof($sock)) return false;
+				$meta = @stream_get_meta_data($sock);
+				if (!empty($meta['timed_out'])) continue;
+				return false;
+			}
 			$buf .= $c;
 		}
 		return $buf;
