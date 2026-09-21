@@ -38,6 +38,7 @@ class Q_WebServer_Compat
 		'headers_list'         => 'Q_WebServer_Compat::_headers_list',
 		'header_remove'        => 'Q_WebServer_Compat::_header_remove',
 		'session_start'        => 'Q_WebServer_Compat::_session_start',
+		'session_id'           => 'Q_WebServer_Compat::_session_id',
 		'session_write_close'  => 'Q_WebServer_Compat::_session_write_close',
 		'session_regenerate_id'=> 'Q_WebServer_Compat::_session_regenerate_id',
 		'session_destroy'      => 'Q_WebServer_Compat::_session_destroy',
@@ -74,6 +75,13 @@ class Q_WebServer_Compat
 
 	/** @var bool Whether a session is currently active */
 	private static $sessionActive = false;
+
+	/**
+	 * The session id this layer manages. PHP's own session machinery is
+	 * not used, so its session_id() is not the place to keep it.
+	 * @var string
+	 */
+	private static $sessionId = '';
 
 	/** @var string Current session file path */
 	private static $sessionFile = '';
@@ -246,6 +254,7 @@ class Q_WebServer_Compat
 		self::$sessionActive = false;
 		self::$sessionFile = '';
 		self::$sessionFp = null;
+		self::$sessionId = '';
 		self::$requestHeaders = array();
 
 		@stream_wrapper_restore('file');
@@ -645,6 +654,32 @@ class Q_WebServer_Compat
 	 * Replacement for session_start().
 	 * File-based sessions with proper locking for concurrent requests.
 	 */
+	/**
+	 * Replacement for session_id().
+	 *
+	 * Reports, and before the session starts sets, the id this layer uses.
+	 * The native function is no use here: it refuses to set once output has
+	 * begun, and it would answer for a session that is never started.
+	 *
+	 * @param {string} $id New id, or null to only read
+	 * @return {string|false} The previous id, or false if it could not be set
+	 */
+	static function _session_id($id = null)
+	{
+		$previous = self::$sessionId;
+		if ($id !== null) {
+			if (self::$sessionActive) {
+				trigger_error(
+					'session_id(): Session ID cannot be changed when a session is active',
+					E_USER_WARNING
+				);
+				return false;
+			}
+			self::$sessionId = (string) $id;
+		}
+		return $previous;
+	}
+
 	static function _session_start($options = array())
 	{
 		if (self::$sessionActive) return true;
@@ -658,14 +693,21 @@ class Q_WebServer_Compat
 		$maxLifetime = (int) ($options['gc_maxlifetime']
 			?? self::_ini_get('session.gc_maxlifetime')
 			?: 1440);
-		$id = $_COOKIE[$name] ?? '';
+		// An id set by session_id() before the session starts wins over
+		// the cookie, which is what PHP does.
+		$id = self::$sessionId ?: ($_COOKIE[$name] ?? '');
 
 		if (!$id || !preg_match('/^[a-zA-Z0-9,-]{22,256}$/', $id)) {
 			$id = bin2hex(random_bytes(16));
 			self::_setcookie($name, $id, 0, '/');
 		}
 
-		session_id($id);
+		// Deliberately not session_id($id): this layer runs the session
+		// itself, PHP's own is never started, and the native setter refuses
+		// once output has begun -- which under a persistent worker it has,
+		// so every session_start() printed "Session ID cannot be changed
+		// after headers have already been sent" into the response body.
+		self::$sessionId = $id;
 		self::$sessionFile = $savePath . DIRECTORY_SEPARATOR . 'sess_' . $id;
 
 		// Read with exclusive lock (held until write_close)
@@ -720,7 +762,7 @@ class Q_WebServer_Compat
 		if (!self::$sessionActive) return false;
 
 		$oldFile = self::$sessionFile;
-		$oldId = session_id();
+		$oldId = self::$sessionId;
 		$newId = bin2hex(random_bytes(16));
 
 		// Write current data and release lock on old file
@@ -739,8 +781,8 @@ class Q_WebServer_Compat
 			@unlink($oldFile);
 		}
 
-		// Set new ID
-		session_id($newId);
+		// Set new ID — ours, for the same reason as in _session_start()
+		self::$sessionId = $newId;
 		$savePath = dirname(self::$sessionFile);
 		self::$sessionFile = $savePath . DIRECTORY_SEPARATOR . 'sess_' . $newId;
 
