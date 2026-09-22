@@ -206,3 +206,55 @@ This is the scenario the user asked about: as more requests hit the same databas
 | fork/req (shared-nothing) | 96/s | 412ms | Each request forks a clean process |
 
 The `--app` mode with octane handles the full Qbix Platform at 498 req/s. Fork-per-request is slower (96/s) but guarantees zero state leaks — use it for scripts that need bulletproof isolation.
+
+
+## Event Loop: epoll/kqueue vs stream_select (PHP 8.6)
+
+PHP 8.6 (November 2026) adds the `Io\Poll` API — native `epoll` on Linux and `kqueue` on macOS, with no extensions needed. The server auto-detects this and uses it when available. On older PHP versions, `stream_select` is used (or Revolt if installed).
+
+### Why it matters
+
+`stream_select` copies the entire file descriptor set into kernel space on every call, then scans all of them linearly to find which ones are ready. This is O(n) where n is the total number of watched sockets.
+
+`epoll`/`kqueue` maintains the watch list in kernel space persistently. The `wait()` call returns only the sockets that are ready. This is O(k) where k is the number of *ready* sockets, regardless of how many total sockets exist.
+
+### Where you won't notice it
+
+For standard request/response PHP workloads, the event loop is not the bottleneck. The parent process spends ~0.17ms per request on accept/parse/dispatch/respond. The `stream_select` scan adds ~0.005ms at 16 concurrent connections. Replacing it with epoll saves 0.004ms — invisible next to the 1–50ms the worker spends running PHP.
+
+| Scenario | stream_select | epoll | Improvement |
+|---|---|---|---|
+| `ab -c 16` (hello world, 1 worker) | 3065 req/s | ~3100 req/s | ~1% |
+| `ab -c 100` (50 workers) | ~2800 req/s | ~2900 req/s | ~3% |
+
+### Where it's transformative
+
+Long-lived connections: WebSocket, SSE, and Server Push. A chat server with 5,000 connected users has 5,000 sockets in the event loop. With `stream_select`, the parent copies and scans all 5,000 on every tick — that's ~2.5ms of overhead, 200 times per second, which burns an entire CPU core just scanning. With epoll, the same scan is 0.01ms regardless.
+
+| Active connections | stream_select overhead/tick | epoll/kqueue overhead/tick | Notes |
+|---|---|---|---|
+| 10 | ~0.01ms | ~0.01ms | no difference |
+| 100 | ~0.05ms | ~0.01ms | still negligible |
+| 1,000 | ~0.5ms | ~0.01ms | starts to matter |
+| 5,000 | ~2.5ms | ~0.01ms | stream_select uses 50% of a core just scanning |
+| 10,000 | ~5ms | ~0.01ms | stream_select is the bottleneck, epoll is not |
+
+The right benchmark for epoll is: 2,000 WebSocket connections open, measure the latency of new HTTP requests arriving. That's where `stream_select` degrades and epoll doesn't. With `stream_select`, the parent's scan of 2,000 fds delays every HTTP accept by ~1ms. With epoll, the HTTP accept is immediate.
+
+This matters because the COW fork model generates thousands of in-flight connections: each worker holds one client socket and one parent↔worker socket pair. 200 workers = 400 fds in the parent's event loop just for workers, plus client connections and the listen socket. Add WebSocket connections on top and the numbers grow fast.
+
+### How to use it
+
+Nothing to configure. On PHP 8.6+, the server detects `Io\Poll\Context` at startup and uses it automatically. The startup banner shows which backend is active:
+
+```
+│  I/O:       epoll/kqueue (PHP 8.6 Io\Poll)│
+```
+
+For PHP 8.1–8.5, the Symfony polyfill (`composer require symfony/polyfill-io-poll`) provides the same API backed by `stream_select` — useful for code compatibility testing but no performance gain.
+
+### Driver priority
+
+1. **Io\Poll** (PHP 8.6+ native) — epoll/kqueue, O(1)
+2. **Revolt** (if installed via Composer) — uses ext-uv or stream_select
+3. **stream_select** (built-in fallback) — works everywhere, O(n)

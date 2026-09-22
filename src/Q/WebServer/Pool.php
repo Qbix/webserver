@@ -561,8 +561,12 @@ class Q_WebServer_Pool
 		}
 
 		$client = $this->workerClients[$index] ?? null;
+		$reqHeaders = $this->workerRequestHeaders[$index] ?? [];
 		if ($response && $client && is_resource($client)) {
+			$reqHeaders['_keepAlive'] = false;
+			$this->workerRequestHeaders[$index] = $reqHeaders;
 			$this->sendHttp($client, $response, $index);
+			Q_WebServer::closeClient((int) $client);
 		}
 
 		// In octane mode the worker is still alive — mark it idle so it

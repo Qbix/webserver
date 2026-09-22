@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '1.3.0');
+define('QBIX_SERVER_VERSION', '1.5.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── Parse CLI args ──────────────────────────────────
@@ -76,7 +76,9 @@ foreach ($argv as $i => $arg) {
 		echo "  --deploy=TARGET  Deploy to remote server (from config/deploy.json)\n";
 		echo "  --sign=DIR       Generate/sign a manifest for a directory\n";
 		echo "  --verify=DIR     Verify a directory against its manifest\n";
-		echo "  --generate-key=NAME  Generate RSA-2048 keypair for signing\n";
+		echo "  --generate-key=NAME  Generate ECDSA P-256 keypair for signing\n";
+		echo "  --sign-binary    Sign this binary (M-of-N): --key=alice.pem --signer=Alice\n";
+		echo "  --verify-binary  Verify binary signatures: --m=2 for M-of-N threshold\n";
 		echo "  --pack=DIR       Bundle app files into this binary as a standalone\n";
 		echo "  --output=FILE    Output path for --pack (default: ./myapp)\n";
 		echo "  --gui            With --pack: mark binary as GUI app (no console on Windows)\n";
@@ -110,6 +112,38 @@ foreach ($argv as $i => $arg) {
 	}
 	if ($arg === '--hotreload') {
 		$opts['hotreload'] = true;
+		continue;
+	}
+	if ($arg === '--gui') {
+		$opts['gui'] = true;
+		continue;
+	}
+	if ($arg === '--open') {
+		$opts['open'] = '/';
+		continue;
+	}
+	if ($arg === '--watchdog') {
+		Q_Config::set('Q', 'webserver', 'watchdog', true);
+		continue;
+	}
+	if ($arg === '--sign-binary' || strpos($arg, '--sign-binary=') === 0) {
+		$opts['signBinary'] = true;
+		continue;
+	}
+	if (strpos($arg, '--key=') === 0) {
+		$opts['keys'][] = substr($arg, 6);
+		continue;
+	}
+	if (strpos($arg, '--signer=') === 0) {
+		$opts['signers'][] = substr($arg, 9);
+		continue;
+	}
+	if (strpos($arg, '--verify-binary') === 0) {
+		$opts['verifyBinary'] = true;
+		continue;
+	}
+	if ($arg === '--publish-rekor') {
+		$opts['publishRekor'] = true;
 		continue;
 	}
 	if (preg_match('/^--([\w-]+)=(.+)$/', $arg, $m)) {
@@ -294,6 +328,49 @@ if ($pharRoot && !$opts['root'] && !$qbixMode && !$servingFromZip) {
 	}
 }
 
+// ── Data directory for packed binaries ────────────────
+// When running as a packed binary (appended zip), store data next to
+// the binary at <binary>.data/ instead of ./local/ which is fragile.
+$dataDir = null;
+if ($servingFromZip || $servingFromPhar) {
+	$binaryPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $argv[0]) ?: $argv[0];
+	$dataDir = preg_replace('/\.(exe|phar)$/i', '', $binaryPath) . '.data';
+	if (!is_dir($dataDir)) @mkdir($dataDir, 0755, true);
+	// Override local/ paths to use the data directory
+	if (is_dir($dataDir)) {
+		define('QBIX_DATA_DIR', $dataDir);
+		@mkdir("$dataDir/logs", 0755, true);
+		@mkdir("$dataDir/certs", 0755, true);
+		@mkdir("$dataDir/keys", 0755, true);
+
+		// Auto-provision SQLite database from bundled seed
+		$dbFile = __DIR__ . '/src/Q/WebServer/Database.php';
+		if (is_file($dbFile)) {
+			require_once $dbFile;
+			$appRoot = $appendedZipPath ?: dirname($webDir);
+			$framework = null;
+			$ahFile = __DIR__ . '/src/Q/WebServer/Autohost.php';
+			if (is_file($ahFile)) {
+				require_once $ahFile;
+				$framework = Q_WebServer_Autohost::detectFramework($appRoot);
+			}
+			Q_WebServer_Database::provision($appRoot, $dataDir, $framework);
+		}
+	}
+}
+
+/**
+ * Resolve a path relative to the data directory.
+ * For packed binaries: <binary>.data/
+ * For normal installs: local/ or the provided path as-is.
+ */
+function qbix_data_path($relativePath) {
+	if (defined('QBIX_DATA_DIR')) {
+		return QBIX_DATA_DIR . '/' . ltrim($relativePath, '/');
+	}
+	return $relativePath;
+}
+
 // ── Validate document root early ────────────────────────
 // Check this BEFORE loading Q shim, because if neither the root
 // nor src/Q.php exist, the user just downloaded the binary and
@@ -466,14 +543,14 @@ if ($opts['preset']) {
 // ── Trust: signing, verification, key generation ──
 require_once __DIR__ . '/src/Q/WebServer/Trust.php';
 
-// --generate-key=NAME → create keypair and exit
+// --generate-key=NAME → create ECDSA P-256 keypair and exit
 if ($opts['generate-key']) {
 	$name = $opts['generate-key'];
-	$privPath = "local/keys/{$name}.pem";
-	$pubPath = "local/keys/{$name}.pub.pem";
+	$privPath = qbix_data_path("local/keys/{$name}.pem");
+	$pubPath = qbix_data_path("local/keys/{$name}.pub.pem");
 	@mkdir(dirname($privPath), 0755, true);
-	if (Q_WebServer_Trust::generateKeypair($privPath, $pubPath)) {
-		fwrite(STDERR, "Generated keypair:\n  Private: $privPath\n  Public:  $pubPath\n");
+	if (Q_WebServer_Trust::generateKeypair($privPath, $pubPath, 'ec')) {
+		fwrite(STDERR, "Generated ECDSA P-256 keypair:\n  Private: $privPath\n  Public:  $pubPath\n");
 		fwrite(STDERR, "Share the .pub.pem with anyone who should verify your signatures.\n");
 		fwrite(STDERR, "Keep the private .pem safe — it signs your code.\n");
 	} else {
@@ -544,6 +621,69 @@ if ($opts['verify']) {
 		}
 		exit(1);
 	}
+}
+
+// ── Sign binary (M-of-N) ──
+if (!empty($opts['signBinary'])) {
+	require_once __DIR__ . '/src/Q/WebServer/Trust.php';
+	$selfPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $argv[0]);
+	$keys = $opts['keys'] ?? [];
+	$signers = $opts['signers'] ?? [];
+	if (empty($keys)) {
+		fwrite(STDERR, "Usage: --sign-binary --key=alice.pem [--key=bob.pem] [--signer=Alice]\n");
+		exit(1);
+	}
+	if (count($keys) === 1) {
+		$result = Q_WebServer_Trust::signBinary($selfPath, $keys[0], $signers[0] ?? null);
+	} else {
+		$result = null;
+		foreach ($keys as $i => $k) {
+			$result = Q_WebServer_Trust::signBinary($selfPath, $k, $signers[$i] ?? null);
+		}
+	}
+	if ($result) {
+		$n = count($result['signatures']);
+		fwrite(STDERR, "Signed: {$result['binary_hash']}\n");
+		fwrite(STDERR, "Signers: $n\n");
+		foreach ($result['signatures'] as $s) {
+			fwrite(STDERR, "  {$s['signer']} (key:{$s['key_id']})\n");
+		}
+		$sigPath = Q_WebServer_Trust::signaturesPath($selfPath);
+		fwrite(STDERR, "Written: $sigPath\n");
+	}
+	exit(0);
+}
+
+// ── Verify binary signatures ──
+if (!empty($opts['verifyBinary'])) {
+	require_once __DIR__ . '/src/Q/WebServer/Trust.php';
+	$selfPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $argv[0]);
+	$m = isset($opts['m']) ? (int) $opts['m'] : null;
+	$result = Q_WebServer_Trust::verifyBinary($selfPath, $m);
+	fwrite(STDERR, "Binary: {$result['binary_hash']}\n");
+	fwrite(STDERR, "Hash matches: " . ($result['hash_matches'] ? 'yes' : 'NO — binary was modified') . "\n");
+	fwrite(STDERR, "Signatures: {$result['label']}\n");
+	foreach ($result['details'] as $d) {
+		$icon = $d['status'] === 'valid' ? '✓' : '✗';
+		fwrite(STDERR, "  $icon {$d['signer']} ({$d['status']})\n");
+	}
+	fwrite(STDERR, "Result: " . ($result['valid'] ? 'VALID' : 'FAILED') . "\n");
+	exit($result['valid'] ? 0 : 1);
+}
+
+// ── Publish to Rekor (optional transparency log) ──
+if (!empty($opts['publishRekor'])) {
+	require_once __DIR__ . '/src/Q/WebServer/Trust.php';
+	$selfPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $argv[0]);
+	fwrite(STDERR, "Publishing attestation to Sigstore Rekor...\n");
+	$uuid = Q_WebServer_Trust::publishToRekor($selfPath);
+	if ($uuid) {
+		fwrite(STDERR, "Published! Rekor UUID: $uuid\n");
+		fwrite(STDERR, "Verify: https://search.sigstore.dev/?uuid=$uuid\n");
+	} else {
+		fwrite(STDERR, "Failed to publish. Check that signatures.json exists and Rekor is reachable.\n");
+	}
+	exit($uuid ? 0 : 1);
 }
 
 // ── Pack: bundle app files into this binary ──
@@ -1098,9 +1238,12 @@ $preloadLabel = $nHandlers > 0
 	: "  Preloaded: {$nClasses} classes (handlers: lazy)";
 fwrite(STDERR, "  │" . str_pad($preloadLabel, $W) . "│\n");
 fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
+$evLoop = class_exists('Io\\Poll', false) ? 'epoll/kqueue (PHP 8.6 Io\\Poll)'
+	: (class_exists('Revolt\\EventLoop') ? 'Revolt' : 'stream_select');
 fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
+fwrite(STDERR, "  │" . str_pad("  I/O:       $evLoop", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");

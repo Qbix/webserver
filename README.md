@@ -43,6 +43,8 @@ See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology and [reset.md](docs
 
 Qbix Server replaces all six with one process. HTTP, WebSocket (with Socket.IO protocol), SSE, sessions, uploads, static files, .htaccess — same port, same file. No Redis, no Node, no pub/sub glue. Download a 4.5MB binary, run it, done. Pure PHP.
 
+You can also package your entire app — code, assets, SQLite database — into that binary and distribute it as a single file. Double-click on Windows, `./myapp --open` on Mac or Linux, the browser opens and the app is there. No PHP to install, no web server to configure, no database to set up. 5 MB, not 200 — because we open the browser that's already there instead of shipping Chromium like Electron does. [How it works →](#single-binary-distribution)
+
 ---
 
 
@@ -58,6 +60,7 @@ Qbix Server replaces all six with one process. HTTP, WebSocket (with Socket.IO p
 | 📂 | [PHP Framework](docs/framework.md) | The micro-framework: handlers, events, Q classes |
 | ⚙️ | [Configuration](docs/configuration.md) | JSON config, CLI options, presets |
 | 📦 | [Running & Building](docs/running.md) | Source, phar, binary. Building static binaries. Requirements |
+| 📀 | [Binaries & Signing](docs/binaries.md) | Pack apps, manage like zip, ECDSA M-of-N signing, Rekor, platform signing |
 | 🏗️ | [Architecture](docs/architecture.md) | Persistent workers, COW, execution model, mental model, benchmarks |
 | 📊 | [Dashboard & Panel](docs/dashboard.md) | Live stats, control panel tabs |
 | 🚀 | [Deploy & Federation](docs/deploy.md) | Rsync deploy, cluster replication, inter-server trust |
@@ -65,6 +68,9 @@ Qbix Server replaces all six with one process. HTTP, WebSocket (with Socket.IO p
 | 🧩 | [Compatibility](docs/compatibility.md) | SAPI emulation, 28 shimmed functions, class ownership, tests |
 | 📈 | [Benchmarks](docs/BENCHMARKS.md) | Full methodology and numbers |
 | 🔄 | [State Reset](docs/reset.md) | What gets restored between requests |
+| 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
+| 🔀 | [Migrate from Apache](docs/migrate-apache.md) | .htaccess unchanged, VirtualHost mapping |
+| 🔀 | [Migrate from Caddy](docs/migrate-caddy.md) | Automatic HTTPS, on-demand TLS → autohost |
 | ✅ | [Test Results](docs/TestResults.md) | 140 end-to-end tests |
 | 🗺️ | [Roadmap](docs/roadmap.md) | What's next |
 | 📄 | [License](docs/license.md) | MIT |
@@ -163,6 +169,8 @@ Most apps work immediately. A few things to be aware of:
 
 On Linux and macOS, the server runs thousands of COW-forked workers at ~120KB each. On Windows, pcntl doesn't exist, so the server spawns `php-cgi` subprocesses for process isolation. Workers are still persistent and shimmed — the same code runs, you just don't get the COW memory savings. The 28-function source transform still clears state between requests.
 
+**PHP 8.6+ (epoll/kqueue):** The server auto-detects PHP 8.6's native `Io\Poll` API and uses `epoll` on Linux or `kqueue` on macOS for event notification — no PECL extensions needed. On older PHP versions, the server uses `stream_select` (which works fine, just O(n) per tick instead of O(1)). Revolt is also supported if installed.
+
 ## Examples
 
 Six example apps are included in `examples/`:
@@ -187,6 +195,16 @@ Already running nginx, Apache, or Caddy? These guides show the config mapping:
 - [Migrating from nginx](docs/migrate-nginx.md) — server blocks, try_files, proxy_pass, gzip
 - [Migrating from Apache](docs/migrate-apache.md) — .htaccess works unchanged, VirtualHost → domains config
 - [Migrating from Caddy](docs/migrate-caddy.md) — automatic HTTPS, on-demand TLS → autohost
+
+## Single-Binary Distribution
+
+Package your app into one executable file — PHP runtime, web server, and all your code. The binary includes SQLite auto-provisioning: if your app bundles a `.sqlite` file, the server copies it to the data directory on first run and writes the framework config to point at it. No external database needed.
+
+Supported out of the box: Qbix (detects plugins, writes `local/app.json` with per-plugin prefixes), Laravel (`.env`), Symfony (`.env`), WordPress (`wp-config.php` + wp-sqlite-db), Craft CMS, and Drupal.
+
+Sign binaries with ECDSA P-256 keys (M-of-N threshold), publish to Sigstore Rekor for independent verification, and customize by editing the binary as a zip file.
+
+- [Building and distributing binaries](docs/binaries.md) — pack, sign, verify, customize, platform code signing
 
 ## License
 

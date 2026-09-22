@@ -94,7 +94,7 @@ class Q_WebServer_Panel
 	{
 		return defined('APP_DIR')
 			? APP_DIR . '/local/panel.json'
-			: sys_get_temp_dir() . '/qbix-panel.json';
+			: qbix_data_path('local/panel.json');
 	}
 
 	/**
@@ -319,6 +319,50 @@ class Q_WebServer_Panel
 			case 'watchdog':
 				require_once dirname(__DIR__) . '/WebServer/Watchdog.php';
 				return Q_WebServer_Watchdog::status();
+			case 'attestation':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				return Q_WebServer_Trust::attestation();
+			case 'attestation/sign':
+				return self::apiAttestationSign($parsed);
+			case 'attestation/verify':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				$m = (int) ($parsed['query']['m'] ?? 0) ?: null;
+				return Q_WebServer_Trust::verifyBinary(null, $m);
+			case 'attestation/publish-rekor':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				$bp = realpath($_SERVER['SCRIPT_FILENAME'] ?? $GLOBALS['argv'][0]);
+				$uuid = Q_WebServer_Trust::publishToRekor($bp);
+				return $uuid
+					? ['published' => true, 'uuid' => $uuid, 'url' => "https://search.sigstore.dev/?uuid=$uuid"]
+					: ['status' => 500, 'error' => 'Failed. Sign the binary first.'];
+			case 'trust':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				return Q_WebServer_Trust::status();
+			case 'trust/verify':
+				return self::apiTrustVerify($parsed);
+			case 'metrics':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				return Q_WebServer_Metrics::status();
+			case 'metrics/history':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$minutes = (int) ($parsed['query']['minutes'] ?? 60);
+				return ['stats' => Q_WebServer_Metrics::recentStats(min($minutes, 1440))];
+			case 'metrics/summary':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$hours = (int) ($parsed['query']['hours'] ?? 24);
+				return Q_WebServer_Metrics::summary(min($hours, 720));
+			case 'metrics/flow':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$limit = (int) ($parsed['query']['limit'] ?? 50);
+				return ['edges' => Q_WebServer_Metrics::flow(min($limit, 200))];
+			case 'metrics/pages':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$limit = (int) ($parsed['query']['limit'] ?? 20);
+				return ['pages' => Q_WebServer_Metrics::topPages(min($limit, 100))];
+			case 'metrics/pageflow':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$path = $parsed['query']['path'] ?? '/';
+				return Q_WebServer_Metrics::pageFlow($path);
 			case 'workers':
 				return self::apiWorkerStatus();
 			case 'workers/resize':
@@ -2428,6 +2472,54 @@ class Q_WebServer_Panel
 		];
 	}
 
+	// ── Attestation & Trust API ─────────────────────────
+
+	static function apiAttestationSign($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$keyPem = $body['key'] ?? '';
+		$signer = $body['signer'] ?? 'panel-user';
+
+		if (!$keyPem) {
+			return ['status' => 400, 'error' => 'Provide a PEM private key in the "key" field'];
+		}
+
+		// Write key to temp file
+		$tmpKey = tempnam(sys_get_temp_dir(), 'qbix_sign_');
+		file_put_contents($tmpKey, $keyPem);
+
+		require_once dirname(__DIR__) . '/WebServer/Trust.php';
+		$binaryPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $GLOBALS['argv'][0]);
+		$result = Q_WebServer_Trust::signBinary($binaryPath, $tmpKey, $signer);
+		@unlink($tmpKey);
+
+		if (!$result) {
+			return ['status' => 500, 'error' => 'Signing failed — check key format'];
+		}
+		return [
+			'signed' => true,
+			'hash' => $result['binary_hash'],
+			'signers' => count($result['signatures']),
+		];
+	}
+
+	static function apiTrustVerify($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$dir = $body['dir'] ?? null;
+
+		require_once dirname(__DIR__) . '/WebServer/Trust.php';
+		if ($dir) {
+			$dir = realpath($dir);
+			if (!$dir || !is_dir($dir)) {
+				return ['status' => 400, 'error' => 'Directory not found'];
+			}
+			return Q_WebServer_Trust::verifyDirectory($dir);
+		}
+		// Verify all known directories
+		return Q_WebServer_Trust::status();
+	}
+
 	// ── Autohost API ────────────────────────────────────
 
 	static function apiAutohostToggle($parsed)
@@ -2868,6 +2960,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab active" onclick="showTab('apps')">Apps</div>
   <div class="tab" onclick="showTab('domains')">Domains</div>
   <div class="tab" onclick="showTab('autohost')">Autohost</div>
+  <div class="tab" onclick="showTab('security')">Security</div>
   <div class="tab" onclick="showTab('scripts')">Scripts</div>
   <div class="tab" onclick="showTab('plugins')">Plugins</div>
   <div class="tab" onclick="showTab('workers')">Workers</div>
@@ -2920,6 +3013,30 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <button onclick="addDomain()">Add Domain</button>
   </div>
   <div id="hosts-info"></div>
+</div>
+
+<!-- SECURITY TAB -->
+<div id="tab-security" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Security &amp; Attestation</h2>
+
+  <div id="sec-attestation"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Sign Binary</h3>
+    <p style="font-size:12px;color:var(--dim);margin-bottom:12px">Paste a PEM private key to add your signature to this binary. Multiple signers can sign independently for M-of-N verification.</p>
+    <div class="form-row"><label>Signer name</label><input id="sec-signer" placeholder="alice@example.com"></div>
+    <div class="form-row"><label>Private key (PEM)</label><textarea id="sec-key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;..." style="font-size:11px;font-family:monospace"></textarea></div>
+    <button class="btn btn-primary" onclick="signBinary()">Sign</button>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Verify</h3>
+    <div class="form-row"><label>Required signatures (M)</label><input id="sec-m" type="number" min="1" value="1" style="width:60px"></div>
+    <button class="btn btn-primary" onclick="verifyBinary()">Verify</button>
+    <div id="sec-verify-result" style="margin-top:12px"></div>
+  </div>
+
+  <div id="sec-trust" style="margin-top:16px"></div>
 </div>
 
 <!-- AUTOHOST TAB -->
@@ -3325,6 +3442,7 @@ function showTab(name) {
   if (name==='servers') loadServers();
   if (name==='domains') loadDomains();
   if (name==='autohost') loadAutohost();
+  if (name==='security') loadSecurity();
   if (name==='workers') loadWorkers();
   if (name==='logs') loadLogs('access');
   if (name==='cron') loadCron();
@@ -3878,6 +3996,100 @@ async function addDomain() {
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
 async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+
+// ── Security & Attestation ──────────────────────────
+async function loadSecurity() {
+  var el = document.getElementById('sec-attestation');
+  try {
+    var r = await api('attestation');
+    var html = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Binary Attestation</h3>';
+    html += '<div style="font-size:12px;margin-bottom:8px"><strong>Hash:</strong> <code style="font-size:11px">' + (r.binary_hash||'unknown') + '</code></div>';
+    html += '<div style="font-size:12px;margin-bottom:8px"><strong>Size:</strong> ' + ((r.binary_size||0)/1024).toFixed(0) + ' KB</div>';
+    if (r.verification) {
+      var v = r.verification;
+      var color = v.valid ? 'var(--grn)' : 'var(--red)';
+      html += '<div style="font-size:12px;margin-bottom:8px"><strong>Status:</strong> <span style="color:'+color+'">' + v.label + ' — ' + (v.valid?'VALID':'FAILED') + '</span></div>';
+      if (v.hash_matches === false) {
+        html += '<div style="font-size:12px;color:var(--red)">⚠ Binary was modified since signing</div>';
+      }
+    }
+    if (r.signatures && r.signatures.length) {
+      html += '<h4 style="font-size:13px;margin:12px 0 6px">Signatures</h4>';
+      r.signatures.forEach(function(s) {
+        html += '<div style="font-size:12px;padding:4px 0;border-top:1px solid var(--border)">';
+        html += '<strong>' + s.signer + '</strong> <span style="color:var(--dim)">(key:' + (s.key_id||'?').slice(0,8) + ')</span>';
+        if (s.signed_at) html += ' <span style="color:var(--dim)">' + s.signed_at.slice(0,10) + '</span>';
+        html += '</div>';
+      });
+    } else {
+      html += '<div style="font-size:12px;color:var(--dim)">No signatures. Use the form below or the CLI to sign.</div>';
+    }
+    if (r.rekor && r.rekor.uuid) {
+      html += '<div style="font-size:12px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><strong>Transparency log:</strong> <a href="' + (r.rekor.url||'#') + '" target="_blank" style="color:#4a9eff">' + r.rekor.uuid.slice(0,24) + '...</a> <span style="color:var(--grn)">✓ on Rekor</span></div>';
+    } else if (r.signed) {
+      html += '<div style="font-size:12px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><strong>Transparency log:</strong> <span style="color:var(--dim)">not published</span> <button class="btn btn-ghost" style="font-size:10px;padding:2px 8px;margin-left:6px" onclick="publishRekor()">Publish to Sigstore Rekor</button></div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">Attestation data unavailable.</p></div>';
+  }
+  // Trust status
+  var trustEl = document.getElementById('sec-trust');
+  try {
+    var t = await api('trust');
+    if (t.enabled) {
+      var thtml = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Code Trust (File Manifests)</h3>';
+      thtml += '<div style="font-size:12px">Trusted keys: ' + (t.keys||[]).length + '</div>';
+      if (t.verified && t.verified.length) {
+        thtml += '<div style="font-size:12px;margin-top:6px">';
+        t.verified.forEach(function(v) {
+          var icon = v.ok ? '<span style="color:var(--grn)">✓</span>' : '<span style="color:var(--red)">✗</span>';
+          thtml += '<div>' + icon + ' ' + v.dir + (v.errors && v.errors.length ? ' (' + v.errors.length + ' errors)' : '') + '</div>';
+        });
+        thtml += '</div>';
+      }
+      thtml += '</div>';
+      trustEl.innerHTML = thtml;
+    } else {
+      trustEl.innerHTML = '<div class="card"><p style="font-size:12px;color:var(--dim)">Code trust not enabled. Set <code>Q.trust.enabled: true</code> and add trusted keys.</p></div>';
+    }
+  } catch(e) {}
+}
+async function signBinary() {
+  var key = document.getElementById('sec-key').value.trim();
+  var signer = document.getElementById('sec-signer').value.trim() || 'panel-user';
+  if (!key) return alert('Paste a PEM private key');
+  var r = await api('attestation/sign', {key: key, signer: signer});
+  if (r.error) { alert(r.error); return; }
+  alert('Signed! ' + r.signers + ' total signature(s)');
+  document.getElementById('sec-key').value = '';
+  loadSecurity();
+}
+async function verifyBinary() {
+  var m = parseInt(document.getElementById('sec-m').value) || 1;
+  var r = await api('attestation/verify?m=' + m);
+  var el = document.getElementById('sec-verify-result');
+  var color = r.valid ? 'var(--grn)' : 'var(--red)';
+  var html = '<div style="color:'+color+';font-weight:700">' + (r.valid ? '✓ VALID' : '✗ FAILED') + ' — ' + r.label + '</div>';
+  if (r.details) {
+    r.details.forEach(function(d) {
+      var icon = d.status === 'valid' ? '✓' : '✗';
+      html += '<div style="font-size:12px">' + icon + ' ' + d.signer + ' (' + d.status + ')</div>';
+    });
+  }
+  el.innerHTML = html;
+}
+async function publishRekor() {
+  if (!confirm('Publish this binary\'s attestation to the public Sigstore Rekor transparency log?\n\nThis is permanent and publicly visible.')) return;
+  var r = await api('attestation/publish-rekor', {});
+  if (r.published) {
+    alert('Published to Rekor!\n\nUUID: ' + r.uuid + '\n\nVerify at: ' + r.url);
+    loadSecurity();
+  } else {
+    alert(r.error || 'Failed to publish');
+  }
+}
 
 // ── Autohost ────────────────────────────────────────
 async function loadAutohost() {

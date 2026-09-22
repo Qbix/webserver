@@ -27,9 +27,14 @@ class Q_Evented
 	static function driver()
 	{
 		if (!self::$driver) {
-			self::$driver = class_exists('Revolt\\EventLoop')
-				? new Q_Evented_Revolt()
-				: new Q_Evented_StreamSelect();
+			if (class_exists('Io\\Poll', false)) {
+				// PHP 8.6+: native epoll/kqueue via Io\Poll — no extensions needed
+				self::$driver = new Q_Evented_IoPoll();
+			} elseif (class_exists('Revolt\\EventLoop')) {
+				self::$driver = new Q_Evented_Revolt();
+			} else {
+				self::$driver = new Q_Evented_StreamSelect();
+			}
 		}
 		return self::$driver;
 	}

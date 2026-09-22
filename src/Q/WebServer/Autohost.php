@@ -350,7 +350,7 @@ class Q_WebServer_Autohost
 		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
 		// Write to autohost log file
-		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', 'local/autohost.log');
+		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', qbix_data_path('local/autohost.log'));
 		@mkdir(dirname($logFile), 0755, true);
 		$entry = date('c') . " PROVISIONED $hostname" . ($certResult ? " cert=ok" : " cert=none") . "\n";
 		file_put_contents($logFile, $entry, FILE_APPEND);
@@ -388,7 +388,7 @@ class Q_WebServer_Autohost
 	 */
 	static function log($msg)
 	{
-		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', 'local/autohost.log');
+		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', qbix_data_path('local/autohost.log'));
 		@mkdir(dirname($logFile), 0755, true);
 		file_put_contents($logFile, date('c') . " $msg\n", FILE_APPEND);
 	}
@@ -408,7 +408,7 @@ class Q_WebServer_Autohost
 	 */
 	static function status()
 	{
-		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', 'local/autohost.log');
+		$logFile = Q_Config::get('Q', 'webserver', 'autohost', 'log', qbix_data_path('local/autohost.log'));
 		$recent = [];
 		if (is_file($logFile)) {
 			$lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -504,14 +504,25 @@ class Q_WebServer_Autohost
 	{
 		$appDir = rtrim($appDir, '/\\');
 		if (is_file("$appDir/config/app.json") || is_file("$appDir/web/Q.php")) return 'qbix';
-		if (is_file("$appDir/artisan")) return 'laravel';
+		if (is_file("$appDir/artisan")) {
+			// October CMS and Statamic are Laravel-based
+			if (is_dir("$appDir/modules/cms")) return 'laravel'; // October
+			if (is_dir("$appDir/content")) return 'laravel';     // Statamic
+			return 'laravel';
+		}
 		if (is_file("$appDir/bin/console") && is_dir("$appDir/config/packages")) return 'symfony';
-		if (is_file("$appDir/wp-config.php")) return 'wordpress';
+		if (is_file("$appDir/wp-config.php") || is_file("$appDir/wp-login.php")) return 'wordpress';
 		if (is_file("$appDir/web/core/lib/Drupal.php")) return 'drupal';
-		if (is_dir("$appDir/administrator")) return 'joomla';
+		if (is_dir("$appDir/administrator") && is_file("$appDir/index.php")) return 'joomla';
+		if (is_file("$appDir/bin/magento") || is_file("$appDir/app/etc/env.php")) return 'magento';
+		if (is_dir("$appDir/typo3") && is_dir("$appDir/typo3conf")) return 'typo3';
+		if (is_file("$appDir/craft") || (is_dir("$appDir/config") && is_file("$appDir/config/general.php"))) return 'craftcms';
+		if (is_file("$appDir/version.php") && is_dir("$appDir/mod")) return 'moodle';
+		if (is_file("$appDir/LocalSettings.php")) return 'mediawiki';
+		if (is_file("$appDir/status.php") && is_file("$appDir/config/config.php")) return 'nextcloud';
+		if (is_file("$appDir/classes/PrestaShopAutoload.php") || is_file("$appDir/config/defines.inc.php")) return 'prestashop';
+		if (is_dir("$appDir/module") && is_file("$appDir/config/modules.config.php")) return 'laminas';
+		if (is_dir("$appDir/fuel") && is_file("$appDir/fuel/app/bootstrap.php")) return 'fuelphp';
 		return null;
 	}
 }
-
-// Not inside the class — this goes at the end of the file but we need
-// to append to the class. Let me do it properly.
