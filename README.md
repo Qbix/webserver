@@ -58,6 +58,7 @@ Qbix Server replaces all six with one process. HTTP, WebSocket (with Socket.IO p
 | 📂 | [PHP Framework](docs/framework.md) | The micro-framework: handlers, events, Q classes |
 | ⚙️ | [Configuration](docs/configuration.md) | JSON config, CLI options, presets |
 | 📦 | [Running & Building](docs/running.md) | Source, phar, binary. Building static binaries. Requirements |
+| 📀 | [Binaries & Signing](docs/binaries.md) | Pack apps, manage like zip, ECDSA M-of-N signing, Rekor, platform signing |
 | 🏗️ | [Architecture](docs/architecture.md) | Persistent workers, COW, execution model, mental model, benchmarks |
 | 📊 | [Dashboard & Panel](docs/dashboard.md) | Live stats, control panel tabs |
 | 🚀 | [Deploy & Federation](docs/deploy.md) | Rsync deploy, cluster replication, inter-server trust |
@@ -65,6 +66,9 @@ Qbix Server replaces all six with one process. HTTP, WebSocket (with Socket.IO p
 | 🧩 | [Compatibility](docs/compatibility.md) | SAPI emulation, 28 shimmed functions, class ownership, tests |
 | 📈 | [Benchmarks](docs/BENCHMARKS.md) | Full methodology and numbers |
 | 🔄 | [State Reset](docs/reset.md) | What gets restored between requests |
+| 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
+| 🔀 | [Migrate from Apache](docs/migrate-apache.md) | .htaccess unchanged, VirtualHost mapping |
+| 🔀 | [Migrate from Caddy](docs/migrate-caddy.md) | Automatic HTTPS, on-demand TLS → autohost |
 | ✅ | [Test Results](docs/TestResults.md) | 140 end-to-end tests |
 | 🗺️ | [Roadmap](docs/roadmap.md) | What's next |
 | 📄 | [License](docs/license.md) | MIT |
@@ -187,6 +191,16 @@ Already running nginx, Apache, or Caddy? These guides show the config mapping:
 - [Migrating from nginx](docs/migrate-nginx.md) — server blocks, try_files, proxy_pass, gzip
 - [Migrating from Apache](docs/migrate-apache.md) — .htaccess works unchanged, VirtualHost → domains config
 - [Migrating from Caddy](docs/migrate-caddy.md) — automatic HTTPS, on-demand TLS → autohost
+
+## Single-Binary Distribution
+
+Package your app into one executable file — PHP runtime, web server, and all your code. The binary includes SQLite auto-provisioning: if your app bundles a `.sqlite` file, the server copies it to the data directory on first run and writes the framework config to point at it. No external database needed.
+
+Supported out of the box: Qbix (detects plugins, writes `local/app.json` with per-plugin prefixes), Laravel (`.env`), Symfony (`.env`), WordPress (`wp-config.php` + wp-sqlite-db), Craft CMS, and Drupal.
+
+Sign binaries with ECDSA P-256 keys (M-of-N threshold), publish to Sigstore Rekor for independent verification, and customize by editing the binary as a zip file.
+
+- [Building and distributing binaries](docs/binaries.md) — pack, sign, verify, customize, platform code signing
 
 ## License
 

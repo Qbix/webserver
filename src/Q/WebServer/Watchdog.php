@@ -170,12 +170,12 @@ class Q_WebServer_Watchdog
 
 	static function logPath()
 	{
-		return Q_Config::get('Q', 'webserver', 'watchdog', 'log', 'local/watchdog.log');
+		return Q_Config::get('Q', 'webserver', 'watchdog', 'log', qbix_data_path('local/watchdog.log'));
 	}
 
 	static function pidPath()
 	{
-		return Q_Config::get('Q', 'webserver', 'watchdog', 'pid', 'local/watchdog.pid');
+		return Q_Config::get('Q', 'webserver', 'watchdog', 'pid', qbix_data_path('local/watchdog.pid'));
 	}
 
 	static function log($msg)

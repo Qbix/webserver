@@ -310,7 +310,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "v1.3.0 – Boldly Go"
+          name: "v1.5.0 – Boldly Go"
           body_path: RELEASE_NOTES.md
           draft: false
           generate_release_notes: false

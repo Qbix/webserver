@@ -622,6 +622,9 @@ class Q_WebServer
 					if (!pcntl_wifexited($st) || pcntl_wexitstatus($st) !== 0) {
 						// Worker crashed or was killed — record as 502
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 502, $ms, 0, true);
+							if (class_exists('Q_WebServer_Metrics', false)) {
+								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, '', '', 0);
+							}
 					} else {
 						// Normal exit — child already sent the response and recorded nothing
 						// The child handles recording on its own via exit(0)
@@ -648,6 +651,9 @@ class Q_WebServer
 						@posix_kill($pid, SIGKILL);
 						unset(Q_WebServer::$workerPids[$pid]);
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 504, $ms, 0, true);
+						if (class_exists('Q_WebServer_Metrics', false)) {
+							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, '', '', 0);
+						}
 					}
 				}
 			});
@@ -706,6 +712,21 @@ class Q_WebServer
 						}
 					}
 				}
+			});
+		}
+
+		// Metrics — buffered logging and time-series stats
+		$metricsFile = __DIR__ . '/WebServer/Metrics.php';
+		if (is_file($metricsFile)) {
+			require_once $metricsFile;
+			Q_WebServer_Metrics::init();
+			$flushInterval = Q_Config::get('Q', 'webserver', 'metrics', 'flushInterval', 10);
+			Q_Evented::repeat($flushInterval, function () {
+				Q_WebServer_Metrics::tick();
+			});
+			// Daily purge of old metrics
+			Q_Evented::repeat(86400, function () {
+				Q_WebServer_Metrics::purgeOld();
 			});
 		}
 
@@ -990,6 +1011,17 @@ class Q_WebServer
 				$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes,
 				false, '', $memUsed, $parsed['cookies'] ?? array()
 			);
+			// Metrics: buffered logging, clickstream, time-series
+			if (class_exists('Q_WebServer_Metrics', false)) {
+				Q_WebServer_Metrics::recordRequest(
+					self::$lastStatus, $ms,
+					$parsed['method'], $parsed['uri'],
+					$parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					$parsed['headers']['user-agent'] ?? '',
+					self::$lastBytes,
+					$parsed['cookies'] ?? []
+				);
+			}
 			self::$lastBytes = 0;
 			if (self::$onRequest) {
 				(self::$onRequest)($parsed['method'], $parsed['uri'], self::$lastStatus, $ms);
@@ -1091,12 +1123,29 @@ class Q_WebServer
 			}
 			$stats = Q_WebServer_Dashboard::getStats();
 			$result = array('status' => 'ok') + $stats;
-			// Add cluster info if active
 			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
 				$result['cluster'] = Q_WebServer_Cluster::status();
 			}
 			return array('status'=>200, 'body'=>json_encode($result),
 				'headers'=>array('Content-Type'=>'application/json'));
+		}
+		if ($path === '/Q/metrics') {
+			if (class_exists('Q_WebServer_Metrics', false)) {
+				return array('status'=>200,
+					'body' => Q_WebServer_Metrics::prometheus(),
+					'headers'=>array('Content-Type'=>'text/plain; version=0.0.4'));
+			}
+			return array('status'=>404, 'body'=>'Metrics not enabled');
+		}
+		if ($path === '/Q/attestation') {
+			$attFile = __DIR__ . '/WebServer/Trust.php';
+			if (is_file($attFile)) {
+				require_once $attFile;
+				return array('status'=>200,
+					'body' => json_encode(Q_WebServer_Trust::attestation()),
+					'headers'=>array('Content-Type'=>'application/json'));
+			}
+			return array('status'=>404, 'body'=>'Attestation not available');
 		}
 		if ($path === '/Q/cluster/join' && $method === 'POST') {
 			if (class_exists('Q_WebServer_Cluster', false)) {
@@ -1644,6 +1693,28 @@ class Q_WebServer
 				self::sendResponse($client, 200,
 					json_encode($result),
 					'application/json');
+				return false;
+			}
+			if ($path === '/Q/metrics') {
+				if (class_exists('Q_WebServer_Metrics', false)) {
+					self::sendResponse($client, 200,
+						Q_WebServer_Metrics::prometheus(),
+						'text/plain; version=0.0.4');
+				} else {
+					self::sendResponse($client, 404, 'Metrics not enabled');
+				}
+				return false;
+			}
+			if ($path === '/Q/attestation') {
+				$trustFile = __DIR__ . '/WebServer/Trust.php';
+				if (is_file($trustFile)) {
+					require_once $trustFile;
+					self::sendResponse($client, 200,
+						json_encode(Q_WebServer_Trust::attestation()),
+						'application/json');
+				} else {
+					self::sendResponse($client, 404, 'Not available');
+				}
 				return false;
 			}
 			if ($path === '/Q/cluster/join' && $method === 'POST') {
