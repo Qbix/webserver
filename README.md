@@ -180,6 +180,14 @@ Six example apps are included in `examples/`:
 php qbixserver.php --root=examples/todo/web --port=8080
 ```
 
+## Migrating from another server
+
+Already running nginx, Apache, or Caddy? These guides show the config mapping:
+
+- [Migrating from nginx](docs/migrate-nginx.md) — server blocks, try_files, proxy_pass, gzip
+- [Migrating from Apache](docs/migrate-apache.md) — .htaccess works unchanged, VirtualHost → domains config
+- [Migrating from Caddy](docs/migrate-caddy.md) — automatic HTTPS, on-demand TLS → autohost
+
 ## License
 
 [MIT](LICENSE) — use it however you want.

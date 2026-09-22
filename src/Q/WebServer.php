@@ -655,6 +655,14 @@ class Q_WebServer
 
 		// Scheduler — run tasks on intervals or at specific times
 		$schedule = Q_Config::get('Q', 'scheduler', array());
+		// Built-in: cert renewal check every 12 hours
+		if (!isset($schedule['_certRenewal'])) {
+			$schedule['_certRenewal'] = array(
+				'handler' => '_certRenewal',
+				'every' => 43200, // 12 hours
+			);
+			Q_Config::set('Q', 'scheduler', '_certRenewal', $schedule['_certRenewal']);
+		}
 		if (!empty($schedule)) {
 			Q_Scheduler::init($schedule);
 			Q_Evented::repeat(1, function () {
@@ -667,9 +675,36 @@ class Q_WebServer
 			Q_HotReload::init();
 			Q_Evented::repeat(2, function () {
 				Q_HotReload::check();
-				// Also invalidate stale compat transform cache
 				if (class_exists('Q_WebServer_Compat', false)) {
 					Q_WebServer_Compat::invalidateStale();
+				}
+			});
+		}
+
+		// Config file watcher — re-read config on change (no restart needed)
+		$configFiles = array_filter([
+			'local/app.json',
+			'local/panel.json',
+			'config/app.json',
+		], 'is_file');
+		if ($configFiles) {
+			$configMtimes = [];
+			foreach ($configFiles as $cf) {
+				$configMtimes[$cf] = filemtime($cf);
+			}
+			Q_Evented::repeat(3, function () use (&$configMtimes) {
+				foreach ($configMtimes as $cf => $mtime) {
+					clearstatcache(true, $cf);
+					$newMtime = @filemtime($cf);
+					if ($newMtime && $newMtime !== $mtime) {
+						$configMtimes[$cf] = $newMtime;
+						// Re-read the config
+						$data = @json_decode(file_get_contents($cf), true);
+						if ($data && is_array($data)) {
+							Q_Config::merge($data);
+							fwrite(STDERR, date('H:i:s') . " config reloaded: $cf\n");
+						}
+					}
 				}
 			});
 		}
@@ -1397,10 +1432,39 @@ class Q_WebServer
 		$host = $parsed['headers']['host'] ?? '';
 		$host = strtolower(preg_replace('/:\d+$/', '', $host)); // strip port
 		$hostConfig = Q_Config::get('Q', 'webserver', 'hosts', $host, null);
+		if (!$hostConfig) {
+			$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+		}
 		if ($hostConfig && isset($hostConfig['root'])) {
 			$vroot = realpath($hostConfig['root']);
 			if ($vroot && is_dir($vroot)) {
 				self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $vroot), DS) . DS;
+			}
+		} elseif ($host && !$hostConfig) {
+			// Unknown host — try autohost
+			$autohostFile = __DIR__ . '/WebServer/Autohost.php';
+			if (is_file($autohostFile)) {
+				require_once $autohostFile;
+				if (Q_WebServer_Autohost::enabled() && !Q_WebServer_Autohost::isKnownHost($host)) {
+					$clientIp = $parsed['headers']['x-forwarded-for']
+						?? ($parsed['headers']['x-real-ip'] ?? '127.0.0.1');
+					$clientIp = explode(',', $clientIp)[0];
+					$result = Q_WebServer_Autohost::handleUnknownHost($host, trim($clientIp), $parsed);
+					if ($result && !empty($result['splash'])) {
+						return self::sendResponse($client, 503, $result['html'], array(
+							'Content-Type' => 'text/html; charset=utf-8',
+							'Retry-After' => '5',
+						));
+					}
+					// If provisioning succeeded, re-check the host config
+					$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+					if ($hostConfig && isset($hostConfig['root'])) {
+						$vroot = realpath($hostConfig['root']);
+						if ($vroot && is_dir($vroot)) {
+							self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $vroot), DS) . DS;
+						}
+					}
+				}
 			}
 		}
 

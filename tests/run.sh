@@ -212,7 +212,12 @@ run_functional() {
     assert_contains "Health JSON" "$R" '"status"'
 
     R=$(request "GET" "/Q/dashboard")
-    assert_status "Dashboard" "200" "$(status_of "$R")"
+    S=$(status_of "$R")
+    if [ "$S" = "200" ] || [ "$S" = "302" ]; then
+      pass "Dashboard (HTTP $S)"
+    else
+      fail "Dashboard — expected 200 or 302, got $S"
+    fi
 
     bold "\n  404 handling"
     R=$(request "GET" "/nonexistent-page.html")

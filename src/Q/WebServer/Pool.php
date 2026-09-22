@@ -570,18 +570,23 @@ class Q_WebServer_Pool
 		// child exited after one request).
 		if ($this->octane) {
 			$this->workers[$index]['busy'] = false;
+			$this->workers[$index]['requests'] = ($this->workers[$index]['requests'] ?? 0) + 1;
 			$this->workerBuffers[$index] = '';
 			unset($this->workerClients[$index]);
-			// CANCEL the readable watcher entirely. stream_select reports a
-			// Unix socket pair as readable whenever the other end is alive
-			// (fread returns '' rather than blocking), so a disabled-but-
-			// registered watcher fires endlessly. sendTo() creates a fresh
-			// one-shot watcher for the next dispatch.
+
+			// Recycle if marked for graceful recycling, or hit maxRequests
+			$shouldRecycle = !empty($this->workers[$index]['recycleAfter'])
+				|| ($this->maxRequests > 0 && $this->workers[$index]['requests'] >= $this->maxRequests);
+
+			if ($shouldRecycle) {
+				$this->recycle($index, false);
+				return;
+			}
+
 			if (isset($this->watchers[$index])) {
 				Q_Evented::cancel($this->watchers[$index]);
 				unset($this->watchers[$index]);
 			}
-			// Process any pending requests
 			if (!empty($this->pending)) {
 				$next = array_shift($this->pending);
 				$this->dispatch($next[0], $next[1], $next[2]);
@@ -653,6 +658,71 @@ class Q_WebServer_Pool
 			if (!$w['busy']) return $i;
 		}
 		return null;
+	}
+
+	/**
+	 * Gracefully recycle a single worker: let it finish its current request,
+	 * then replace it with a fresh fork.
+	 * If the worker is idle, recycle immediately.
+	 */
+	function recycleWorker($index)
+	{
+		if (!isset($this->workers[$index])) return false;
+		if ($this->workers[$index]['busy']) {
+			// Mark for recycling after current request finishes
+			$this->workers[$index]['recycleAfter'] = true;
+			return 'pending';
+		}
+		$this->recycle($index, false);
+		return 'recycled';
+	}
+
+	/**
+	 * Gracefully recycle ALL workers (rolling restart).
+	 * Idle workers are replaced immediately. Busy workers are marked
+	 * and replaced when their current request finishes.
+	 * Returns count of immediately recycled vs pending.
+	 */
+	function recycleAll()
+	{
+		$immediate = 0;
+		$pending = 0;
+		foreach ($this->workers as $i => $w) {
+			if ($w['busy']) {
+				$this->workers[$i]['recycleAfter'] = true;
+				$pending++;
+			} else {
+				$this->recycle($i, false);
+				$immediate++;
+			}
+		}
+		return ['immediate' => $immediate, 'pending' => $pending];
+	}
+
+	/**
+	 * Get stats for the control panel.
+	 */
+	function workerStats()
+	{
+		$stats = [];
+		foreach ($this->workers as $i => $w) {
+			$stats[] = [
+				'index' => $i,
+				'pid' => $w['pid'],
+				'busy' => $w['busy'],
+				'requests' => $w['requests'] ?? 0,
+				'recycleAfter' => !empty($w['recycleAfter']),
+			];
+		}
+		return [
+			'workers' => $stats,
+			'total' => count($this->workers),
+			'busy' => count(array_filter($this->workers, function($w) { return $w['busy']; })),
+			'idle' => count(array_filter($this->workers, function($w) { return !$w['busy']; })),
+			'maxRequests' => $this->maxRequests,
+			'mode' => $this->octane ? 'persistent' : 'fork-per-request',
+			'pending' => count($this->pending),
+		];
 	}
 
 	/**

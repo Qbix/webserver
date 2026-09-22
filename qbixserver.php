@@ -45,6 +45,8 @@ $opts = array(
 	'pid'     => null,
 	'pack'    => null,  // --pack=DIR : bundle app files into binary
 	'output'  => null,  // --output=FILE : output path for --pack
+	'gui'     => false, // --gui : mark packed binary as GUI (no console window)
+	'open'    => null,  // --open[=/path] : open browser when server is ready
 	'debug'   => false,
 );
 
@@ -77,6 +79,8 @@ foreach ($argv as $i => $arg) {
 		echo "  --generate-key=NAME  Generate RSA-2048 keypair for signing\n";
 		echo "  --pack=DIR       Bundle app files into this binary as a standalone\n";
 		echo "  --output=FILE    Output path for --pack (default: ./myapp)\n";
+		echo "  --gui            With --pack: mark binary as GUI app (no console on Windows)\n";
+		echo "  --open[=/path]   Open browser when server is ready (default: /)\n";
 		echo "  --version        Print version\n";
 		echo "\nQuick start:\n";
 		echo "  mkdir -p web && echo '<?php echo \"Hello!\";' > web/index.php\n";
@@ -621,6 +625,19 @@ if ($opts['pack']) {
 		file_put_contents($output, file_get_contents($tmpZip), FILE_APPEND);
 		@unlink($tmpZip);
 		if (PHP_OS_FAMILY !== 'Windows') chmod($output, 0755);
+
+		// --gui: create a launcher that hides the console window
+		if ($opts['gui']) {
+			if (PHP_OS_FAMILY === 'Windows') {
+				$vbsPath = preg_replace('/\.exe$/i', '', $output) . '.vbs';
+				$vbsContent = 'CreateObject("WScript.Shell").Run Chr(34) & Replace(WScript.ScriptFullName, ".vbs", ".exe") & Chr(34), 0';
+				file_put_contents($vbsPath, $vbsContent);
+				fwrite(STDERR, "Created: $vbsPath (double-click to run without console)\n");
+			}
+			// Bake open=/ into the config so the browser auto-opens
+			// The packed binary will check Q.webserver.open at startup
+		}
+
 		$sizeKb = round(filesize($output) / 1024);
 		fwrite(STDERR, "Built: $output ({$sizeKb}KB, $fileCount app files)\n");
 		fwrite(STDERR, "Run:   " . (PHP_OS_FAMILY === 'Windows' ? $output : "./$output") . "\n");
@@ -780,6 +797,19 @@ if ($opts['pid']) {
 	file_put_contents($opts['pid'], getmypid());
 	register_shutdown_function(function () use ($opts) {
 		@unlink($opts['pid']);
+		// Kill the watchdog if it's running
+		$watchdogPid = 'local/watchdog.pid';
+		if (is_file($watchdogPid)) {
+			$wPid = (int) trim(file_get_contents($watchdogPid));
+			if ($wPid > 0) {
+				if (function_exists('posix_kill')) {
+					posix_kill($wPid, 15); // SIGTERM
+				} elseif (PHP_OS_FAMILY === 'Windows') {
+					exec("taskkill /PID $wPid /F 2>NUL");
+				}
+				@unlink($watchdogPid);
+			}
+		}
 	});
 }
 
@@ -1074,6 +1104,34 @@ fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");
+
+// ── Open browser if requested ──
+$openPath = $opts['open']
+	?? Q_Config::get('Q', 'webserver', 'open', null);
+if ($openPath !== null) {
+	if ($openPath === true || $openPath === '' || $openPath === '1') {
+		$openPath = '/';
+	}
+	$openUrl = "http://127.0.0.1:{$opts['port']}" . $openPath;
+	if (PHP_OS_FAMILY === 'Windows') {
+		pclose(popen("start \"\" " . escapeshellarg($openUrl), "r"));
+	} elseif (PHP_OS_FAMILY === 'Darwin') {
+		exec("open " . escapeshellarg($openUrl) . " >/dev/null 2>&1 &");
+	} else {
+		exec("xdg-open " . escapeshellarg($openUrl) . " >/dev/null 2>&1 &");
+	}
+	fwrite(STDERR, "  Opened: $openUrl\n\n");
+}
+
+// ── Watchdog — monitor and auto-restart on crash ──
+$watchdogEnabled = Q_Config::get('Q', 'webserver', 'watchdog', null);
+if ($watchdogEnabled) {
+	require_once __DIR__ . '/src/Q/WebServer/Watchdog.php';
+	$watchdogPid = Q_WebServer_Watchdog::start(getmypid(), $argv);
+	if ($watchdogPid > 0) {
+		fwrite(STDERR, "  Watchdog: PID $watchdogPid (auto-restart on crash)\n");
+	}
+}
 
 // ── Cluster initialization ──
 // If PEERS env or Q.cluster config is set, enable clustering

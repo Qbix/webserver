@@ -90,7 +90,7 @@ class Q_WebServer_Panel
 	/**
 	 * Get the panel config file path
 	 */
-	private static function panelConfigPath()
+	static function panelConfigPath()
 	{
 		return defined('APP_DIR')
 			? APP_DIR . '/local/panel.json'
@@ -307,10 +307,26 @@ class Q_WebServer_Panel
 				return self::apiRemoveDomain($parsed);
 			case 'domains/provision':
 				return self::apiProvisionCert($parsed);
+			case 'domains/hosts':
+				return self::apiHostsFile();
+			case 'domains/hosts/add':
+				return self::apiHostsAdd($parsed);
+			case 'autohost':
+				require_once dirname(__DIR__) . '/WebServer/Autohost.php';
+				return Q_WebServer_Autohost::status();
+			case 'autohost/toggle':
+				return self::apiAutohostToggle($parsed);
+			case 'watchdog':
+				require_once dirname(__DIR__) . '/WebServer/Watchdog.php';
+				return Q_WebServer_Watchdog::status();
 			case 'workers':
 				return self::apiWorkerStatus();
 			case 'workers/resize':
 				return self::apiWorkerResize($parsed);
+			case 'workers/recycle':
+				return self::apiWorkerRecycle($parsed);
+			case 'workers/detail':
+				return self::apiWorkerDetail();
 			case 'logs':
 				return self::apiLogs($parsed);
 			case 'cron':
@@ -2278,6 +2294,177 @@ class Q_WebServer_Panel
 		return $result;
 	}
 
+	// ── Hosts File API ──────────────────────────────────
+
+	/**
+	 * Get the system hosts file path for the current OS.
+	 */
+	static function hostsFilePath()
+	{
+		return PHP_OS_FAMILY === 'Windows'
+			? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+			: '/etc/hosts';
+	}
+
+	/**
+	 * Read and parse the system hosts file.
+	 * Returns entries as [{ip, hostname, line}] and the raw content.
+	 */
+	static function apiHostsFile()
+	{
+		$path = self::hostsFilePath();
+		if (!is_readable($path)) {
+			return ['error' => "Cannot read $path", 'entries' => [], 'writable' => false];
+		}
+		$raw = file_get_contents($path);
+		$entries = [];
+		foreach (explode("\n", $raw) as $i => $line) {
+			$trimmed = trim($line);
+			if ($trimmed === '' || $trimmed[0] === '#') continue;
+			$parts = preg_split('/\s+/', $trimmed);
+			if (count($parts) >= 2) {
+				$ip = array_shift($parts);
+				foreach ($parts as $host) {
+					if ($host === '' || $host[0] === '#') break;
+					$entries[] = ['ip' => $ip, 'hostname' => $host, 'line' => $i + 1];
+				}
+			}
+		}
+
+		// Cross-reference with configured domains
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		$configPath = self::panelConfigPath();
+		if (file_exists($configPath)) {
+			$panelConfig = json_decode(file_get_contents($configPath), true);
+			if (!empty($panelConfig['domains'])) {
+				$domains = array_merge($domains, $panelConfig['domains']);
+			}
+		}
+
+		$mapped = [];
+		$hostsMap = [];
+		foreach ($entries as $e) {
+			$hostsMap[$e['hostname']] = $e['ip'];
+		}
+		foreach ($domains as $name => $conf) {
+			$mapped[] = [
+				'domain' => $name,
+				'inHosts' => isset($hostsMap[$name]),
+				'hostsIp' => $hostsMap[$name] ?? null,
+			];
+		}
+
+		return [
+			'entries' => $entries,
+			'domains' => $mapped,
+			'path' => $path,
+			'writable' => is_writable($path),
+			'needsElevation' => !is_writable($path),
+		];
+	}
+
+	/**
+	 * Add an entry to /etc/hosts. Returns a shell command for elevation
+	 * if the server doesn't have write access (which is the normal case).
+	 */
+	static function apiHostsAdd($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$hostname = $body['hostname'] ?? '';
+		$ip = $body['ip'] ?? '127.0.0.1';
+
+		if (!$hostname || !preg_match('/^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/i', $hostname)) {
+			return ['status' => 400, 'error' => 'Invalid hostname'];
+		}
+		if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+			return ['status' => 400, 'error' => 'Invalid IP'];
+		}
+
+		// Check if already in hosts
+		$path = self::hostsFilePath();
+		if (is_readable($path)) {
+			$existing = file_get_contents($path);
+			if (preg_match('/^\s*' . preg_quote($ip, '/') . '\s+.*\b' . preg_quote($hostname, '/') . '\b/m', $existing)) {
+				return ['already' => true, 'hostname' => $hostname, 'ip' => $ip];
+			}
+			// Check for conflicting entry (different IP, same hostname)
+			if (preg_match('/^\s*(\S+)\s+.*\b' . preg_quote($hostname, '/') . '\b/m', $existing, $m)) {
+				return [
+					'conflict' => true,
+					'hostname' => $hostname,
+					'existingIp' => trim($m[1]),
+					'requestedIp' => $ip,
+				];
+			}
+		}
+
+		$entry = "$ip\t$hostname";
+
+		// Try direct write first
+		if (is_writable($path)) {
+			file_put_contents($path, "\n$entry\n", FILE_APPEND);
+			return ['added' => true, 'hostname' => $hostname, 'ip' => $ip];
+		}
+
+		// Return platform-specific elevation commands
+		$cmds = [];
+		if (PHP_OS_FAMILY === 'Darwin') {
+			$cmds['command'] = "sudo -- sh -c 'echo \"$entry\" >> /etc/hosts'";
+			$cmds['gui'] = "osascript -e 'do shell script \"echo \\\"$entry\\\" >> /etc/hosts\" with administrator privileges'";
+		} elseif (PHP_OS_FAMILY === 'Windows') {
+			$psCmd = "Add-Content -Path '$path' -Value '$entry'";
+			$cmds['command'] = "powershell -Command \"Start-Process powershell -Verb RunAs -ArgumentList '-Command $psCmd'\"";
+		} else {
+			$cmds['command'] = "sudo -- sh -c 'echo \"$entry\" >> /etc/hosts'";
+			$cmds['gui'] = "pkexec sh -c 'echo \"$entry\" >> /etc/hosts'";
+		}
+
+		return [
+			'needsElevation' => true,
+			'hostname' => $hostname,
+			'ip' => $ip,
+			'entry' => $entry,
+			'commands' => $cmds,
+		];
+	}
+
+	// ── Autohost API ────────────────────────────────────
+
+	static function apiAutohostToggle($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$configPath = self::panelConfigPath();
+		$config = is_file($configPath)
+			? json_decode(file_get_contents($configPath), true) : [];
+
+		if (isset($body['enabled'])) {
+			$config['autohost']['enabled'] = (bool) $body['enabled'];
+		}
+		if (isset($body['authorize'])) {
+			$config['autohost']['authorize'] = $body['authorize'];
+		}
+		if (isset($body['dnsCheck'])) {
+			$config['autohost']['dnsCheck'] = (bool) $body['dnsCheck'];
+		}
+		if (isset($body['acmeEmail'])) {
+			$config['autohost']['acmeEmail'] = $body['acmeEmail'];
+		}
+		if (isset($body['allowlist'])) {
+			$config['autohost']['allowlist'] = array_values(array_filter(
+				array_map('trim', explode("\n", $body['allowlist']))
+			));
+		}
+
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+		// Apply to runtime config
+		foreach ($config['autohost'] ?? [] as $k => $v) {
+			Q_Config::set('Q', 'webserver', 'autohost', $k, $v);
+		}
+
+		return ['saved' => true, 'autohost' => $config['autohost'] ?? []];
+	}
+
 	// ── Workers API ──────────────────────────────────────
 
 	static function apiWorkerStatus()
@@ -2306,7 +2493,6 @@ class Q_WebServer_Panel
 		if ($count < 1 || $count > 10000) {
 			return ['status' => 400, 'error' => 'Worker count must be 1-10000'];
 		}
-		// Worker resize requires pool support
 		$pool = Q_WebServer::$pool ?? null;
 		if (!$pool) {
 			return ['status' => 400, 'error' => 'No worker pool (in-process mode)'];
@@ -2316,6 +2502,33 @@ class Q_WebServer_Panel
 			return ['resized' => $count];
 		}
 		return ['status' => 501, 'error' => 'Pool does not support dynamic resize yet'];
+	}
+
+	static function apiWorkerRecycle($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['status' => 400, 'error' => 'No worker pool'];
+		}
+		$index = $body['index'] ?? null;
+		if ($index !== null) {
+			// Recycle a specific worker
+			$result = $pool->recycleWorker((int) $index);
+			return ['worker' => (int) $index, 'result' => $result];
+		}
+		// Recycle all workers (rolling restart)
+		$result = $pool->recycleAll();
+		return ['recycled' => $result];
+	}
+
+	static function apiWorkerDetail()
+	{
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['mode' => 'in-process', 'workers' => []];
+		}
+		return $pool->workerStats();
 	}
 
 	// ── Logs API ─────────────────────────────────────────
@@ -2654,6 +2867,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 <div class="tabs">
   <div class="tab active" onclick="showTab('apps')">Apps</div>
   <div class="tab" onclick="showTab('domains')">Domains</div>
+  <div class="tab" onclick="showTab('autohost')">Autohost</div>
   <div class="tab" onclick="showTab('scripts')">Scripts</div>
   <div class="tab" onclick="showTab('plugins')">Plugins</div>
   <div class="tab" onclick="showTab('workers')">Workers</div>
@@ -2705,6 +2919,23 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <div class="form-row"><label>TLS</label><select id="dom-tls"><option value="auto">Auto (ACME)</option><option value="manual">Manual (drop certs)</option><option value="self-signed">Self-signed</option><option value="">HTTP only</option></select></div>
     <button onclick="addDomain()">Add Domain</button>
   </div>
+  <div id="hosts-info"></div>
+</div>
+
+<!-- AUTOHOST TAB -->
+<div id="tab-autohost" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Autohost</h2>
+  <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Auto-provision domains when a new Host header arrives. Customer points DNS at your server, first request triggers cert provisioning and config setup.</p>
+  <div class="card" style="margin-bottom:16px">
+    <div class="form-row"><label>Enabled</label><select id="ah-enabled" onchange="saveAutohost()"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="form-row"><label>Authorization</label><select id="ah-authorize" onchange="saveAutohost()"><option value="open">Open (any hostname)</option><option value="allowlist">Allowlist (patterns)</option></select></div>
+    <div class="form-row" id="ah-allowlist-row" style="display:none"><label>Allowlist</label><textarea id="ah-allowlist" rows="3" placeholder="*.example.com&#10;app.acme.com" style="font-size:12px"></textarea></div>
+    <div class="form-row"><label>DNS check</label><select id="ah-dns"><option value="1">Verify DNS points here</option><option value="0">Skip (trust all)</option></select></div>
+    <div class="form-row"><label>ACME email</label><input id="ah-email" placeholder="admin@example.com"></div>
+    <button class="btn btn-primary" onclick="saveAutohost()">Save</button>
+  </div>
+  <div id="ah-status"></div>
+  <div id="ah-log"></div>
 </div>
 
 <!-- SCRIPTS TAB -->
@@ -2826,6 +3057,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <button onclick="resizeWorkers()">Resize</button>
     <p style="font-size:11px;color:var(--dim);margin-top:8px">Takes effect gradually as workers finish their current requests.</p>
   </div>
+  <div id="worker-detail"></div>
 </div>
 
 <!-- LOGS TAB -->
@@ -3092,6 +3324,7 @@ function showTab(name) {
   if (name==='system') loadSystem();
   if (name==='servers') loadServers();
   if (name==='domains') loadDomains();
+  if (name==='autohost') loadAutohost();
   if (name==='workers') loadWorkers();
   if (name==='logs') loadLogs('access');
   if (name==='cron') loadCron();
@@ -3583,22 +3816,59 @@ async function loadDomains() {
   var el = document.getElementById('domains-list');
   if (!r.domains || !r.domains.length) {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No domains configured. Add one below, or set <code>Q.webserver.domains</code> in config.</p></div>';
-    return;
+  } else {
+    el.innerHTML = r.domains.map(function(d) {
+      var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
+        : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
+        : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
+        : '<span style="color:var(--dim)">no cert</span>';
+      var btns = '';
+      if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Provision</button>';
+      else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Renew</button>';
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
+      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + d.domain + '</strong></div><div>' + badge + btns + '</div></div>'
+        + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + d.root + '</div>' : '')
+        + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + d.certExpires + '</div>' : '')
+        + '</div>';
+    }).join('');
   }
-  el.innerHTML = r.domains.map(function(d) {
-    var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
-      : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
-      : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
-      : '<span style="color:var(--dim)">no cert</span>';
-    var btns = '';
-    if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Provision</button>';
-    else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Renew</button>';
-    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
-    return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + d.domain + '</strong></div><div>' + badge + btns + '</div></div>'
-      + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + d.root + '</div>' : '')
-      + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + d.certExpires + '</div>' : '')
-      + '</div>';
-  }).join('');
+  loadHosts();
+}
+async function loadHosts() {
+  var r = await api('domains/hosts');
+  var el = document.getElementById('hosts-info');
+  if (!el) return;
+  if (r.error) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">' + r.error + '</p></div>'; return; }
+  var html = '<h3 style="font-size:14px;margin:16px 0 8px">System Hosts <span style="font-size:11px;color:var(--dim)">(' + r.path + ')</span></h3>';
+  if (r.domains && r.domains.length) {
+    html += r.domains.map(function(d) {
+      if (d.inHosts) {
+        return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--grn)">\u2713</span> <strong>' + d.domain + '</strong> \u2192 ' + d.hostsIp + '</div>';
+      }
+      var isLocalhost = d.domain.endsWith('.localhost');
+      if (isLocalhost) {
+        return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--grn)">\u2713</span> <strong>' + d.domain + '</strong> <span style="color:var(--dim)">(resolves via .localhost)</span></div>';
+      }
+      return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--yel)">\u26a0</span> <strong>' + d.domain + '</strong> <span style="color:var(--dim)">not in hosts</span>'
+        + ' <button class="btn btn-primary" style="font-size:11px;padding:3px 8px;margin-left:8px" onclick="addHostsEntry(\'' + d.domain + '\')">Add to hosts</button></div>';
+    }).join('');
+  } else {
+    html += '<div class="card"><p style="color:var(--dim)">No domains configured.</p></div>';
+  }
+  el.innerHTML = html;
+}
+async function addHostsEntry(hostname, ip) {
+  ip = ip || '127.0.0.1';
+  var r = await api('domains/hosts/add', {hostname: hostname, ip: ip});
+  if (r.already) { alert(hostname + ' is already in your hosts file.'); return; }
+  if (r.conflict) { alert(hostname + ' is mapped to ' + r.existingIp + ' (not ' + r.requestedIp + '). Edit your hosts file manually to change it.'); return; }
+  if (r.added) { alert('Added ' + hostname + ' \u2192 ' + ip); loadHosts(); return; }
+  if (r.needsElevation) {
+    var cmd = r.commands.gui || r.commands.command;
+    if (confirm(hostname + ' needs admin access to add to ' + r.entry + '.\n\nRun this command in your terminal:\n\n' + r.commands.command + '\n\nCopy to clipboard?')) {
+      try { navigator.clipboard.writeText(r.commands.command); } catch(e) {}
+    }
+  }
 }
 async function addDomain() {
   var name = document.getElementById('dom-name').value.trim();
@@ -3608,6 +3878,44 @@ async function addDomain() {
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
 async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+
+// ── Autohost ────────────────────────────────────────
+async function loadAutohost() {
+  var r = await api('autohost');
+  document.getElementById('ah-enabled').value = r.enabled ? '1' : '0';
+  document.getElementById('ah-authorize').value = r.authorize || 'open';
+  document.getElementById('ah-dns').value = r.dnsCheck !== false ? '1' : '0';
+  document.getElementById('ah-allowlist-row').style.display = r.authorize === 'allowlist' ? '' : 'none';
+  var el = document.getElementById('ah-status');
+  var prov = r.provisioning || [];
+  el.innerHTML = prov.length
+    ? '<div class="card" style="margin-bottom:12px"><h3 style="font-size:14px;margin-bottom:8px">Currently Provisioning</h3>' + prov.map(function(h){return '<div>\u23f3 '+h+'</div>';}).join('') + '</div>'
+    : '';
+  var logEl = document.getElementById('ah-log');
+  var lines = r.recentLog || [];
+  if (lines.length) {
+    logEl.innerHTML = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Recent Activity</h3>'
+      + '<pre style="font-size:11px;max-height:200px;overflow-y:auto;margin:0;white-space:pre-wrap">' + lines.join('\n') + '</pre></div>';
+  } else {
+    logEl.innerHTML = '<div class="card"><p style="color:var(--dim)">No autohost activity yet.</p></div>';
+  }
+  document.getElementById('ah-authorize').onchange = function() {
+    document.getElementById('ah-allowlist-row').style.display = this.value === 'allowlist' ? '' : 'none';
+  };
+}
+async function saveAutohost() {
+  var data = {
+    enabled: document.getElementById('ah-enabled').value === '1',
+    authorize: document.getElementById('ah-authorize').value,
+    dnsCheck: document.getElementById('ah-dns').value === '1',
+    acmeEmail: document.getElementById('ah-email').value.trim()
+  };
+  if (data.authorize === 'allowlist') {
+    data.allowlist = document.getElementById('ah-allowlist').value;
+  }
+  await api('autohost/toggle', data);
+  loadAutohost();
+}
 
 // ── Workers ─────────────────────────────────────────
 async function loadWorkers() {
@@ -3622,12 +3930,43 @@ async function loadWorkers() {
     +s('Memory',fmt(r.memoryUsage||0))+s('Peak',fmt(r.memoryPeak||0))+s('Uptime',fmtT(r.uptime||0))
     +'</div></div>';
   document.getElementById('worker-count').value=r.workers;
+  // Load worker detail
+  var d = await api('workers/detail');
+  var detailEl = document.getElementById('worker-detail');
+  if (detailEl && d.workers) {
+    var tbl = '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="color:var(--dim)">'
+      + '<th style="text-align:left;padding:4px">PID</th><th>Status</th><th>Requests</th><th></th></tr>';
+    d.workers.forEach(function(w) {
+      var status = w.busy ? '<span style="color:var(--yel)">\u25cf busy</span>'
+        : w.recycleAfter ? '<span style="color:var(--red)">\u21bb recycling</span>'
+        : '<span style="color:var(--grn)">\u25cf idle</span>';
+      tbl += '<tr style="border-top:1px solid var(--border);padding:4px"><td style="padding:4px">' + w.pid + '</td><td style="text-align:center">' + status
+        + '</td><td style="text-align:center">' + (w.requests||0)
+        + '</td><td style="text-align:right"><button class="btn btn-ghost" style="font-size:10px;padding:2px 6px" onclick="recycleWorker(' + w.index + ')">\u21bb</button></td></tr>';
+    });
+    tbl += '</table>';
+    detailEl.innerHTML = '<div class="card" style="margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<h3 style="font-size:14px;margin:0">Worker Detail</h3>'
+      + '<button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="recycleAll()">Recycle All</button></div>'
+      + '<p style="font-size:11px;color:var(--dim);margin:0 0 8px">Mode: ' + d.mode + ' \u00b7 Max requests: ' + d.maxRequests + ' \u00b7 Queue: ' + (d.pending||0) + '</p>'
+      + tbl + '</div>';
+  }
 }
 async function resizeWorkers() {
   var c=parseInt(document.getElementById('worker-count').value);
   if(!c||c<1)return alert('Enter a number');
   var r=await api('workers/resize',{workers:c});
   alert(r.error||'Resizing to '+c); loadWorkers();
+}
+async function recycleWorker(idx) {
+  var r = await api('workers/recycle', {index: idx});
+  loadWorkers();
+}
+async function recycleAll() {
+  if (!confirm('Recycle all workers? Busy workers finish their current request first.')) return;
+  var r = await api('workers/recycle', {});
+  alert('Recycled: ' + (r.recycled ? r.recycled.immediate + ' immediate, ' + r.recycled.pending + ' pending' : 'done'));
+  loadWorkers();
 }
 
 // ── Logs ────────────────────────────────────────────
