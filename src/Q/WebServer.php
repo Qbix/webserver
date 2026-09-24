@@ -2985,14 +2985,23 @@ WORKER;
 	 * Check if a URL path allows directory listing.
 	 *
 	 * Directory listings are OFF by default (more secure).
-	 * Only paths matching regexes in
-	 * Q.web.indexed.paths get listings. Default: /img/.
 	 *
-	 * Config:
-	 *   "Q": { "web": { "indexed": { "paths": {
-	 *     "#^/img/#": true,
-	 *     "#^/downloads/#": true
-	 *   }}}}
+	 * Two ways to turn them on, checked in this order:
+	 *
+	 * 1. An .htaccess in the directory or above it:
+	 *      Options +Indexes      (and -Indexes to switch back off)
+	 *    The deepest file wins, as the nearer directive does in Apache.
+	 *    How much .htaccess may do is capped by Q.web.indexed.allowOverride:
+	 *      true        enable and disable (default)
+	 *      "restrict"  disable only — +Indexes is ignored
+	 *      false       .htaccess ignored, the config alone decides
+	 *
+	 * 2. Otherwise, paths matching regexes in Q.web.indexed.paths:
+	 *      "Q": { "web": { "indexed": { "paths": {
+	 *        "#^/img/#": true,
+	 *        "#^/downloads/#": true
+	 *      }}}}
+	 *    The first matching pattern decides. Default: /img/.
 	 *
 	 * For actual access control, use X-Accel-Redirect.
 	 *
@@ -3003,6 +3012,31 @@ WORKER;
 	 */
 	static function isIndexed($urlPath)
 	{
+		// An .htaccess in the directory (or above it) wins, the way the
+		// nearer directive does under Apache: "Options +Indexes" turns
+		// listings on for that subtree, "-Indexes" off again. Nothing in
+		// the chain says anything -> fall through to the config.
+		//
+		// Q.web.indexed.allowOverride decides how far that goes, since a
+		// writable document root otherwise means anyone who can drop a
+		// file in it can expose a directory:
+		//
+		//   true        .htaccess may enable and disable (default)
+		//   "restrict"  .htaccess may only disable; +Indexes is ignored
+		//   false       .htaccess is ignored here entirely
+		$allow = Q_Config::get('Q', 'web', 'indexed', 'allowOverride', true);
+		if ($allow !== false
+		and class_exists('Q_WebServer_Compat', false)
+		and method_exists('Q_WebServer_Compat', 'htaccessIndexes')) {
+			$fromHtaccess = Q_WebServer_Compat::htaccessIndexes(
+				$urlPath, self::$rootDir
+			);
+			// A deny is honoured under "restrict" too: tightening is always
+			// allowed, only granting is what the setting holds back.
+			if ($fromHtaccess === false) return false;
+			if ($fromHtaccess === true and $allow !== 'restrict') return true;
+		}
+
 		static $patterns = null;
 		if ($patterns === null) {
 			$patterns = Q_Config::get('Q', 'web', 'indexed', 'paths', array(
