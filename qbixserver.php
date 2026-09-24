@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '1.5.0');
+define('QBIX_SERVER_VERSION', '2.0.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── Parse CLI args ──────────────────────────────────
@@ -1244,6 +1244,18 @@ fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
 fwrite(STDERR, "  │" . str_pad("  I/O:       $evLoop", $W) . "│\n");
+
+// ── Initialize mesh identity ──
+$meshId = '';
+$meshFile = __DIR__ . '/src/Q/WebServer/Mesh.php';
+if (is_file($meshFile)) {
+	require_once $meshFile;
+	Q_WebServer_Mesh::init();
+	$meshId = Q_WebServer_Mesh::peerId();
+	$meshLabel = "  Mesh ID: " . substr($meshId, 0, 12) . "…";
+	fwrite(STDERR, "  │" . str_pad($meshLabel, $W) . "│\n");
+}
+
 fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
 fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
 fwrite(STDERR, "\n");

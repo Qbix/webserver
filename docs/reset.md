@@ -23,7 +23,7 @@ Qbix Server's persistent-worker mode ("octane mode") keeps workers alive across 
 
 **Total reset cost: ~0.06ms** — compared to 8ms for `pcntl_fork()`.
 
-**28 PHP functions shimmed** via source transformation (stream wrapper + `token_get_all()`): `header`, `setcookie`, `setrawcookie`, `http_response_code`, `headers_sent`, `headers_list`, `header_remove`, `session_start`, `session_write_close`, `session_regenerate_id`, `session_destroy`, `session_status`, `move_uploaded_file`, `is_uploaded_file`, `ini_get`, `ini_set`, `set_time_limit`, `getallheaders`, `apache_request_headers`, `register_shutdown_function`, `set_error_handler`, `set_exception_handler`, `restore_error_handler`, `restore_exception_handler`, `spl_autoload_register`, `spl_autoload_unregister`, `putenv`
+**27 PHP functions shimmed** via source transformation (stream wrapper + `token_get_all()`): `header`, `setcookie`, `setrawcookie`, `http_response_code`, `headers_sent`, `headers_list`, `header_remove`, `session_start`, `session_write_close`, `session_regenerate_id`, `session_destroy`, `session_status`, `move_uploaded_file`, `is_uploaded_file`, `ini_get`, `ini_set`, `set_time_limit`, `getallheaders`, `apache_request_headers`, `register_shutdown_function`, `set_error_handler`, `set_exception_handler`, `restore_error_handler`, `restore_exception_handler`, `spl_autoload_register`, `spl_autoload_unregister`, `putenv`
 
 ## What persists (by design)
 
@@ -76,7 +76,7 @@ php-fpm's `pm.max_requests` exists specifically because statics and globals leak
 
 | | Laravel Octane | Qbix octane mode |
 |---|---|---|
-| Reset mechanism | App-level: `$app->flush()`, `Container::forgetInstances()` | Language-level: `ReflectionProperty::setValue` on all statics + 28 function shims |
+| Reset mechanism | App-level: `$app->flush()`, `Container::forgetInstances()` | Language-level: `ReflectionProperty::setValue` on all statics + 27 function shims |
 | Coverage | Only what Laravel's flusher knows about | **All user-defined classes**, automatically |
 | Lifecycle functions | Must audit manually | **Shimmed**: `register_shutdown_function`, `set_error_handler`, `set_exception_handler`, `spl_autoload_register`, `ini_set`, `putenv` — all tracked and restored |
 | Third-party packages | Must implement `ResetScope` interface | **Covered automatically** — their statics are reset too |

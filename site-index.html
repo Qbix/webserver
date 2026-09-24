@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
+<title>Qbix Server — A Web Server in Pure PHP</title>
+<meta name="description" content="Serve 100x more users on one machine. Runs existing PHP apps unmodified with OS-enforced process isolation. v2 adds an encrypted Bluetooth and Wi-Fi mesh for apps that keep working offline.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Qbix Server — A Web Server in Pure PHP">
+<meta property="og:description" content="Serve 100x more users on one machine. Unmodified PHP, OS-enforced isolation, and in v2, an encrypted Bluetooth and Wi-Fi mesh.">
+<meta property="og:image" content="https://qbix.com/img/qbix.png">
+<meta property="og:url" content="https://qbixserver.org/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Qbix Server — A Web Server in Pure PHP">
+<meta name="twitter:description" content="Serve 100x more users on one machine. Unmodified PHP, OS-enforced isolation, and in v2, an encrypted Bluetooth and Wi-Fi mesh.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{overflow-x:hidden;max-width:100vw}
+:root{
+  --bg:#fff;--bg-alt:#f5f7fa;--dark:#222;--ink:#2c3e50;
+  --text:#333;--muted:#666;--light:#999;--border:#e6e8eb;
+  --red:#e74c3c;--blue:#4A90D9;--green:#27ae60;--yellow:#f1c40f;--yellow-ink:#b7950b;--purple:#8e44ad;--orange:#e67e22;
+  --head:'Zen Maru Gothic','Arial Rounded MT Bold',Arial,sans-serif;
+  --sans:Arial,'Helvetica Neue',Helvetica,sans-serif;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,'Courier New',monospace;
+}
+body{font-family:var(--sans);color:var(--text);background:var(--bg);line-height:1.65;font-size:16px}
+a{color:var(--blue)}
+h1,h2,h3,h4{font-family:var(--head);font-weight:700;color:var(--ink)}
+code{font-family:var(--mono);font-size:.85em;background:var(--bg-alt);padding:2px 6px;border-radius:4px}
+pre{background:var(--ink);color:#e8ecef;border-radius:8px;padding:18px 22px;overflow-x:auto;font-family:var(--mono);font-size:.84rem;line-height:1.7;text-align:left;max-width:100%}
+
+/* Nav */
+nav{background:var(--dark);display:flex;align-items:center;gap:16px;padding:0 20px;height:56px;position:sticky;top:0;z-index:100}
+nav .logo{display:flex;align-items:center;gap:8px;text-decoration:none;color:#fff;font-family:var(--head);font-weight:700;font-size:1.1rem;flex-shrink:0}
+nav .logo img{height:28px}
+.nl{display:flex;gap:4px;margin-left:12px;height:100%}
+.nl a,.nr a{display:flex;align-items:center;padding:0 10px;height:100%;color:rgba(255,255,255,.78);text-decoration:none;font-family:var(--head);font-weight:700;font-size:.9rem;border-bottom:3px solid transparent}
+.nl a:hover,.nr a:hover{color:#fff}
+.nl a.c-blue:hover{border-color:var(--blue)}.nl a.c-red:hover{border-color:var(--red)}.nl a.c-green:hover{border-color:var(--green)}.nl a.c-yellow:hover{border-color:var(--yellow)}.nl a.c-purple:hover{border-color:var(--purple)}
+.nr{margin-left:auto;height:100%;display:flex}
+.ham{display:none;margin-left:auto;background:none;border:0;color:#fff;font-size:1.4rem;cursor:pointer;padding:8px}
+
+/* Hero */
+.hero{text-align:center;padding:72px 20px 60px;background:linear-gradient(180deg,#fff 0%,var(--bg-alt) 100%)}
+.hero img{width:128px;height:auto;margin:0 0 22px}
+.hero h1{font-size:2.7rem;font-weight:900;line-height:1.15;margin:0 0 20px;letter-spacing:-.01em}
+.hero h1 .accent{color:var(--blue)}
+.hero .sub{font-size:1.12rem;color:var(--muted);max-width:700px;margin:0 auto 14px;text-align:justify;hyphens:auto;line-height:1.65}
+.hero .fn{font-size:.82rem;color:var(--light);max-width:700px;margin:0 auto}
+.hero pre{display:inline-block;margin:24px 0 0;padding:12px 26px;font-size:.9rem}
+.btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:24px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:12px 24px;border-radius:8px;font-family:var(--head);font-size:.98rem;font-weight:700;text-decoration:none;transition:background .15s,border-color .15s,color .15s}
+.btn-red{background:var(--red);color:#fff}.btn-red:hover{background:#c0392b}
+.btn-out{background:#fff;color:var(--ink);border:2px solid var(--border)}.btn-out:hover{border-color:var(--blue);color:var(--blue)}
+
+/* Sections: full-bleed background, 920px content */
+section{padding:64px max(20px,calc((100% - 920px)/2))}
+section.alt{background:var(--bg-alt)}
+h2.c{font-size:1.9rem;text-align:center;margin:0 0 10px}
+.ssub{text-align:center;color:var(--muted);max-width:620px;margin:0 auto 36px;font-size:1.05rem}
+
+/* Feature cards */
+.fg{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
+.fc{display:flex;flex-direction:column;background:#fff;border:1px solid var(--border);border-radius:16px;padding:24px 22px;text-decoration:none;color:inherit;transition:box-shadow .15s,transform .15s}
+.fc:hover{box-shadow:0 6px 24px rgba(0,0,0,.08);transform:translateY(-2px)}
+.fc h3{font-size:1.08rem;margin:0 0 6px}
+.fc p{font-size:.9rem;color:var(--muted);margin:0 0 12px;line-height:1.55;flex:1}
+.fi{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;margin:0 0 14px}
+.fi.r{background:rgba(231,76,60,.12)}.fi.b{background:rgba(74,144,217,.12)}.fi.g{background:rgba(39,174,96,.12)}.fi.y{background:rgba(241,196,15,.18)}.fi.p{background:rgba(142,68,173,.12)}.fi.o{background:rgba(230,126,34,.12)}
+.ar{font-family:var(--head);font-weight:700;font-size:.88rem;color:var(--blue)}
+
+/* v2 */
+.v2{background:var(--ink);color:#e8ecef}
+.v2 h2.c{color:#fff}
+.v2 .ssub{color:rgba(255,255,255,.72)}
+.badge{display:block;width:max-content;margin:0 auto 14px;padding:4px 14px;border-radius:999px;border:1.5px solid var(--green);color:#6fd49a;font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase}
+.v2 .fc{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12)}
+.v2 .fc:hover{background:rgba(255,255,255,.08);box-shadow:none}
+.v2 .fc h3{color:#fff}
+.v2 .fc p{color:rgba(255,255,255,.7)}
+.v2 .ar{color:#7fb6ee}
+.v2 .fi.b{background:rgba(74,144,217,.25)}.v2 .fi.g{background:rgba(39,174,96,.25)}.v2 .fi.y{background:rgba(241,196,15,.25)}
+.v2 pre{background:rgba(0,0,0,.28);margin:28px auto 0;max-width:720px}
+.v2 .note{text-align:center;font-size:.9rem;color:rgba(255,255,255,.62);max-width:640px;margin:18px auto 0}
+.v2 .note a{color:#7fb6ee}
+
+/* Stats */
+.stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.stat-box{border-radius:14px;padding:18px 12px;text-align:center;border:1px solid var(--border);background:#fff}
+.stat-box .num{display:block;font-family:var(--head);font-weight:900;font-size:1.7rem;line-height:1.2}
+.stat-box .lbl{display:block;font-size:.8rem;color:var(--muted);margin-top:4px}
+.stat-box.green .num{color:var(--green)}.stat-box.blue .num{color:var(--blue)}
+
+/* Deep dives */
+details{border:1px solid var(--border);border-radius:12px;margin:0 0 12px;background:#fff}
+summary{cursor:pointer;padding:16px 20px;font-family:var(--head);font-weight:700;font-size:1.05rem;color:var(--ink);list-style:none;display:flex;align-items:center;gap:10px}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";margin-left:auto;color:var(--light);font-size:1.3rem;font-weight:400}
+details[open] summary::after{content:"\2212"}
+.ico{font-style:normal}
+.detail-body{padding:0 20px 18px}
+.detail-body p{margin:0 0 12px;font-size:.95rem}
+.hero details{max-width:640px;margin:18px auto 0;text-align:left;background:transparent;border:0}
+.hero summary{justify-content:center;font-size:.9rem;color:var(--muted);padding:6px}
+.hero summary::after{content:none}
+.table-wrap{overflow-x:auto;margin:0 0 14px}
+.vs-table{width:100%;border-collapse:collapse;font-size:.9rem;min-width:420px}
+.vs-table th{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--light);text-align:left;padding:8px 10px;border-bottom:2px solid var(--border)}
+.vs-table td{padding:8px 10px;border-bottom:1px solid var(--border)}
+.vs-table td:first-child{font-weight:600}
+.vs-table .win{color:var(--green);font-weight:700}
+
+/* Diagram */
+.dw{text-align:center;overflow-x:auto}
+.dw svg{width:100%;height:auto}
+
+/* Dashboard mockup */
+.mk{max-width:640px;margin:0 auto;border-radius:12px;overflow:hidden;box-shadow:0 10px 36px rgba(0,0,0,.14);background:#1c2530}
+.mk-bar{display:flex;align-items:center;gap:6px;padding:10px 14px;background:#2b3542}
+.mk-d{width:11px;height:11px;border-radius:50%}.mk-d.r{background:#ff5f57}.mk-d.y{background:#febc2e}.mk-d.g{background:#28c840}
+.mk-bar .u{margin-left:10px;font-family:var(--mono);font-size:.74rem;color:#9aa6b2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mk-b{padding:18px}
+.mk-b h4{color:#fff;font-size:1rem;margin:0 0 12px}
+.ms{display:inline-block;width:calc(33.33% - 8px);margin:0 4px 8px;padding:10px 6px;border-radius:8px;background:rgba(255,255,255,.05);text-align:center;vertical-align:top}
+.ms .v{display:block;font-family:var(--head);font-weight:900;font-size:1.2rem}
+.ms .l{display:block;font-size:.68rem;color:#9aa6b2;text-transform:uppercase;letter-spacing:.06em}
+.ms.g .v{color:#2ecc71}.ms.b .v{color:#5dade2}.ms.y .v{color:#f4d03f}.ms.r .v{color:#ec7063}
+
+.center{text-align:center}
+.muted-p{text-align:center;font-size:.92rem;color:var(--muted);max-width:640px;margin:14px auto 0}
+
+/* Footer */
+footer{background:var(--dark);color:rgba(255,255,255,.7);padding:48px 20px 40px}
+footer .inner{max-width:920px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:32px}
+footer h4{color:#fff;font-size:.82rem;text-transform:uppercase;letter-spacing:.08em;margin:0 0 12px}
+footer p{margin:0 0 6px;font-size:.88rem}
+footer a{color:rgba(255,255,255,.6);text-decoration:none}
+footer a:hover{color:#fff}
+
+@media(max-width:820px){
+  .ham{display:block}
+  .nr{display:none}
+  .nl{display:none;position:absolute;top:56px;left:0;right:0;flex-direction:column;height:auto;background:var(--dark);margin:0;padding:6px 0 10px}
+  .nl.open{display:flex}
+  .nl a{padding:12px 20px;border-bottom:0;border-left:3px solid transparent}
+}
+@media(max-width:640px){
+  .hero{padding:48px 16px 44px}
+  .hero h1{font-size:1.95rem}
+  .hero img{width:96px}
+  .hero .sub{text-align:left}
+  .hero pre{font-size:.7rem;padding:10px 12px}
+  section{padding:44px 16px}
+  h2.c{font-size:1.55rem}
+  .stat-row{grid-template-columns:repeat(2,1fr)}
+  .ms{width:calc(50% - 8px)}
+  footer .inner{grid-template-columns:1fr;gap:20px}
+}
+</style>
+</head>
+<body>
+<nav><a class="logo" href="index.html"><img src="https://qbix.com/img/qbix.png" alt="Qbix"><span>Server</span></a><div class="nl" id="nav"><a href="docs/getting-started.html" class="c-blue">Docs</a><a href="docs/performance.html" class="c-red">Performance</a><a href="docs/compatibility.html" class="c-green">Compatibility</a><a href="docs/security.html" class="c-yellow">Security</a><a href="docs/realtime.html" class="c-purple">Real-time</a><a href="#v2" class="c-green">Mesh</a><a href="docs/examples.html" class="c-red">Examples</a><a href="docs/dashboard.html" class="c-blue">Dashboard</a></div><div class="nr"><a href="https://github.com/Qbix/webserver">GitHub</a></div><button class="ham" aria-label="Menu" onclick="document.getElementById('nav').classList.toggle('open')">&#9776;</button></nav>
+
+<div class="hero">
+<img src="https://qbix.com/img/qbix.png" alt="">
+<h1>Serve <span class="accent">100&times;</span> more users<br>on one machine</h1>
+<p class="sub">Handle all your HTTP requests and WebSocket rooms securely by default, through OS-enforced process isolation. Based on PHP&rsquo;s shared-nothing architecture, Qbix Server is able to run thousands of existing PHP websites<sup>&#9733;</sup> without modification. It now runs on Linux, Mac, Windows, iOS and Android, and is able to generate standalone binaries that you can sign and distribute. And now, v2 makes it easy to make apps decentralized and continue working offline via WiFi and Bluetooth, too. &#x1F92F;</p>
+<p class="fn"><sup>&#9733;</sup> including WordPress, ownCloud, Magento, Drupal, Joomla, and frameworks including Qbix, Laravel and Symfony.</p>
+<pre>php qbixserver.php --root=public --preset=laravel</pre>
+<div class="btns">
+<a href="https://github.com/Qbix/webserver" class="btn btn-red">View on GitHub</a>
+<a href="https://github.com/Qbix/webserver/releases" class="btn btn-out">Download v2.0</a>
+</div>
+</div>
+
+<!-- Feature cards -->
+<section class="alt">
+<h2 class="c">Everything in one process</h2>
+<p class="ssub">Replaces nginx + fpm + Node + Redis + supervisor + Docker.</p>
+<div class="fg">
+<a href="docs/performance.html" class="fc"><div class="fi r">&#x26A1;</div><h3>14&times; Throughput</h3><p>Persistent workers at 120KB each. 400 workers on 200MB. 1,060 req/s where fpm does 78.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/realtime.html" class="fc"><div class="fi b">&#x1F50C;</div><h3>WebSocket + Rooms</h3><p>Same port as HTTP. Rooms are forked processes with shared state. Socket.IO protocol. No Node.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/compatibility.html" class="fc"><div class="fi g">&#x1F9E9;</div><h3>Unmodified PHP</h3><p>WordPress, Laravel, Symfony, Drupal. 27 functions rewritten as files load. Reads .htaccess. Just works.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/security.html" class="fc"><div class="fi y">&#x1F512;</div><h3>Microservice Isolation</h3><p>Authority + sandbox with one config change. Same code, different roles. Secrets never leave the authority.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/distributed.html" class="fc"><div class="fi p">&#x1F310;</div><h3>Cluster Replication</h3><p>Multiple servers with SQLite. Events replicate. Kill a node, restart &mdash; it catches up.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="https://github.com/Qbix/webserver/blob/main/docs/images.md" class="fc"><div class="fi o">&#x1F5BC;&#xFE0F;</div><h3>Image Processing</h3><p>Resize with <code>?w=400</code>. Serves AVIF or WebP from the Accept header. Save-Data support. Disk cache that regenerates when the original changes.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="https://github.com/Qbix/webserver/blob/main/docs/headers.md" class="fc"><div class="fi r">&#x1F4CB;</div><h3>Smart Response Headers</h3><p>X-Cache-Tree for per-component invalidation. X-Accel-Redirect for access-controlled files. ETag generation. Directory listing.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/api.html" class="fc"><div class="fi b">&#x1F4C8;</div><h3>Auto-Generated API Docs</h3><p>Write handler files, get OpenAPI 3.1 and MCP specs automatically. Swagger UI, Postman, Redoc &mdash; and AI tools can call your app&rsquo;s API directly.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="docs/getting-started.html" class="fc"><div class="fi g">&#x1F510;</div><h3>TLS, Cron &amp; Logging</h3><p>HTTPS auto-starts when certs exist. Built-in cron scheduler. Buffered access logs with daily rotation and gzip archiving.</p><span class="ar">Learn more &rarr;</span></a>
+</div>
+<p class="muted-p">Plus six example apps included: chat, kanban, SSE stream, REST API, live counter and a distributed swarm. <a href="docs/examples.html">See examples &rarr;</a></p>
+</section>
+
+<!-- v2 -->
+<section class="v2" id="v2">
+<span class="badge">New in v2.0</span>
+<h2 class="c">Apps that keep working offline</h2>
+<p class="ssub">Every Qbix Server now has a cryptographic identity and can find other servers nearby over Bluetooth and Wi-Fi. Phones on the same bus, in the same hall, or in a place with no signal can exchange data directly, encrypted end to end, with no server in the middle.</p>
+<div class="fg">
+<a href="https://github.com/Qbix/webserver/blob/main/docs/Mesh.md" class="fc"><div class="fi b">&#x1F310;</div><h3>Encrypted Mesh</h3><p>Servers discover each other over BLE and Wi-Fi. ECDH handshake, AES-256-GCM sessions. Distance-vector routing with multi-hop relay. No central server needed.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="https://github.com/Qbix/webserver/blob/main/docs/mobile.md" class="fc"><div class="fi g">&#x1F4F1;</div><h3>iOS &amp; Android</h3><p>Runs on mobile via NativePHP/Phphone. Native TransportManager handles BLE + Wi-Fi discovery with auto-fallback. Background persistence for always-on mesh.</p><span class="ar">Learn more &rarr;</span></a>
+<a href="https://github.com/Qbix/webserver/blob/main/docs/sync.md" class="fc"><div class="fi y">&#x1F504;</div><h3>Data Sync</h3><p>Bloom filter exchange finds differences. Prolly tree comparison for large datasets &mdash; 10K records diffed in 1.2ms. Pluggable conflict resolution.</p><span class="ar">Learn more &rarr;</span></a>
+</div>
+<pre>// React to peers coming and going
+Q_WebServer_Transport::onPeerOnline(function ($peer) {
+    Q_WebServer_MeshSync::syncWithPeer('notes', $peer['peer_id'], $since,
+        array('Q_WebServer_Transport', 'requestFromPeer'));
+});</pre>
+<p class="note">No breaking changes from v1.x: the mesh layer does nothing until a peer is discovered. <a href="https://github.com/Qbix/webserver/blob/main/RELEASE_NOTES.md">Release notes &rarr;</a></p>
+</section>
+
+<!-- Stats bar -->
+<section style="padding-top:44px;padding-bottom:0">
+<div class="stat-row">
+<div class="stat-box green"><span class="num">14&times;</span><span class="lbl">vs fpm (50ms I/O)</span></div>
+<div class="stat-box green"><span class="num">24&times;</span><span class="lbl">vs fpm (200ms I/O)</span></div>
+<div class="stat-box blue"><span class="num">120KB</span><span class="lbl">per worker (COW)</span></div>
+<div class="stat-box blue"><span class="num">0.03ms</span><span class="lbl">state reset</span></div>
+</div>
+</section>
+
+<!-- Expandable deep-dives -->
+<section style="padding-top:28px">
+
+<details>
+<summary><em class="ico">&#x1F4A1;</em> Why it&rsquo;s faster than everything else</summary>
+<div class="detail-body">
+<p><strong>The problem with php-fpm:</strong> Whether opcache is enabled or not, the vast majority of production PHP code is I/O-bound. Workers wait for the database, the filesystem, an API call. During that wait, the worker is doing nothing &mdash; but it&rsquo;s holding 30&ndash;60MB of RAM. On a 4GB server, fpm gets maybe 80 workers. Each one blocks on a 200ms query. That&rsquo;s the ceiling.</p>
+<p><strong>The problem with Swoole, RoadRunner, and FrankenPHP:</strong> They try to solve this by making PHP evented, like Node.js. But that means rewriting your code to use their async libraries. Every <code>PDO::query()</code>, every <code>file_get_contents()</code>, every <code>curl_exec()</code> in every WordPress plugin and Laravel package uses blocking I/O. It doesn&rsquo;t yield. Swoole can&rsquo;t help with code that doesn&rsquo;t cooperate.</p>
+<p><strong>How Qbix solves it:</strong> Instead of making each worker do more, run more workers. The server loads your framework into a parent process, then calls <code>pcntl_fork()</code>. The kernel marks every page copy-on-write. Each worker shares the parent&rsquo;s loaded classes and only pays for pages it writes to. A WordPress-like request dirties 30 pages = <strong>120KB</strong>. The same 4GB that gives fpm 80 workers gives Qbix <strong>thousands</strong>.</p>
+<p>Your code runs unmodified, in two modes:</p>
+<p><strong>Persistent workers (default)</strong> &mdash; workers stay alive across requests. 27 functions are rewritten as files load. Static properties restored from snapshot in 0.03ms. This is the fast path: 2,294 req/s on CPU-bound work.</p>
+<p><strong>Fork-per-request</strong> &mdash; for code the shim can&rsquo;t track (functions with internal static variables, plugins that register untrackable global state). Each request gets a fresh fork. Slower than persistent mode, but each worker still costs only 120KB instead of 50MB &mdash; so you can run <strong>100&times; more workers</strong> than fpm on the same hardware. That&rsquo;s the whole point.</p>
+<p><strong>Even on Windows</strong> &mdash; where fork isn&rsquo;t available, the server runs persistent workers with the same 27-function rewriting. You don&rsquo;t get COW memory savings, but you get the same code compatibility and the same control panel.</p>
+<p style="font-size:.88rem;color:var(--muted)">We <a href="https://discourse.thephp.foundation/t/php-dev-three-proposals-for-php-9/2113">proposed this for PHP core</a> as <code>switch_global_context()</code>. While that works its way through the RFC process, the server does it in userland today.</p>
+</div>
+</details>
+
+<details>
+<summary><em class="ico">&#x1F50D;</em> Benchmarks vs Swoole, FrankenPHP, and php-fpm</summary>
+<div class="detail-body">
+<p><strong>CPU-bound (WordPress-like workload, same 200MB):</strong></p>
+<div class="table-wrap"><table class="vs-table">
+<tr><th></th><th>Workers</th><th>req/s</th><th>vs fpm</th></tr>
+<tr><td>php-fpm</td><td>4</td><td>~350</td><td>&mdash;</td></tr>
+<tr><td>Swoole</td><td>4</td><td>~400</td><td>1.1&times;</td></tr>
+<tr><td><strong>Qbix</strong></td><td><strong>100</strong></td><td class="win">2,294</td><td class="win">6.6&times;</td></tr>
+</table></div>
+<p><strong>I/O-bound (50ms database query):</strong></p>
+<div class="table-wrap"><table class="vs-table">
+<tr><th></th><th>Workers</th><th>req/s</th><th>vs fpm</th></tr>
+<tr><td>php-fpm</td><td>4</td><td>78</td><td>&mdash;</td></tr>
+<tr><td>Swoole (coroutines*)</td><td>4</td><td>~300</td><td>~4&times;</td></tr>
+<tr><td><strong>Qbix</strong></td><td><strong>100</strong></td><td class="win">1,060</td><td class="win">14&times;</td></tr>
+</table></div>
+<p><strong>I/O-bound (200ms &mdash; real database load):</strong></p>
+<div class="table-wrap"><table class="vs-table">
+<tr><th></th><th>Workers</th><th>req/s</th><th>vs fpm</th></tr>
+<tr><td>php-fpm</td><td>4</td><td>20</td><td>&mdash;</td></tr>
+<tr><td>Swoole (coroutines*)</td><td>4</td><td>~200&ndash;500</td><td>~10&ndash;25&times;</td></tr>
+<tr><td><strong>Qbix</strong></td><td><strong>200</strong></td><td class="win">488</td><td class="win">24&times;</td></tr>
+</table></div>
+<p style="font-size:.82rem;color:var(--muted)">* Swoole coroutines require <code>Runtime::enableCoroutine()</code> and coroutine-aware drivers. Unmodified WordPress/Laravel uses blocking I/O and hits fpm&rsquo;s ceiling.</p>
+</div>
+</details>
+
+<details>
+<summary><em class="ico">&#x1F6E1;&#xFE0F;</em> 27 functions rewritten &mdash; how state gets reset</summary>
+<div class="detail-body">
+<p>Workers are persistent &mdash; they handle thousands of requests without restarting. Between each request, a Reflection-based snapshot restores all static properties in 0.03ms. 27 PHP functions are rewritten as each file is loaded, before PHP compiles it:</p>
+<p><code>header()</code>, <code>setcookie()</code>, <code>session_start()</code>, <code>move_uploaded_file()</code>, <code>ini_set()</code>, <code>register_shutdown_function()</code>, <code>set_error_handler()</code>, <code>spl_autoload_register()</code>, <code>putenv()</code>, and 18 others &mdash; all tracked per request and cleaned up between requests.</p>
+<p>Unmodified WordPress, Laravel, Symfony, and Drupal get shared-nothing safety automatically. No adapters, no code auditing.</p>
+<p><a href="docs/compatibility.html">Full compatibility details &rarr;</a> &middot; <a href="https://github.com/Qbix/webserver/blob/main/docs/compatibility.md">What gets rewritten in each framework &rarr;</a></p>
+</div>
+</details>
+
+<details>
+<summary><em class="ico">&#x1F4CA;</em> How many users can one $30/month machine handle?</summary>
+<div class="detail-body">
+<div class="table-wrap"><table class="vs-table">
+<tr><th>Metric</th><th>php-fpm</th><th>Qbix</th></tr>
+<tr><td>Workers on 4GB</td><td>~80 (50MB each)</td><td class="win">400 (120KB each)</td></tr>
+<tr><td>Throughput (200ms I/O)</td><td>~80 req/s</td><td class="win">~2,000 req/s</td></tr>
+<tr><td>Concurrent active users</td><td>1,600</td><td class="win">40,000</td></tr>
+<tr><td>Registered accounts</td><td>16K&ndash;32K</td><td class="win">400K&ndash;800K</td></tr>
+<tr><td>WebSocket</td><td>Needs Node.js</td><td class="win">100K+ built in</td></tr>
+<tr><td>Database</td><td>Needs Postgres</td><td class="win">SQLite (50K writes/sec)</td></tr>
+<tr><td>Monthly cost</td><td>$30 + DB server</td><td class="win">$30 total</td></tr>
+</table></div>
+<p>One machine. No database server, no Redis, no Node, no Docker. Add a second with DNS failover for redundancy &mdash; distributed mode keeps both SQLite copies in sync.</p>
+</div>
+</details>
+</section>
+
+<!-- COW diagram -->
+<section>
+<h2 class="c">Fork after preload</h2>
+<p class="ssub">Load everything once. Fork workers. Each costs 120KB, not 42MB.</p>
+<div class="dw"><svg viewBox="0 0 720 270" xmlns="http://www.w3.org/2000/svg" style="max-width:700px" role="img" aria-label="A 30MB parent process forks four copy-on-write workers of 120KB each; php-fpm needs 168MB for 4 workers while Qbix runs 400 workers in 47MB"><defs><marker id="ab" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#4A90D9"/></marker></defs><rect x="250" y="15" width="220" height="55" rx="10" fill="#f5f7fa" stroke="#ddd" stroke-width="1.5"/><text x="360" y="40" text-anchor="middle" font-family="Arial" font-size="14" font-weight="700" fill="#333">Parent Process (30MB)</text><text x="360" y="56" text-anchor="middle" font-family="Arial" font-size="10" fill="#999">framework &middot; routes &middot; caches</text><line x1="280" y1="72" x2="100" y2="125" stroke="#4A90D9" stroke-width="2" marker-end="url(#ab)"/><line x1="330" y1="72" x2="270" y2="125" stroke="#4A90D9" stroke-width="2" marker-end="url(#ab)"/><line x1="390" y1="72" x2="450" y2="125" stroke="#4A90D9" stroke-width="2" marker-end="url(#ab)"/><line x1="440" y1="72" x2="620" y2="125" stroke="#4A90D9" stroke-width="2" marker-end="url(#ab)"/><text x="185" y="94" font-family="Arial" font-size="9" fill="#4A90D9">COW</text><text x="510" y="94" font-family="Arial" font-size="9" fill="#4A90D9">COW</text><rect x="30" y="130" width="140" height="38" rx="8" fill="#eafaf1" stroke="#a9dfbf" stroke-width="1.5"/><text x="100" y="154" text-anchor="middle" font-family="Arial" font-size="12" font-weight="600" fill="#27ae60">Worker (120KB)</text><rect x="200" y="130" width="140" height="38" rx="8" fill="#eafaf1" stroke="#a9dfbf" stroke-width="1.5"/><text x="270" y="154" text-anchor="middle" font-family="Arial" font-size="12" font-weight="600" fill="#27ae60">Worker (120KB)</text><rect x="390" y="130" width="140" height="38" rx="8" fill="#eafaf1" stroke="#a9dfbf" stroke-width="1.5"/><text x="460" y="154" text-anchor="middle" font-family="Arial" font-size="12" font-weight="600" fill="#27ae60">Worker (120KB)</text><rect x="550" y="130" width="140" height="38" rx="8" fill="#eafaf1" stroke="#a9dfbf" stroke-width="1.5"/><text x="620" y="154" text-anchor="middle" font-family="Arial" font-size="12" font-weight="600" fill="#27ae60">Worker (120KB)</text><rect x="60" y="195" width="270" height="40" rx="10" fill="#fdf2f2" stroke="#f5c6c6"/><text x="195" y="220" text-anchor="middle" font-family="Arial" font-size="12" fill="#e74c3c">php-fpm: 4 &times; 42MB = 168MB</text><rect x="390" y="195" width="270" height="40" rx="10" fill="#eafaf1" stroke="#a9dfbf"/><text x="525" y="220" text-anchor="middle" font-family="Arial" font-size="12" fill="#27ae60">Qbix: 400 &times; 120KB = 47MB</text><text x="360" y="260" text-anchor="middle" font-family="Arial" font-size="11" fill="#999">Same code. Same RAM. 100&times; more workers.</text></svg></div>
+</section>
+
+<!-- Dashboard -->
+<section class="alt">
+<h2 class="c">Live Dashboard</h2>
+<p class="ssub">Built-in at <code>/Q/dashboard</code>. No Grafana, no Prometheus.</p>
+<div class="mk"><div class="mk-bar"><div class="mk-d r"></div><div class="mk-d y"></div><div class="mk-d g"></div><span class="u">localhost:4000/Q/dashboard</span></div><div class="mk-b"><h4>Qbix Server Dashboard</h4><div class="ms g"><span class="v">2,847</span><span class="l">Req/min</span></div><div class="ms b"><span class="v">142</span><span class="l">Connections</span></div><div class="ms y"><span class="v">400</span><span class="l">Workers</span></div><div class="ms r"><span class="v">23ms</span><span class="l">Latency</span></div><div class="ms g"><span class="v">99.8%</span><span class="l">Uptime</span></div><div class="ms b"><span class="v">47MB</span><span class="l">Memory</span></div><div style="margin-top:12px;padding:12px;background:rgba(255,255,255,.05);border-radius:6px;font-family:var(--mono);font-size:.72rem;color:#9aa6b2;line-height:1.8"><span style="color:#2ecc71">200</span> GET /api/users 12ms<br><span style="color:#2ecc71">200</span> POST /api/tasks 34ms<br><span style="color:#f4d03f">304</span> GET /css/app.css 1ms<br><span style="color:#2ecc71">200</span> WS /Q/ws upgrade 2ms</div></div></div>
+<p class="center" style="margin-top:20px"><a href="docs/dashboard.html" class="btn btn-out">Dashboard &amp; control panel docs &rarr;</a></p>
+</section>
+
+<!-- CTA -->
+<section>
+<h2 class="c">Get started</h2>
+<pre>git clone https://github.com/Qbix/webserver
+cd webserver
+php qbixserver.php --root=examples/todo/web</pre>
+<details>
+<summary><em class="ico">&#x1F4E6;</em> Or grab a self-contained binary (Linux, macOS, Windows)</summary>
+<div class="detail-body">
+<pre id="hero-bin">curl -LO https://github.com/Qbix/webserver/releases/latest/download/qbixserver-linux-x86_64
+chmod +x qbixserver-linux-x86_64
+./qbixserver-linux-x86_64</pre>
+</div>
+</details>
+<script>(function(){var u=navigator.userAgent||"",b,p;if(/Mac/i.test(u)){b="qbixserver-macos-arm64";p="macOS";}else if(/Linux/i.test(u)&&/aarch64|arm64/i.test(u)){b="qbixserver-linux-aarch64";p="Linux ARM64";}else if(/Linux/i.test(u)){b="qbixserver-linux-x86_64";p="Linux";}else if(/Win/i.test(u)){b="qbixserver-windows-x64.exe";p="Windows";}var el=document.getElementById("hero-bin");if(!el)return;if(p==="Windows"){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\n"+b;}else if(b){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\nchmod +x "+b+"\n./"+b;}})();</script>
+<p class="center" style="margin-top:20px"><span class="btns" style="margin-top:0"><a href="https://github.com/Qbix/webserver" class="btn btn-red">View on GitHub &rarr;</a> <a href="https://github.com/Qbix/webserver/releases" class="btn btn-out">Download binary</a> <a href="docs/examples.html" class="btn btn-out">Examples</a></span></p>
+</section>
+
+<section class="alt">
+<h2 class="c">Runs everywhere</h2>
+<p class="ssub">Download a binary for your platform. PHP is bundled inside &mdash; nothing to install.</p>
+<div class="stat-row">
+<div class="stat-box blue"><span class="num">Linux</span><span class="lbl">x86_64 &amp; ARM64 &middot; COW fork</span></div>
+<div class="stat-box blue"><span class="num">macOS</span><span class="lbl">Apple Silicon &amp; Intel &middot; COW fork</span></div>
+<div class="stat-box green"><span class="num">Windows</span><span class="lbl">x64 &middot; persistent workers</span></div>
+<div class="stat-box green"><span class="num">iOS &amp; Android</span><span class="lbl">arm64 &middot; mesh transports</span></div>
+</div>
+<p class="muted-p">On Linux and macOS, thousands of COW-forked workers at ~120KB each. On Windows, persistent workers with the same 27-function rewriting. On phones, the same server behind a native Bluetooth and Wi-Fi transport. FreeBSD builds from source.</p>
+</section>
+
+<section>
+<h2 class="c">Use with your existing codebase</h2>
+<p class="ssub">If you already have a PHP app running on nginx + php-fpm, switching is one command.</p>
+<pre style="max-width:620px;margin:0 auto">cd my-laravel-app &amp;&amp; php qbixserver.php --root=public --preset=laravel
+cd my-wordpress-site &amp;&amp; php qbixserver.php --root=. --preset=wordpress
+cd my-symfony-app &amp;&amp; php qbixserver.php --root=public --preset=symfony
+cd my-drupal-site &amp;&amp; php qbixserver.php --root=web --preset=drupal</pre>
+<p class="muted-p">Try persistent mode first &mdash; it handles most apps. If yours needs fork-per-request, that&rsquo;s still 100&times; more workers than fpm on the same hardware. <a href="https://github.com/Qbix/webserver/blob/main/docs/compatibility.md">How your code gets rewritten &rarr;</a></p>
+</section>
+
+<footer><div class="inner"><div><h4>Qbix Server</h4><p><a href="https://github.com/Qbix/webserver">Source on GitHub</a></p><p><a href="docs/compatibility.html">Compatibility</a></p><p><a href="https://github.com/Qbix/webserver/releases">Releases</a></p><p><a href="https://github.com/Qbix/webserver/blob/main/RELEASE_NOTES.md">v2.0 release notes</a></p></div><div><h4>Qbix Platform</h4><p><a href="https://qbix.com/platform">Overview</a></p><p><a href="https://github.com/Qbix/Platform">Source</a></p><p><a href="https://community.qbix.com">Community</a></p></div><div><h4>Links</h4><p><a href="docs/examples.html">Examples</a></p><p><a href="docs/getting-started.html">Documentation</a></p><p><a href="https://github.com/Qbix/webserver/blob/main/docs/images.md">Image processing</a></p><p><a href="https://github.com/Qbix/webserver/blob/main/docs/Mesh.md">Mesh protocol</a></p><p>v2.0 &mdash; Mesh</p></div></div></footer>
+</body>
+</html>

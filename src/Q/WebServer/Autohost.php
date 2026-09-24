@@ -328,6 +328,10 @@ class Q_WebServer_Autohost
 			if (empty($certResult['success'])) {
 				return ['success' => false, 'error' => $certResult['error'] ?? 'ACME failed'];
 			}
+			// Register cert for SNI-based selection
+			if (!empty($certResult['cert']) && !empty($certResult['key'])) {
+				Q_WebServer::registerDomainCert($hostname, $certResult['cert'], $certResult['key']);
+			}
 		}
 
 		// Write domain config

@@ -8,7 +8,7 @@ All measurements on a single-core container, PHP 8.3.6, Ubuntu 24. Each server r
 
 **2. PHP reuses the parent's heap.** Children do not allocate new memory chunks. The parent's pre-allocated heap is reused via COW. Only the 4KB pages the child actually writes to are copied by the kernel.
 
-**3. Faster than Swoole on real workloads.** On a WordPress-like workload (sessions, headers, ini_set, autoloader, shutdown callbacks, putenv): octane hits 2,249 req/s vs fork's 149 req/s — a 15× speedup. With 100 workers and 50ms I/O: 1,060 req/s vs fpm's 78 req/s — an 14× improvement at the same RAM budget. 28 PHP functions are shimmed automatically so unmodified code works with no state leaks.
+**3. Faster than Swoole on real workloads.** On a WordPress-like workload (sessions, headers, ini_set, autoloader, shutdown callbacks, putenv): octane hits 2,249 req/s vs fork's 149 req/s — a 15× speedup. With 100 workers and 50ms I/O: 1,060 req/s vs fpm's 78 req/s — an 14× improvement at the same RAM budget. 27 PHP functions are shimmed automatically so unmodified code works with no state leaks.
 
 ## Head-to-head: Octane vs Swoole vs FrankenPHP vs fpm
 
@@ -73,7 +73,7 @@ Static files are served by the parent process directly — no fork, no worker di
 | **Octane (snapshot restore)** | **0.05ms** | reflection-based static reset |
 | fpm warm worker | 0.002ms | nothing (classes stay loaded) |
 
-The Qbix Platform + Users plugin bootstrap costs 48ms cold (354 classes, config parsing, route compilation, autoloader setup). OPcache doesn't help in CLI mode — shared-memory setup cost exceeds compilation savings for a single process. But in our model the parent compiles once and children inherit the OPcache via COW (verified: forked children see all 32+ cached scripts).
+The Qbix Platform + Users plugin bootstrap costs 48ms cold (354 classes, config parsing, route compilation, autoloader setup). OPcache doesn't help in CLI mode — shared-memory setup cost exceeds compilation savings for a single process. But in our model the parent compiles once and children inherit the compiled code via COW (verified: forked children see all 32+ cached scripts).
 
 ## OPcache in our model
 
@@ -258,3 +258,48 @@ For PHP 8.1–8.5, the Symfony polyfill (`composer require symfony/polyfill-io-p
 1. **Io\Poll** (PHP 8.6+ native) — epoll/kqueue, O(1)
 2. **Revolt** (if installed via Composer) — uses ext-uv or stream_select
 3. **stream_select** (built-in fallback) — works everywhere, O(n)
+
+## BLE Transport Timing
+
+Simulated BLE transfer timing from `MeshBLE.php`'s transport simulator, which enforces real BLE constraints (MTU limits, per-chunk latency, bandwidth caps).
+
+### Typical HTTP Request Over BLE
+
+| Payload | MTU | Chunks | Simulated Time |
+|---|---|---|---|
+| 100-byte HTTP GET | 247 | 1 | ~8ms |
+| 1KB HTTP request | 247 | 5 | ~40ms |
+| 5KB JSON response | 247 | 18 | ~152ms |
+| 10KB JSON response | 247 | 42 | ~320ms |
+| 64KB (max GATT) | 247 | 267 | ~2.1s |
+
+Latency per chunk: 7.5ms (BLE connection interval). Bandwidth: 2 Mbps (BLE 5.0). Actual hardware varies — these are conservative estimates.
+
+### MTU Impact
+
+The same 500-byte payload at different MTU sizes:
+
+| MTU | Chunks | Notes |
+|---|---|---|
+| 23 (BLE 4.0 min) | 23+ | Legacy devices. Slow but works. |
+| 247 (BLE 5.0 typical) | 3 | After DLE negotiation. Most modern devices. |
+| 517 (BLE 5.0 max) | 1 | Single chunk. Requires DLE + extended MTU. |
+
+### Round-Trip: Request + Response
+
+A typical `handleUsingRemote` call over BLE (GET request, JSON response):
+
+| Phase | Time |
+|---|---|
+| Request (100 bytes, 1 chunk) | ~8ms |
+| PHP processing on peer | ~5-50ms |
+| Response (2KB, 9 chunks) | ~75ms |
+| **Total round-trip** | **~90-130ms** |
+
+For comparison, the same call over LAN TCP: ~2-5ms total. MultipeerConnectivity (P2P Wi-Fi): ~5-15ms. BLE is the slowest transport but works without any network infrastructure.
+
+### When BLE Makes Sense
+
+BLE is the right transport when there is no shared Wi-Fi network — field work, classrooms without Wi-Fi, outdoor events, emergency situations. The TransportManager automatically prefers TCP when both are available.
+
+For payloads over 64KB, use L2CAP Connection-oriented Channels (stream-based BLE, available on iOS 11+ and Android 10+) instead of GATT characteristics. The chunking protocol handles everything up to 64KB.

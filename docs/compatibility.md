@@ -1,212 +1,256 @@
-## Q_Sapi — SAPI emulation for forked children
+# Running Existing PHP Apps
 
-A forked child of a CLI process has no SAPI. Nothing populated the superglobals, nothing captures output, and native `header()` is a silent no-op. `Q_Sapi` does what mod_php or php-fpm would do:
+Qbix Server runs Laravel, Symfony, WordPress, Drupal, Joomla, Magento and other PHP code without modification. It does this by rewriting a small set of function calls in your PHP files as they are loaded, and by reading the URL rewrite rules your project already ships for Apache. This page explains what gets rewritten, why, and where the approach stops.
 
-```php
-Q_Sapi::enter($parsed);      // superglobals + ob_start include $scriptPath
-;         // any PHP file, not just a front controller list($status, $headers, $body) = Q_Sapi::leave();
+For the SAPI emulation and `--app` mode internals, see [app-mode.md](app-mode.md). For what gets reset between requests in persistent workers, see [reset.md](reset.md).
+
+## Quick start
+
+```bash
+php qbixserver.php --root=public --preset=laravel
+php qbixserver.php --root=public --preset=symfony
+php qbixserver.php --root=.      --preset=wordpress
+php qbixserver.php --root=web    --preset=drupal
 ```
 
-`enter()` populates `$_GET`, `$_POST` (form-encoded or JSON), `$_COOKIE`, `$_FILES` and `$_SERVER` — including `HTTP_HOST`, `SCRIPT_NAME`, `PATH_INFO` and `REMOTE_ADDR`. `HTTP_HOST` matters more than it looks: `Q_Response::setCookie()` returns false without it, which silently drops the session cookie.
+A preset sets the front controller and a few `ini` values the framework expects (see [Presets](#presets)). If your project ships an `.htaccess`, you may not need a preset at all: the server reads it.
 
-### Shutdown ordering
+## Why anything needs rewriting
 
-PHP runs `register_shutdown_function` callbacks in registration order, then object destructors. Since `Q_Sapi` registers before any application code, a shutdown callback would fire *first* — before user callbacks had a chance to echo or set cookies. So capture happens in a **destructor** (`Q_Sapi_Finalizer`), which is guaranteed to run last and still runs on `exit()`, on uncaught exceptions and on fatal errors.
+The server is a long-running PHP process started from the command line, so the code it runs executes under PHP's CLI SAPI. Under that SAPI, a group of built-in functions assume there is no web request and quietly do nothing useful:
 
-Before assembling the response, `capture()` calls `session_write_close()` explicitly, so the session row and its cookie are settled rather than racing a response the parent has already sent.
+- `header()` and `http_response_code()` are discarded, and `headers_list()` always returns an empty array.
+- `setcookie()` has no response to attach the cookie to.
+- `session_start()` has no cookie to read the session ID from and no response to send one on.
+- `is_uploaded_file()` and `move_uploaded_file()` reject every file, because PHP itself did not receive the upload — the server parsed it.
+- `getallheaders()` does not exist.
 
-`capture()` is idempotent, and `deliver()` hands the response off exactly once — to `Q_Sapi::$onCapture` if the worker pool registered a consumer, otherwise to `STDOUT` so a child run standalone behaves like an ordinary PHP script.
+None of these fail loudly. A Laravel app would return `200` with no `Content-Type`, no cookies and no session, and every upload would be refused. PHP offers no hook for intercepting a built-in function at runtime, so the server changes the call before PHP ever compiles it.
 
-### What fork mode cannot do
+## How the rewriter works
 
-Native `header()` cannot be intercepted: in the CLI SAPI it does nothing, and PHP offers no hook. Fork mode therefore fully supports code that goes through `Q_Response::header()` / `Q::header()`. Third-party or legacy scripts that call `header()` directly should be routed to `php-cgi` with `Q.webserver.cgi.patterns` — that config is the supported escape hatch, not a workaround.
+When the server starts, it replaces PHP's `file://` stream wrapper with its own. Every `include` and `require` of a `.php` file goes through that wrapper. The wrapper tokenizes the source with `token_get_all()`, finds calls to the functions listed below, and replaces each one with a call to a static method on `Q_WebServer_Compat`. The rewritten source is what PHP compiles; the file on disk is never touched.
 
-## Setting headers, status codes and cookies
-
-**Use `Q_Response`.** It works in both standalone and `--app` mode and has the same signature as PHP's built-in `header()`:
+A line in Symfony's `Response::sendHeaders()` (which Laravel and Drupal also use):
 
 ```php
-Q_Response::header('Content-Type: application/json');
-Q_Response::header('X-Custom: hello');
-Q_Response::header('HTTP/1.1 201 Created');   // status line form Q_Response::code(201)
-;                         // or set it directly Q_Response::setCookie('session', $token, 0, '/');
-Q_Response::redirect('/dashboard');
+header($name.': '.$value, $replace, $this->statusCode);
 ```
 
-`Q_Response::header()` also works — `Q_Response::header()` delegates to it — but `Q_Response` is the higher-level API that scripts should prefer.
+is compiled as:
 
-### Why not `header()`?
+```php
+\Q_WebServer_Compat::_header($name.': '.$value, $replace, $this->statusCode);
+```
 
-PHP's built-in `header()` and `http_response_code()` are **silently discarded** under the CLI SAPI, which is what the server runs in. `headers_list()` always returns an empty array and `http_response_code()` returns `false`, and PHP offers no hook to intercept the builtins. A script calling them gets a `200` with none of its headers, and no error to explain why.
+The shim records the header in the server's response state instead of handing it to the CLI SAPI, and the server writes it to the socket when the script finishes.
 
-### What works where
+The rewriter works on tokens, not text, so it only changes real calls to the global function:
 
-| API | standalone | `--app` | notes |
-|---|---|---|---|
-| `Q_Response::header()` | ✅ | ✅ | **recommended** — delegates to `Q_WebServer_State`, same signature as PHP's `header()` |
-| `Q_Response::code()` | ✅ | ✅ | get or set the HTTP status code |
-| `Q_Response::setCookie()` | ✅ | ✅ | cookies are assembled into `Set-Cookie` headers by the server |
-| `Q_Response::header()` | ✅ | ✅ | low-level — `Q_Response::header()` delegates here |
-| `Q::header()` | ✅ | ✅ | alias for `Q_Response::header()` |
-| `header()` (built-in) | ❌ | ❌ | silently discarded by the CLI SAPI |
-| `http_response_code()` | ❌ | ❌ | silently discarded by the CLI SAPI |
+| Source | Rewritten? |
+|---|---|
+| `header('X-A: 1')` | Yes |
+| `\header('X-A: 1')` | Yes |
+| `header('X-A: 1')` inside `namespace Foo;` | Yes — the shim is emitted fully qualified, so it resolves to the global class |
+| `$response->header('X-A', 1)` | No — method call |
+| `Response::header('X-A', 1)` | No — static method on another class |
+| `function header() { ... }` | No — definition |
+| `Foo\header('X-A: 1')` | No — a namespaced function, not the builtin |
+| `'header'` as a string, e.g. `call_user_func('header', ...)` | No — see [below](#what-the-rewriter-does-not-reach) |
 
-### Scripts you don't control
+### Caching and startup cost
 
-Third-party code — WordPress, a vendored SDK, anything not written for Qbix — will call native `header()`. Route it to `php-cgi`, which runs it in a real CGI process where the builtins work normally:
+Tokenizing every file on every request would be slow, so the server does it once. At startup the parent process walks the project directory (by default, the directory one level above `--root`), tokenizes up to 5,000 `.php` files, and keeps the result in memory: the rewritten source for files that needed changes, and a marker meaning "load unchanged" for the rest. Directories named `tests` or `Tests` are skipped.
+
+Workers are forked from that parent, so they inherit the cache through copy-on-write memory. A request that includes a pre-warmed file pays nothing for the rewrite: no tokenizing and, for rewritten files, no disk read. Files added after startup are rewritten on first include.
+
+The startup banner reports the result. Serving an app built on Symfony's HttpFoundation component:
+
+```
+  Compat: pre-warmed 126 files (17 transformed, 109 pass-through, 210KB)
+```
+
+Most files never call any of the rewritten functions. They are marked pass-through and load normally.
+
+Because rewritten source is cached in memory, an edit to a file that was rewritten at startup is not seen until the cache entry is dropped. With `Q.webserver.hotReload` enabled, the parent checks modification times every two seconds and drops stale entries. In production, restart after deploying, as you would for any server with persistent workers.
+
+If `--root=.` sits inside a large directory, set `Q.compat.prewarmDir` to the project root so the walk does not wander into sibling projects.
+
+## What gets rewritten, by framework
+
+The same 27 functions are rewritten in every project. Which of them matter depends on the framework.
+
+### Laravel
+
+Laravel sends its response through Symfony's HttpFoundation, so response headers, status codes and cookies all pass through `header()` and `headers_sent()` in Symfony's `Response` class. File uploads go through Symfony's `UploadedFile`, which calls `is_uploaded_file()` to validate the upload, `move_uploaded_file()` to store it, and `ini_get('upload_max_filesize')` to report limits. Laravel's session layer does not use PHP's native sessions; it stores sessions itself and sets its own cookie, so the session shims are not involved.
+
+During bootstrap, Laravel registers error and exception handlers and a shutdown function. In persistent workers those are per-request state: the rewriter routes `set_error_handler()`, `set_exception_handler()` and `register_shutdown_function()` through shims so the server can run the callbacks at the end of each request and restore the boot-time handlers afterwards. Without that, every request would stack another handler on top of the last one.
+
+### Symfony
+
+The same `Response` and `UploadedFile` paths as Laravel. Symfony's `NativeSessionStorage` does use PHP's native sessions, so `session_start()`, `session_status()`, `session_regenerate_id()` and `session_write_close()` are rewritten too. The shimmed session is file-based and holds an exclusive lock on the session file for the length of the request, which is what PHP's default handler does. Symfony calls `session_write_close()` explicitly to release that lock early, and the shim honours it.
+
+### WordPress
+
+WordPress calls the builtins directly and in many places: `status_header()` and `wp_redirect()` call `header()`, `nocache_headers()` calls `header()` and `header_remove()`, authentication cookies are set with `setcookie()`, and media uploads are validated with `is_uploaded_file()` and moved with `move_uploaded_file()`. WordPress raises its own memory limit with `ini_set()` and extends time limits with `set_time_limit()` during updates. Core does not use PHP sessions, but many plugins do, and those calls are rewritten like any other.
+
+Plugins and themes are ordinary `.php` files loaded with `include`, so they are rewritten on the same terms as core. Under the WordPress preset, `ini_get('upload_max_filesize')` returns `64M`, which is what the media uploader displays.
+
+### Drupal
+
+Drupal 8 and later is built on Symfony components, so response headers go through Symfony's `Response`. Its `SessionManager` extends Symfony's native session storage and calls `session_start()` and `session_regenerate_id()`. The Drupal preset also passes the request path as `?q=`, which older Drupal routing and some contributed modules still read.
+
+### Joomla, Magento, ownCloud and others
+
+These frameworks ship `.htaccess` files with front-controller rewrite rules, which the server reads directly, and use PHP's native session storage and `header()`, both of which are rewritten. No preset is needed when the `.htaccess` is present.
+
+### Qbix Platform
+
+The server was built for the Qbix Platform, which uses `Q_Response::header()` and friends rather than the builtins. In `--app` mode the Platform's own dispatcher handles routing and the rewriter has nothing to do for Platform code, though it still covers any third-party libraries the app includes. See [app-mode.md](app-mode.md).
+
+## The 27 rewritten functions
+
+**Response**
+
+| Built-in | What the shim does |
+|---|---|
+| `header()` | Records the header; `HTTP/1.1 404 ...` lines and the third argument set the status code |
+| `http_response_code()` | Gets or sets the status code |
+| `headers_sent()` | Returns `false` until the server has flushed the response |
+| `headers_list()` | Returns the headers recorded so far |
+| `header_remove()` | Removes a recorded header |
+| `setcookie()` | Records a `Set-Cookie` header; accepts the PHP 7.3+ options array |
+| `setrawcookie()` | Same, without URL-encoding the value |
+
+**Request**
+
+| Built-in | What the shim does |
+|---|---|
+| `getallheaders()` | Returns the parsed request headers |
+| `apache_request_headers()` | Same as `getallheaders()` |
+
+**Sessions**
+
+| Built-in | What the shim does |
+|---|---|
+| `session_start()` | Reads the session ID from the cookie, opens the session file under an exclusive `flock()`, fills `$_SESSION`, sets the cookie if new |
+| `session_write_close()` | Writes `$_SESSION` and releases the lock |
+| `session_regenerate_id()` | Issues a new ID, renames the file, updates the cookie |
+| `session_destroy()` | Deletes the session file and clears `$_SESSION` |
+| `session_status()` | Returns `PHP_SESSION_ACTIVE` or `PHP_SESSION_NONE` correctly |
+
+**Uploads**
+
+| Built-in | What the shim does |
+|---|---|
+| `is_uploaded_file()` | Checks the path against the files the server parsed from this request's `multipart/form-data` body |
+| `move_uploaded_file()` | Same check, then `rename()` |
+
+**Settings and time limits**
+
+| Built-in | What the shim does |
+|---|---|
+| `ini_get()` | Returns the preset or config value if one is set, otherwise the real value |
+| `ini_set()` | Sets the value for this request and restores it afterwards |
+| `set_time_limit()` | Enforced with `pcntl_alarm()` |
+
+**Per-request lifecycle** (these matter in persistent workers, where the same process serves many requests)
+
+| Built-in | What the shim does |
+|---|---|
+| `register_shutdown_function()` | Runs the callback at the end of this request, not when the worker exits |
+| `set_error_handler()`, `restore_error_handler()` | Tracks handlers pushed by the request; the boot-time handler is restored afterwards |
+| `set_exception_handler()`, `restore_exception_handler()` | Same, for exception handlers |
+| `spl_autoload_register()`, `spl_autoload_unregister()` | Autoloaders added during a request are removed afterwards |
+| `putenv()` | Environment changes are reverted afterwards |
+
+## URL rewriting
+
+Frameworks expect every URL that is not a real file to reach a front controller, usually `index.php`. The server resolves this in order:
+
+1. **`.htaccess`.** If the document root or any directory on the path has an `.htaccess`, its `mod_rewrite` rules are applied. Supported: `RewriteEngine`, `RewriteBase`, `RewriteCond` with `%{REQUEST_FILENAME}` (`-f`, `-d`, negated), `%{REQUEST_URI}`, `%{HTTP_HOST}` and `%{QUERY_STRING}` patterns and the `[NC]` flag, and `RewriteRule` with `[L]`, `[QSA]`, `[R=301]`, `[F]`, `[E=VAR:val]` and the `-` target. Parsed rules are cached and re-read when the file changes.
+2. **Config.** If there is no applicable `.htaccess` rule and `Q.compat.rewrite` names a front controller, a request for a path that is not an existing file is handled as follows: the first matching entry in `Q.compat.rewriteRules` wins (a rule with `"static": true` serves the file as-is); otherwise the request goes to the front controller. `SCRIPT_NAME`, `SCRIPT_FILENAME` and `PATH_INFO` are set as a front controller expects. If `Q.compat.rewriteQueryParam` is set, the path is also passed in that query parameter.
+
+### Presets
+
+| Preset | Front controller | `upload_max_filesize` | `post_max_size` | `memory_limit` | `max_execution_time` | Other |
+|---|---|---|---|---|---|---|
+| `laravel` | `index.php` | 10M | 12M | 256M | 60 | session GC tuned for a 2-hour lifetime |
+| `symfony` | `index.php` | 10M | 12M | 256M | 60 | |
+| `wordpress` | `index.php` | 64M | 64M | 256M | 300 | |
+| `drupal` | `index.php` | 32M | 32M | 256M | 240 | `?q=` path parameter |
+
+## What the rewriter does not reach
+
+The rewriter sees source code that is loaded from disk through `include` or `require`. It does not see:
+
+- **Calls through a string.** `call_user_func('header', ...)`, `array_map('setcookie', ...)`, `$fn = 'header'; $fn(...)`. The function name is a string token, not a call, and rewriting strings would break far more code than it fixes.
+- **`eval()`.** Evaluated code never passes through the file wrapper.
+- **Code inside a `.phar`.** Only `file://` includes are rewritten.
+- **Calls made from C.** A PHP extension that sends headers internally bypasses PHP-level code entirely.
+
+For code that does any of these, route it to `php-cgi`. Scripts whose paths match `Q.webserver.cgi.patterns` run in a `php-cgi` subprocess, where the builtins behave exactly as they do under Apache or php-fpm:
 
 ```json
-{ "Q": { "webserver": { "cgi": { "patterns": ["wp-.*\\.php", "legacy/.*"] } } } }
+{ "Q": { "webserver": { "cgi": { "patterns": ["wp-admin/.*", "legacy/.*"] } } } }
 ```
 
-`tests/run-cgi.sh` proves that path preserves both status codes and headers.
+This costs the preload and copy-on-write benefits for those scripts, so use it for the few that need it rather than for the whole app.
 
-### Cookies
+One more edge: a file that declares `namespace Foo;` and defines its own function named `header()`, then calls it unqualified, will have that call rewritten to the shim. This is rare enough that the rewriter does not attempt the namespace-resolution analysis needed to tell the two apart.
 
-`Q_Response::setCookie()` works in both modes (the Platform declares it too). The server reads `Q_Response::$cookies` — a `public static` property on both implementations — and emits the `Set-Cookie` headers itself.
+## Turning it off
+
+The rewriter is on by default. If your code already uses `Q_Response`, `Q_Request` and the other Qbix APIs and never calls the builtins, you can skip the startup pass and the wrapper:
+
+```json
+{ "Q": { "compat": { "skipSourceCodeTransform": true } } }
+```
+
+## Configuration reference
+
+```json
+{
+  "Q": {
+    "compat": {
+      "skipSourceCodeTransform": false,
+      "prewarmDir": "/var/www/myapp",
+      "rewrite": "index.php",
+      "rewriteQueryParam": "q",
+      "rewriteRules": [
+        {"match": "^/api/(.*)$", "to": "/api.php/$1"},
+        {"match": "^/assets/", "static": true}
+      ],
+      "ini": {
+        "upload_max_filesize": "10M",
+        "post_max_size": "12M",
+        "memory_limit": "256M",
+        "max_execution_time": "60",
+        "session.gc_maxlifetime": "1440"
+      }
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `skipSourceCodeTransform` | `false` | Set `true` to disable the rewriter |
+| `prewarmDir` | parent of `--root` | Directory walked at startup |
+| `rewrite` | none | Front controller for paths that are not files |
+| `rewriteQueryParam` | none | Also pass the path in this query parameter |
+| `rewriteRules` | none | Regex rules checked before the front controller |
+| `ini` | none | Values returned by `ini_get()` |
+
+## Known limitations
+
+- **OPcache.** PHP compiles the rewritten source, so OPcache's file-based validation does not apply to it. The CLI SAPI disables OPcache by default (`opcache.enable_cli=0`); leave it that way, or set `validate_timestamps=1`.
+- **Aggressive output buffering.** Code that calls `ob_end_flush()` in a loop to empty every buffer can interfere with response capture. The server's own buffer cannot be removed, which covers the common cases.
+- **Edits to rewritten files** are not seen until restart unless hot reload is on (see [Caching](#caching-and-startup-cost)).
 
 ## Tests
 
-Five test suites, 152 tests total:
-
-```bash
-# Core — static files, MIME, PHP dispatch, superglobals, POST/JSON, cookies, auth, stress
-bash tests/run.sh --quick                    # 72 tests
-
-# SAPI — superglobal population, output capture, status codes, sessions, shutdown ordering
-php tests/testSapi.php                       # 19 tests
-
-# HTTP protocol — keep-alive, path traversal, ETags, encoding, logging, panel auth
-bash tests/testHttp.sh [port]                # 37 tests
-
-# WebSocket — RFC 6455, Socket.IO handshake, events+acks, rooms, dashboard broadcast
-node tests/testWebSocket.js [port]           # 12 tests
-
-# Snapshot reset — octane state isolation, memory leaks, secret leaks
-bash tests/testSnapshot.sh [port]            # 12 tests
-```
-
-The snapshot tests start both a fork-mode server and a persistent-worker server, then verify that statics, globals, `$_COOKIE`, `$_SERVER`, `$_POST`, Authorization headers, and response headers from request A are invisible to request B. The fork-mode server acts as a control group. See [reset.md](docs/reset.md) for what the snapshot resets.
-
-## Class ownership in `--app` mode
-
-The webserver owns its own classes; the Platform does not carry copies.
-
-`Q::autoload()` resolves `Q_WebServer_Proxy` to `classes/Q/WebServer/Proxy.php` against PHP's include_path, which covers only the Platform. So `qbixserver.php` registers a prepended autoloader that serves these names from this repo's `src/`:
-
-    Q_WebServer, Q_WebServer_*, Q_WebSocket, Q_Scheduler, Q_FileCache, Q_HotReload
-
-It is deliberately **selective**. `src/Q/` also contains `Utils`, `Uri`, `Evented` and `Snapshot`, which the Platform also defines. Claiming those would shadow the Platform's versions with the standalone ones. In `--app` mode the Platform wins for anything it defines; we claim only what is ours alone.
-
-Do **not** copy `Q/WebServer*.php` into `platform/classes/`. Nothing in the Platform references `Q_WebServer` except one comment, and a Platform running behind nginx or php-fpm should not ship code it never loads. A partial copy there is worse than none: it shadows this repo's complete set and fails with `Class "Q_WebServer_Proxy" not found`.
-
-### `Q::$paths`
-
-`Q::$paths` is declared by this repo's **standalone shim** (`src/Q.php`), not by the Platform's `Q.php`. Use `Q_WebServer::paths()` instead of touching the property — it falls back to `APP_DIR`/`Q_DIR` when the property is absent. Dereferencing it directly in `--app` mode raised `Access to undeclared static property Q::$paths` and made every request a 500.
-
-### The webserver is a strict, overridable subset
-
-In `--app` mode the Platform wins twice over: its **classes** override ours for any shared name, and its **config** (routing, etc.) overrides ours. That is the intended direction, and it only works if we never depend on anything the Platform lacks.
-
-The rule: **any member the Platform does not define must live on a webserver-only class** — `Q_WebServer`, `Q_WebServer_*`, `Q_WebSocket`, `Q_Scheduler`, `Q_FileCache`, `Q_HotReload` — never on a shared name like `Q`, `Q_Utils`, `Q_Uri`, `Q_Evented` or `Q_Snapshot`.
-
-`tests/platform-compat.php` enforces this. It maps both class trees, finds the shared names, and fails if we touch a static member the Platform's version does not declare. Guarded calls (`method_exists('Q','init') && Q::init(...)`) are allowed, since they degrade cleanly.
-
-    php tests/platform-compat.php /path/to/Qbix/platform
-
-Fixed under this rule so far:
-
-- `Q::$paths` — declared by our standalone shim, not by the Platform. Now read
-  through `Q_WebServer::paths()`, which falls back to `APP_DIR`/`Q_DIR`.
-- `Q_Utils::serverIdentity()`, `serverClaim()`, `signClaim()`, `verify()` —
-  four methods on a shared class name the Platform also defines (without them). Moved to **`Q_WebServer_Identity`**.
-
-#### Platform compatibility: PASS
-
-`php tests/platform-compat.php <platform>` reports **0 violations**. All webserver-only methods (`setInput`, `restoreInput`, `getHeaders`, `cookieHeaders`, `clear`, `responseCode`) are called on `Q_WebServer_State` (webserver-only class), never on shared classes that the Platform overrides. The webserver's internal code uses `Q_WebServer_State` for state management; user-facing APIs (`Q_Response::header()`, `Q_Request::method()`, etc.) exist in both the standalone shim and the Platform.
-
-### Why the webserver keeps its own Q_Uri (measured)
-
-| | bytes | dependencies |
-|---|---|---|
-| Platform `Q_Uri` | 41,394 (1,472 lines) | `Q`, `Q_Config`, `Q_Request`, `Q_Utils`, `Q_Valid` |
-| webserver `Q_Uri` | 7,554 | `Q`, `Q_Config` |
-
-Adopting the Platform's outright means its **transitive closure**: Uri 41K + Request 55K + Utils 84K + Valid 17K = **~197KB**, versus 7.5KB — and the webserver has no `Q_Valid` at all. A standalone static server does not need slots, mobile detection or validation to match `AI/webhook/:type/:task`.
-
-In `--app` mode the calculus reverses: the Platform is already loaded, so its `Q_Uri` is free and ours is dead weight. Hence `Q_WebServer_Router`, which uses whichever is present.
-
-**Resolved.** `Q_Uri::from()` *is* the path→route matcher — it dispatches internally to the protected `fromUrl()`. The catch is that it must be given an **absolute URL**, not a bare path.
-
-Passing a bare path is worse than an error. `from()` then treats it as a URI string (`"Module/action/..."`) and merely SPLITS it, returning a wrong answer with no exception. Measured against a live app:
-
-    bare path  AI/webhook/slack/ingest                    -> AI / webhook/slack/ingest   (split) full URL   http://host/App/AI/webhook/slack/ingest    -> AI / webhook                (routed)
-
-`Q_WebServer_Router` now builds `Q_Request::baseUrl() + path` before calling `from()`, and returns null rather than guessing when no base URL is available. Verified with the Platform's `Q_Uri` loaded (`which Q_Uri: PLATFORM`):
-
-    /AI/webhook/slack/ingest  -> AI/webhook /Safebox/action           -> Safebox/action /Users/login              -> null      (no catch-all route in that app's config) /nope                     -> null
-
-## Testing
-
-Seven suites. Everything runs against a real server over a real socket — no mocks.
-
-    bash tests/run.sh --quick                    # 71 functional + security tests php  tests/testSapi.php                      # 19 SAPI emulation tests bash tests/run-probe.sh [platform-dir]       # 58 wire-level probes per mode bash tests/run-cgi.sh                        # php-cgi carveout php  tests/platform-compat.php <platform>    # --app compatibility audit php  tests/routing-parity.php  <platform>    # our matcher vs the Platform's bash tests/run-modes.sh <app> <platform>     # dual-mode acceptance
-
-CI runs all of them on every push (`.github/workflows/test.yml`), in three jobs: standalone, php-cgi, and `--app` against a fresh checkout of [Qbix/Platform](https://github.com/Qbix/Platform).
-
-### Testing `--app` mode
-
-The Platform will not bootstrap without a real app — it needs a config with `Q/plugins` and `Q/web/appRootUrl`, and its `Q_Uri` is not loadable on its own. Build a minimal, plugin-free fixture:
-
-    bash tests/fixtures/make-app.sh /path/to/Platform/platform /tmp/TestApp 20099 bash tests/run-probe.sh /path/to/Platform/platform
-
-Without a Platform path, `platform-compat.php` and `routing-parity.php` exit 0 with `SKIP`. **In CI that is indistinguishable from passing**, so the workflow greps their output and fails the job if they did not actually report success.
-
-### `tests/probe.php` — the wire-level suite
-
-Unit tests miss whole classes of bug. Two examples this suite caught that nothing else did:
-
-- **`exit()` sent the client zero bytes.** The forked child unwound past the
-  response-writing code, so nothing reached the socket — while the access log recorded `200`, because the parent had already assumed success.
-- **Headers were silently dropped in `--app` mode.** They were captured
-  correctly, then discarded by a guard that tested for a method only the standalone shim declares.
-
-Both looked fine from inside the process. Only reading the socket revealed them.
-
-### `tests/platform-compat.php` — the invariant that matters
-
-The webserver is a *subset* the Platform must be able to override. In `--app` mode the Platform's classes win for every name it defines, so any member the webserver touches on a shared class must exist in the Platform's version too — otherwise it works standalone and dies under a real app.
-
-This audit walks `src/` **and the test fixtures** (they run under both modes too) and fails on any member a shared class does not declare. Anything the Platform lacks belongs on a webserver-only class: `Q_WebServer`, `Q_WebServer_State`, `Q_WebServer_Router`, `Q_WebServer_Identity`, `Q_WebSocket`, `Q_Scheduler`, `Q_FileCache`, `Q_HotReload`.
-
-### Two behaviours worth knowing
-
-**`php://input` works, via a stream wrapper.** A forking server reads the request off the socket itself, so the real `php://input` is already consumed and would stay empty for the life of the process. `Q_WebServer_State::setInput()` registers a wrapper over `php` so `file_get_contents('php://input')` returns *this* request's body, and `restoreInput()` unregisters it afterwards.
-
-The wrapper class exists twice on purpose: `Q_PhpInputStream` in `src/Q.php` for standalone, and `Q_WebServer_PhpInput` for `--app`, because `src/Q.php` is the standalone shim and is not loaded when the Platform's `Q` wins. Without the webserver-owned copy, `php://input` returned an empty string for every request under `--app`.
-
-**Native `header()` is discarded under the CLI SAPI.** `headers_list()` always returns empty and `http_response_code()` returns `false`; PHP offers no hook to intercept the builtin. Scripts written for Qbix should use `Q_Response::header()`, which works in both modes. Scripts that must use native `header()` — WordPress, third-party code — are routed to `php-cgi` via `Q.webserver.cgi.patterns`; `tests/run-cgi.sh` proves that path preserves both status and headers.
-
-**The app enforces its own baseUrl.** If the app is configured for `http://host/App` and you serve it on another port, the Platform returns `{"error":"bad url ..."}`. That is the application refusing, not the server failing. Serve at the configured address, or point the app's baseUrl at the listening one — which is what `make-app.sh`'s port argument does.
-
-### Fixed: `/` returned 403 in `--app` mode
-
-`GET /index.php` returns 200 and renders the app. `GET /` returns 403.
-
-Narrowed to the directory-index lookup: for `/` the server resolves the docroot directory and then tries `index.html`, `index.php` in turn. That lookup is not finding `web/index.php` even though the file exists and serves correctly when requested directly — so the request falls past the index branch and is refused. Suspect the `$fsPath . DS . $idx` join against `self::$rootDir` (the startup banner reports `Root: web`, a relative value).
-
-Everything else in `--app` mode passes: static files, `index.php`, an `action.php` route, no class-loading / undeclared-property / undefined-method errors, and no leading NUL byte.
-
-**Root cause (fixed).** The extension used to pick the static-vs-PHP branch was read from `$path` (the URL) instead of `$fsPath` (the resolved file). `/` has no extension in the URL, but `$fsPath` had already been resolved to the directory index `.../index.php`. So `/` fell past the PHP branch into `serveStaticFile()`, which rejects any extension not in `$allowedExtensions` — 403 on the app's own home page, while `/index.php` served fine. The same mistake appeared in **two** places (`route()` and the serve path); both now read `$fsPath`.
-
-**Also fixed: missing `Content-Type` on PHP-dispatched 200s.** A script that never calls `header()` left none set, so successful dispatches went out with no `Content-Type` at all — browsers sniff, strict clients reject. Error paths set it explicitly, which is why it only bit the success path. `dispatchToQ()` now defaults to `text/html; charset=utf-8` unless the script set one (and never on 204/304).
-
-**Status: 32/32 passing in both modes**, stable across repeated runs.
-
-**Native `header()` is not captured — use `Q_Response::setHeader()`.** Under the CLI SAPI PHP's `header()` is a no-op and `headers_list()` returns nothing, so a long-running CLI server cannot see those calls. This is a PHP constraint, not a server one, and unlike `php://input` it cannot be worked around with a stream wrapper. Set response headers through `Q_Response::setHeader()` or `Q::header()`; both are captured and reach the client. The suite asserts this explicitly so it will report if a future SAPI changes the behaviour.
-
-**One header store.** `Q_Response`'s accessors delegate to `Q_WebServer_State`. An earlier refactor left `Q_Response` keeping a parallel `$_headers` array while the server read State's — so every header set through the Qbix API silently vanished from the response. The suite now round-trips a header set via `Q_Response::setHeader()` and asserts it arrives.
+`tests/test_compat_namespace.php` checks the rewriter against namespaced code, which is how Symfony, Laravel and Drupal are written. Against a live server, a front controller that builds a Symfony `Response` with a status of 201, a custom header and a cookie, then calls `send()`, returns all three to the client. `tests/testSnapshot.sh` runs a real server and checks that headers, cookies, sessions and handlers from one request are invisible to the next. See [app-mode.md](app-mode.md#testing) for the full list of suites.
 
 ---
 [← Back to README](../README.md)
-

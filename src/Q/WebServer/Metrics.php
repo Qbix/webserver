@@ -114,6 +114,7 @@ class Q_WebServer_Metrics
 			self::$currentMinute = $minute;
 		}
 
+		$statusCode = (int) $statusCode;
 		self::$requestTimes[] = $durationMs;
 		$bucket = (int) floor($statusCode / 100) . 'xx';
 		self::$statusCodes[$bucket] = (self::$statusCodes[$bucket] ?? 0) + 1;

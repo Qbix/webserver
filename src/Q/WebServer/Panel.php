@@ -65,7 +65,7 @@ class Q_WebServer_Panel
 			$route = substr($path, 7);
 			if ($route === 'auth/setup' || $route === 'auth/login') {
 				$result = self::handleAuthApi($route, $parsed);
-				Q_WebServer::sendResponse($client, $result['status'] ?? 200,
+				Q_WebServer::sendResponse($client, self::httpStatus($result),
 					json_encode($result), 'application/json');
 				return true;
 			}
@@ -79,12 +79,29 @@ class Q_WebServer_Panel
 			}
 
 			$result = self::handleApi($path, $parsed);
-			Q_WebServer::sendResponse($client, $result['status'] ?? 200,
+			Q_WebServer::sendResponse($client, self::httpStatus($result),
 				json_encode($result), 'application/json');
 			return true;
 		}
 
 		return false;
+	}
+
+	/**
+	 * HTTP status for an API result. Results use a numeric 'status' to set the
+	 * response code, but some carry a descriptive 'status' of their own (a
+	 * proxied peer response with {"status":"ok"}, a peer's "connected" state).
+	 * Passing that string through produced "HTTP/1.1 ok" and crashed the
+	 * metrics recorder, which took the whole server down.
+	 */
+	private static function httpStatus($result)
+	{
+		$s = is_array($result) ? ($result['status'] ?? null) : null;
+		if (is_int($s) || (is_string($s) && ctype_digit($s))) {
+			$s = (int) $s;
+			if ($s >= 100 && $s <= 599) return $s;
+		}
+		return 200;
 	}
 
 	/**
@@ -399,6 +416,26 @@ class Q_WebServer_Panel
 				return self::apiQbixPluginInstall($parsed);
 			case 'qbix/plugins/schema':
 				return self::apiQbixPluginSchema($parsed);
+			// ── Transport / Nearby ──────────────
+			case 'transport/peers':
+			case 'transport/register':
+			case 'transport/unregister':
+			case 'transport/heartbeat':
+			case 'transport/message':
+			case 'transport/event':
+			case 'transport/config':
+			case 'transport/status':
+			case 'transport/connect':
+			case 'transport/request':
+				require_once dirname(__DIR__) . '/WebServer/Transport.php';
+				$tAction = substr($route, 10); // strip 'transport/'
+				$tData = !empty($parsed['body']) ? json_decode($parsed['body'], true) : array();
+				if (!is_array($tData)) $tData = array();
+				// $parsed['query'] is the raw query string, not an array
+				$tQuery = $parsed['query'] ?? array();
+				if (!is_array($tQuery)) { $qp = array(); parse_str((string) $tQuery, $qp); $tQuery = $qp; }
+				$tData = array_merge($tData, $tQuery);
+				return Q_WebServer_Transport::handleApi($tAction, $tData);
 			default:
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
@@ -2970,6 +3007,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('playground')">Playground</div>
   <div class="tab" onclick="showTab('system')">System</div>
   <div class="tab" onclick="showTab('servers')">Servers</div>
+  <div class="tab" onclick="showTab('nearby')">Nearby</div>
 </div>
 
 <!-- APPS TAB -->
@@ -3156,6 +3194,42 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     </div>
   </div>
   <div id="servers-list"></div>
+</div>
+
+<!-- NEARBY TAB -->
+<div id="tab-nearby" class="content hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:16px">Nearby Peers</h2>
+    <button class="btn btn-ghost" onclick="loadNearby()">Refresh</button>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <p style="font-size:12px;color:var(--dim);margin-bottom:8px">This server's mesh identity:</p>
+    <div id="nearby-identity" style="font-family:monospace;font-size:11px;word-break:break-all;color:var(--accent)">Loading...</div>
+  </div>
+  <div id="nearby-transports" class="card" style="margin-bottom:14px">
+    <h3 style="margin-bottom:8px">Transports</h3>
+    <div id="nearby-transport-list">Loading...</div>
+  </div>
+  <div id="nearby-peers">
+    <p style="color:var(--dim)">Scanning for nearby peers...</p>
+  </div>
+  <div id="nearby-sessions" class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Encrypted Sessions</h3>
+    <div id="nearby-session-list">None</div>
+  </div>
+  <div id="nearby-routes" class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Routing Table</h3>
+    <div id="nearby-route-list">No routes</div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Connect to Peer</h3>
+    <div style="display:flex;gap:8px">
+      <input id="nearby-connect-addr" type="text" placeholder="http://192.168.1.50:8080"
+        style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
+      <button class="btn" onclick="connectToPeer()">Connect</button>
+    </div>
+    <div id="nearby-connect-result" style="font-size:12px;margin-top:6px;color:var(--dim)"></div>
+  </div>
 </div>
 
 <!-- FRAMEWORKS TAB -->
@@ -3440,6 +3514,7 @@ function showTab(name) {
   if (name==='plugins') loadPlugins();
   if (name==='system') loadSystem();
   if (name==='servers') loadServers();
+  if (name==='nearby') loadNearby();
   if (name==='domains') loadDomains();
   if (name==='autohost') loadAutohost();
   if (name==='security') loadSecurity();
@@ -3817,6 +3892,97 @@ async function viewPluginSchema(name) {
 
 // System
 // Servers
+// ── Nearby / Transport ──────────────────────────────
+async function loadNearby() {
+  try {
+    const d = await api('transport/status');
+    // Identity
+    const idEl = document.getElementById('nearby-identity');
+    if (d.mesh_id) {
+      idEl.innerHTML = '<strong>' + (d.mesh_name || 'This device') + '</strong><br>' + d.mesh_id;
+    } else {
+      idEl.textContent = 'Not initialized';
+    }
+    // Transports
+    const tEl = document.getElementById('nearby-transport-list');
+    const transports = d.transports || {};
+    let tHtml = '';
+    for (const [name, enabled] of Object.entries(transports)) {
+      const dot = enabled ? '🟢' : '⚪';
+      tHtml += '<span style="margin-right:14px">' + dot + ' ' + name + '</span>';
+    }
+    tEl.innerHTML = tHtml || 'None configured';
+    // Peers
+    const pEl = document.getElementById('nearby-peers');
+    const peers = d.peers || [];
+    if (peers.length === 0) {
+      pEl.innerHTML = '<div class="card"><p style="color:var(--dim)">No nearby peers detected.</p></div>';
+    } else {
+      let html = '';
+      for (const p of peers) {
+        const ago = Math.floor(Date.now()/1000) - (p.lastSeen || 0);
+        const transport = p.transport || '?';
+        const hops = p.hops > 0 ? ' (' + p.hops + ' hops)' : ' (direct)';
+        const encrypted = p.sessionEstablished ? ' 🔒' : '';
+        html += '<div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'
+          + '<div><strong>' + (p.name || p.peer_id.substring(0,8)) + '</strong>' + encrypted
+          + '<br><span style="font-size:11px;color:var(--dim)">' + transport + hops
+          + ' · ' + (ago < 5 ? 'just now' : ago + 's ago')
+          + '</span><br><span style="font-size:10px;font-family:monospace;color:var(--dim)">' + (p.peer_id || '').substring(0,16) + '…</span></div>'
+          + '<button class="btn btn-ghost" onclick="disconnectPeer(\'' + (p.peer_id || '') + '\')">Disconnect</button>'
+          + '</div>';
+      }
+      pEl.innerHTML = html;
+    }
+    // Sessions
+    const sEl = document.getElementById('nearby-session-list');
+    const sessions = d.sessions || [];
+    if (sessions.length === 0) {
+      sEl.textContent = 'No encrypted sessions active';
+    } else {
+      sEl.innerHTML = sessions.map(s => '<code style="font-size:11px">' + s.substring(0,16) + '…</code>').join(', ');
+    }
+    // Routing table
+    const rEl = document.getElementById('nearby-route-list');
+    const routes = d.routes || [];
+    if (routes.length === 0) {
+      rEl.textContent = 'No routes';
+    } else {
+      let rHtml = '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+        + '<tr style="color:var(--dim)"><td>Destination</td><td>Via</td><td>Hops</td><td>Name</td></tr>';
+      for (const r of routes) {
+        const dest = (r.destination || '').substring(0,12) + '…';
+        const hop = r.next_hop === r.destination ? 'direct' : (r.next_hop || '').substring(0,12) + '…';
+        rHtml += '<tr><td><code>' + dest + '</code></td><td>' + hop + '</td><td>' + (r.hops ?? '?') + '</td><td>' + (r.name || '') + '</td></tr>';
+      }
+      rHtml += '</table>';
+      rEl.innerHTML = rHtml;
+    }
+  } catch (e) {
+    document.getElementById('nearby-peers').innerHTML = '<div class="card"><p style="color:var(--warn)">Error loading: ' + e.message + '</p></div>';
+  }
+}
+async function connectToPeer() {
+  const addr = document.getElementById('nearby-connect-addr').value.trim();
+  if (!addr) return;
+  const el = document.getElementById('nearby-connect-result');
+  el.textContent = 'Connecting…';
+  try {
+    const d = await api('transport/connect', {address: addr});
+    if (d.connected) {
+      el.innerHTML = '✓ Connected to <strong>' + (d.name || d.peer_id.substring(0,12)) + '</strong>' + (d.encrypted ? ' 🔒' : '');
+      loadNearby();
+    } else {
+      el.textContent = '✗ ' + (d.error || 'Connection failed');
+    }
+  } catch (e) { el.textContent = '✗ ' + e.message; }
+}
+async function disconnectPeer(peerId) {
+  if (!confirm('Disconnect peer ' + peerId.substring(0,8) + '?')) return;
+  await api('transport/unregister', {peer_id: peerId});
+  loadNearby();
+}
+
 function showAddServer() { document.getElementById('add-server-form').classList.remove('hidden'); document.getElementById('srv-name').focus(); }
 function hideAddServer() { document.getElementById('add-server-form').classList.add('hidden'); }
 async function saveServer() {

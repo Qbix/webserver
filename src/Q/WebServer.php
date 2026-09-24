@@ -313,6 +313,13 @@ class Q_WebServer
 
 				if ($result['success']) {
 					fwrite(STDERR, "  [ACME] ✓ Certificate ready for {$domainName}\n");
+					// Register for SNI-based cert selection
+					if (is_file($result['cert']) && is_file($result['key'])) {
+						self::registerDomainCert($domainName, $result['cert'], $result['key']);
+						foreach ($alts as $alt) {
+							self::registerDomainCert($alt, $result['cert'], $result['key']);
+						}
+					}
 					// If HTTPS wasn't started yet, start it now
 					if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
 						Q_WebServer_Certs::init($domainName);
@@ -438,13 +445,51 @@ class Q_WebServer
 
 		stream_set_blocking($client, false);
 
-		// Set SSL context options on this specific socket
+		// Apply the full hardened TLS context — ciphers, dhparam, session
+		// tickets, honor_cipher_order — not just cert+key.
 		$certPath = Q_WebServer_Certs::$certPath;
 		$keyPath = Q_WebServer_Certs::$keyPath;
+
+		// Per-domain cert selection for autohost (SNI).
+		// The Host header isn't available yet (it's inside the TLS tunnel),
+		// but if we have domain-specific certs from ACME provisioning,
+		// PHP's OpenSSL will select via SNI_server_certs if provided.
+		$sniCerts = self::$sniCertMap ?? array();
+		if (!empty($sniCerts)) {
+			stream_context_set_option($client, 'ssl', 'SNI_server_certs', $sniCerts);
+		}
+
 		stream_context_set_option($client, 'ssl', 'local_cert', $certPath);
 		stream_context_set_option($client, 'ssl', 'local_pk', $keyPath);
 		stream_context_set_option($client, 'ssl', 'allow_self_signed', true);
 		stream_context_set_option($client, 'ssl', 'verify_peer', false);
+		stream_context_set_option($client, 'ssl', 'disable_compression', true);
+		stream_context_set_option($client, 'ssl', 'honor_cipher_order', true);
+
+		// Apply cipher suite and dhparam from the hardened context
+		stream_context_set_option($client, 'ssl', 'ciphers', implode(':', array(
+			'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+			'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+			'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+			'DHE-RSA-AES128-GCM-SHA256', 'DHE-RSA-AES256-GCM-SHA384',
+			'!aNULL', '!eNULL', '!EXPORT', '!DES', '!RC4', '!3DES', '!MD5', '!PSK'
+		)));
+		if (defined('OPENSSL_KEYTYPE_EC')) {
+			stream_context_set_option($client, 'ssl', 'ecdh_curve', 'prime256v1');
+		}
+
+		// DH params
+		$dhparamPaths = array(
+			dirname($certPath) . '/dhparam.pem',
+			'local/certs/dhparam.pem',
+			'/etc/ssl/certs/dhparam.pem'
+		);
+		foreach ($dhparamPaths as $dhpath) {
+			if (is_file($dhpath)) {
+				stream_context_set_option($client, 'ssl', 'dh_param', $dhpath);
+				break;
+			}
+		}
 
 		$key = (int) $client;
 		self::$clients[$key] = $client;
@@ -623,7 +668,10 @@ class Q_WebServer
 						// Worker crashed or was killed — record as 502
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 502, $ms, 0, true);
 							if (class_exists('Q_WebServer_Metrics', false)) {
-								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, '', '', 0);
+								$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+								$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
+								$ck = is_array($info) ? ($info['cookies'] ?? []) : [];
+								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, $ip, $ua, 0, $ck);
 							}
 					} else {
 						// Normal exit — child already sent the response and recorded nothing
@@ -652,7 +700,10 @@ class Q_WebServer
 						unset(Q_WebServer::$workerPids[$pid]);
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 504, $ms, 0, true);
 						if (class_exists('Q_WebServer_Metrics', false)) {
-							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, '', '', 0);
+							$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+							$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
+							$ck = is_array($info) ? ($info['cookies'] ?? []) : [];
+							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, $ip, $ua, 0, $ck);
 						}
 					}
 				}
@@ -1164,6 +1215,29 @@ class Q_WebServer
 					'headers'=>array('Content-Type'=>'application/json'));
 			}
 			return array('status'=>404, 'body'=>'Attestation not available');
+		}
+		// ── Mesh sync endpoints (unauthenticated — called by other servers) ──
+		if (strpos($path, '/Q/sync/') === 0) {
+			require_once __DIR__ . '/WebServer/Mesh.php';
+			$syncAction = substr($path, 8); // strip '/Q/sync/'
+			$syncData = array();
+			if (!empty($parsed['body'])) {
+				$syncData = json_decode($parsed['body'], true) ?: array();
+			}
+			// $parsed['query'] is the raw query string; array_merge() on a
+			// string threw a TypeError, so every /Q/sync/* request returned 500.
+			$syncQuery = $parsed['query'] ?? array();
+			if (!is_array($syncQuery)) {
+				$qp = array();
+				parse_str((string) $syncQuery, $qp);
+				$syncQuery = $qp;
+			}
+			$syncData = array_merge($syncData, $syncQuery);
+			Q_WebServer_Mesh::init();
+			$result = Q_WebServer_Mesh::handleSyncApi($syncAction, $syncData);
+			return array('status' => 200,
+				'body' => json_encode($result),
+				'headers' => array('Content-Type' => 'application/json'));
 		}
 		if ($path === '/Q/cluster/join' && $method === 'POST') {
 			if (class_exists('Q_WebServer_Cluster', false)) {
@@ -1735,6 +1809,18 @@ class Q_WebServer
 				}
 				return false;
 			}
+			if (strpos($path, '/Q/sync/') === 0) {
+				require_once __DIR__ . '/WebServer/Mesh.php';
+				$sa = substr($path, 8);
+				$sd = !empty($parsed['body']) ? (json_decode($parsed['body'], true) ?: array()) : array();
+				$sq = $parsed['query'] ?? array();
+				if (!is_array($sq)) { $qp = array(); parse_str((string) $sq, $qp); $sq = $qp; }
+				$sd = array_merge($sd, $sq);
+				Q_WebServer_Mesh::init();
+				$r = Q_WebServer_Mesh::handleSyncApi($sa, $sd);
+				self::sendResponse($client, 200, json_encode($r), 'application/json');
+				return false;
+			}
 			if ($path === '/Q/cluster/join' && $method === 'POST') {
 				if (class_exists('Q_WebServer_Cluster', false)) {
 					$data = json_decode($parsed['body'] ?? '', true) ?: array();
@@ -1992,7 +2078,7 @@ class Q_WebServer
 		$_hostPort = explode(':', $parsed['headers']['host'] ?? 'localhost');
 		$_SERVER['SERVER_PORT'] = isset($_hostPort[1]) ? $_hostPort[1] : '80';
 		$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
-		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . QBIX_SERVER_VERSION;
 		$_SERVER['DOCUMENT_ROOT'] = rtrim(self::$rootDir, DS);
 		$_SERVER['REMOTE_ADDR'] = $parsed['_remoteAddr'] ?? '127.0.0.1';
 		$_SERVER['REQUEST_TIME'] = time();
@@ -2081,6 +2167,9 @@ class Q_WebServer
 					'time' => microtime(true),
 					'method' => $parsed['method'],
 					'uri' => $parsed['uri'],
+					'clientIp' => $parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					'userAgent' => $parsed['headers']['user-agent'] ?? '',
+					'cookies' => $parsed['cookies'] ?? array(),
 				);
 				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = -1; // -1 = delegated to child, don't record in parent
@@ -2296,7 +2385,14 @@ class Q_WebServer
 					Q_Evented::cancel(self::$clientWatchers[$key]);
 				}
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
-				self::$workerPids[$pid] = microtime(true);
+				self::$workerPids[$pid] = array(
+					'time' => microtime(true),
+					'method' => $parsed['method'] ?? 'GET',
+					'uri' => $parsed['uri'] ?? '/',
+					'clientIp' => $parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					'userAgent' => $parsed['headers']['user-agent'] ?? '',
+					'cookies' => $parsed['cookies'] ?? array(),
+				);
 				// Non-blocking reap — don't wait for child
 				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = 200;
@@ -2351,7 +2447,7 @@ $_SERVER['SERVER_NAME'] = $req['serverName'] ?? 'localhost';
 $_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
 $_SERVER['SERVER_ADDR'] = '127.0.0.1';
 $_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
-$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . QBIX_SERVER_VERSION;
 $_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
 $_SERVER['REDIRECT_STATUS'] = 200;
 $_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
@@ -2805,7 +2901,12 @@ WORKER;
 		}
 
 		$contentType = self::mimeType($ext);
-		$baseHeaders = "Content-Type: $contentType\r\n"
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
+		$baseHeaders = "Server: $serverTag\r\n"
+			. "Content-Type: $contentType\r\n"
 			. "ETag: $etag\r\n"
 			. "Last-Modified: " . gmdate('D, d M Y H:i:s', $mtime) . " GMT\r\n"
 			. "Cache-Control: public, max-age=0, must-revalidate\r\n";
@@ -4147,9 +4248,14 @@ HTML;
 		self::$lastBody = $body;
 		$body = (string) $body;
 		self::$lastBytes = strlen($body);
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
 		$conn = $extra['Connection'] ?? 'keep-alive';
 		unset($extra['Connection']);
 		$out = "HTTP/1.1 $status " . ($reasons[$status] ?? 'OK')
+			. "\r\nServer: $serverTag"
 			. "\r\nContent-Type: $type\r\nContent-Length: " . strlen($body)
 			. "\r\nConnection: $conn\r\n";
 		foreach ($extra as $k => $v) $out .= "$k: $v\r\n";
@@ -4322,6 +4428,12 @@ var docTitles = {
   "configuration.md": "Configuration",
   "running.md": "Running & Building",
   "architecture.md": "Architecture",
+  "Mesh.md": "Mesh Protocol",
+  "static-files.md": "Static Files",
+  "images.md": "Image Processing",
+  "sync.md": "Data Sync",
+  "mobile.md": "iOS & Android",
+  "app-mode.md": "--app Mode & SAPI",
   "dashboard.md": "Dashboard & Panel",
   "deploy.md": "Deploy & Federation",
   "api-discovery.md": "API Discovery",
@@ -4340,9 +4452,9 @@ async function init() {
   var html = "";
   if (r.hasReadme) html += \'<a href="#README.md" onclick="load(\\\'README.md\\\');return false">Overview</a>\';
   var sections = {"Getting Started":["why.md","running.md","configuration.md"],
-    "Features":["headers.md","http.md","websocket.md","routing.md","framework.md"],
+    "Features":["headers.md","static-files.md","images.md","http.md","websocket.md","routing.md","framework.md","Mesh.md","sync.md","mobile.md"],
     "Operations":["architecture.md","dashboard.md","deploy.md","api-discovery.md"],
-    "Reference":["compatibility.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
+    "Reference":["compatibility.md","app-mode.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
   for (var sec in sections) {
     html += "<h2>"+sec+"</h2>";
     sections[sec].forEach(function(f) {
@@ -4649,6 +4761,32 @@ init();
 	private static $tlsSocket = null;
 	private static $tlsWatcher = null;
 	private static $tlsPending = array();
+
+	/**
+	 * SNI certificate map: hostname => cert context path.
+	 * Built from autohost domain provisioning. When a TLS client
+	 * sends an SNI hostname, OpenSSL selects the matching cert.
+	 * Format: ['example.com' => ['local_cert' => '/path/cert.pem', 'local_pk' => '/path/key.pem'], ...]
+	 */
+	private static $sniCertMap = array();
+
+	/**
+	 * Register a domain's certificate for SNI-based selection.
+	 * Called by Autohost after provisioning a cert via ACME.
+	 *
+	 * @param string $hostname The domain name
+	 * @param string $certPath Path to the PEM certificate (fullchain)
+	 * @param string $keyPath Path to the PEM private key
+	 */
+	static function registerDomainCert($hostname, $certPath, $keyPath)
+	{
+		if (is_file($certPath) && is_file($keyPath)) {
+			self::$sniCertMap[$hostname] = array(
+				'local_cert' => $certPath,
+				'local_pk' => $keyPath
+			);
+		}
+	}
 	private static $httpsPort = 0;
 	static $clients = array();
 	static $clientWatchers = array();

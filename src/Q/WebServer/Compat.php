@@ -330,7 +330,10 @@ class Q_WebServer_Compat
 					break;
 				}
 				if ($hasParen) {
-					$out .= self::$replacements[$name];
+					// Leading backslash: the shim class is global, and an
+					// unqualified name inside `namespace Foo;` would resolve
+					// to Foo\Q_WebServer_Compat and fatal.
+					$out .= '\\' . self::$replacements[$name];
 					$changed = true;
 					continue;
 				}
@@ -355,7 +358,7 @@ class Q_WebServer_Compat
 				$out = substr($out, 0, -1); // remove the trailing '\'
 			}
 
-			$out .= self::$replacements[$name];
+			$out .= '\\' . self::$replacements[$name];
 			$changed = true;
 		}
 

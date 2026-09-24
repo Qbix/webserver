@@ -1,6 +1,6 @@
 ## 🏎️ Why Not php-fpm?
 
-php-fpm re-bootstraps the framework on every request (10–50ms), uses ~42MB per worker, and leaks statics between requests. Qbix Server loads the framework once at startup, keeps workers persistent, resets all state in 0.03ms via Reflection + 28 function shims, and fits each worker in ~120KB thanks to copy-on-write.
+php-fpm re-bootstraps the framework on every request (10–50ms), uses ~42MB per worker, and leaks statics between requests. Qbix Server loads the framework once at startup, keeps workers persistent, resets all state in 0.03ms via Reflection + 27 function shims, and fits each worker in ~120KB thanks to copy-on-write.
 
 ```
 php-fpm:
@@ -21,7 +21,7 @@ Qbix Server:
   Cost: 120KB per worker. 400+ workers on 200MB. 1,060 req/s at 50ms I/O.
 ```
 
-Three things fpm can't do: (1) persistent workers that don't leak state — Qbix resets 28 shimmed functions + all statics between requests, fpm resets nothing. (2) Thousands of workers on the same RAM — COW means each worker only pays for the pages it writes, not the 30MB of loaded framework. (3) Run unmodified blocking PHP code at high concurrency — when workers cost 120KB each, you can have enough of them that blocking I/O doesn't matter.
+Three things fpm can't do: (1) persistent workers that don't leak state — Qbix resets 27 shimmed functions + all statics between requests, fpm resets nothing. (2) Thousands of workers on the same RAM — COW means each worker only pays for the pages it writes, not the 30MB of loaded framework. (3) Run unmodified blocking PHP code at high concurrency — when workers cost 120KB each, you can have enough of them that blocking I/O doesn't matter.
 
 **The trick that makes it all work: fork after preload.** The server loads your entire framework — every class, every route, every config file — into a single parent process. Then it calls `pcntl_fork()` to create workers. The kernel doesn't copy the parent's 30MB of memory; it marks the pages copy-on-write. Workers share every loaded class, every compiled route, every cached config. They only pay for the pages they actually write to during the request — measured at 30 pages = 120KB for a WordPress-like workload. This is pure userland PHP. No kernel module, no C extension, no custom allocator. Just `pcntl_fork()` after loading everything, and the OS does the rest.
 
@@ -34,7 +34,7 @@ Three things fpm can't do: (1) persistent workers that don't leak state — Qbix
 | **I/O 200ms (c=400)** | 20 req/s | ~200–500* req/s | **488 req/s** (200w) |
 | **Memory / worker** | ~42MB | ~42MB | **~200KB** (COW) |
 | **Workers on 200MB** | 4 | 4 | **100–400** |
-| **State isolation** | Statics leak | Statics leak | **Snapshot reset (28 shims)** |
+| **State isolation** | Statics leak | Statics leak | **Snapshot reset (27 shims)** |
 | **Unmodified WordPress** | ✅ | ❌ no adapter | **✅** (source transform) |
 | **Requires extension** | — | **Yes** (PECL) | **No** |
 
@@ -80,7 +80,7 @@ If you're looking beyond php-fpm, you've probably seen FrankenPHP and Swoole. He
 | **Concurrent capacity** | Limited by worker memory | Limited by worker memory | **100–300× more** (COW, measured) |
 | **WebSocket rooms** | No | Manual | ✅ Built-in — rooms are forked processes |
 | **Code signing** | No | No | ✅ M-of-N manifest signing |
-| **Unmodified WordPress** | ✅ | ❌ | ✅ (28-function shim) |
+| **Unmodified WordPress** | ✅ | ❌ | ✅ (27-function shim) |
 
 ### The state isolation advantage
 
@@ -134,7 +134,7 @@ php qbixserver.php  # done
 
 **Swoole** has one unique trick: coroutine fan-out within a single worker (one request making 50 parallel HTTP calls). If that's your architecture, it helps. But it requires a C extension, breaks many PHP extensions, needs framework-specific adapters, leaks state, and will never run unmodified WordPress.
 
-**Qbix Server** beats fpm on I/O (14× throughput on the same RAM), beats Swoole on CPU-bound work (2,294 vs ~400 req/s), runs unmodified WordPress/Laravel/Symfony/Drupal with 28 shimmed functions, and adds WebSocket rooms, SSE, microservice isolation, cluster replication, code signing, and a live dashboard. No extensions, no Docker, no Go. One PHP file.
+**Qbix Server** beats fpm on I/O (14× throughput on the same RAM), beats Swoole on CPU-bound work (2,294 vs ~400 req/s), runs unmodified WordPress/Laravel/Symfony/Drupal with 27 shimmed functions, and adds WebSocket rooms, SSE, microservice isolation, cluster replication, code signing, and a live dashboard. No extensions, no Docker, no Go. One PHP file.
 
 ---
 

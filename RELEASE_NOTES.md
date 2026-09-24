@@ -1,152 +1,121 @@
-# Qbix Server v1.5.0 – Boldly Go
+# Qbix Server v2.0.0 — Mesh
 
-## What's New Since v1.3
+v1.x was a PHP web server. v2.0 is a mesh-networked runtime. Phones discover each other over Bluetooth, establish encrypted sessions without any central server, synchronize data peer-to-peer, and run PHP applications on every node.
 
-### ECDSA P-256 Signing with M-of-N Verification
+The web server is still there — every v1.x feature works unchanged. v2.0 adds a new capability surface on top.
 
-The Trust system now uses ECDSA P-256 by default (same curve as Sigstore and SSH). Keys are 256 bits instead of RSA's 2048, signatures are 64 bytes instead of 256. Old RSA keys still work — the signer auto-detects the key type.
+## Mesh Protocol
 
-Multiple signers can each sign the binary independently. At verification time, configure a threshold: "require 2 of 3 signatures to be valid."
+Every Qbix Server instance has a cryptographic identity: an ECDSA P-256 keypair generated on first run. The peer ID is `sha256(public_key)` — 64 hex characters, same security model as Ethereum. No registration, no CA, no blockchain.
 
-```bash
-# Generate ECDSA keys
-./qbixserver --generate-key=alice
-./qbixserver --generate-key=bob
+When two servers discover each other (over BLE, Wi-Fi, or TCP), they perform a 4-step handshake: certificate exchange, mutual authentication via ECDSA signatures, ECDH ephemeral key agreement, and AES-256-GCM session encryption. All subsequent traffic is encrypted end-to-end.
 
-# Each signer signs independently
-./qbixserver --sign-binary --key=local/keys/alice.pem --signer=Alice
-./qbixserver --sign-binary --key=local/keys/bob.pem --signer=Bob
+```php
+// Any Qbix app can now talk to nearby servers
+Q::handleUsingRemote('qbix-peer://' . $peerId . '/api/endpoint', $data);
 
-# Verify: need 2 of 2
-./qbixserver --verify-binary --m=2
+// React to peers coming and going
+Q_WebServer_Transport::onPeerOnline(function ($peer) {
+    // $peer has: peer_id, name, transport, address
+    // Sync data, exchange messages, coordinate work
+});
 ```
 
-### Sigstore Rekor Transparency Log
+### Routing
 
-After signing, optionally publish the attestation to Sigstore's public transparency log. Rekor provides an independent, tamper-evident record that the binary was signed at a specific time. A compromised server can't fake this — the Rekor entry is append-only and publicly auditable.
+When peers are out of direct range, intermediate nodes relay traffic. The router uses distance-vector routing (the same algorithm that ran the early internet) with HELLO/BYE/HEARTBEAT messages, TTL limits, deduplication, and route dampening. A message from A to C routes through B transparently — encrypted end-to-end so B can't read it.
 
-```bash
-./qbixserver --publish-rekor
-# → Published! Rekor UUID: ...
-# → Verify: https://search.sigstore.dev/?uuid=...
-```
+### Data Sync
 
-The `/Q/attestation` endpoint returns both the server's own signatures and the Rekor log entry. Browsers get two independent attestations: the server says "my hash is X, signed by Alice and Bob," and Rekor says "hash X was registered at time T." If they agree, the deployment is what the signers approved.
+When a peer connects, the sync protocol runs automatically:
 
-### `/Q/attestation` Endpoint
+1. Exchange Bloom filters (1KB each) to identify what's different
+2. Transfer only the missing records
+3. Resolve conflicts (last-writer-wins by default, pluggable per table)
 
-Serves the binary hash, signer metadata, verification result, and Rekor reference as JSON. Monitoring tools, browser extensions, or client-side JS can verify the deployment without trusting the server alone.
+For large datasets (10,000+ records), the protocol switches to prolly tree comparison: a deterministic content-addressed tree where identical subtrees are skipped entirely. With 10,000 records and 100 differences, the diff takes 1.2ms and transfers ~11KB of hashes instead of the full dataset.
 
-### Security Tab in Control Panel
+## Mobile Platforms
 
-The panel now has 13 tabs. The new Security tab shows:
+Qbix Server runs on iOS and Android. PHP runtimes now exist for both platforms (NativePHP Mobile, php-ios, Phphone). The native TransportManager handles peer discovery and transport negotiation.
 
-- Binary hash (SHA-256) and all signatures with signer names, key IDs, algorithms, dates
-- Sign from the browser: paste a PEM private key, name the signer, click Sign
-- Verify with adjustable M-of-N threshold
-- Publish to Sigstore Rekor with one click (with confirmation — it's permanent and public)
-- Rekor log entry link after publishing
-- Code Trust status showing per-directory manifest verification results
+### Transport Priority
 
-### Metrics and Analytics
+When a peer is reachable over multiple channels, the best one is used automatically:
 
-Server-side operational metrics with buffered I/O:
+| Priority | Transport | Bandwidth | Range |
+|---|---|---|---|
+| 1 | TCP (LAN/Wi-Fi) | 100+ Mbps | Same network |
+| 2 | MultipeerConnectivity | 2–25 Mbps | ~200ft (iOS only) |
+| 3 | BLE GATT | ~2 Mbps | ~100ft per hop |
 
-**Buffered logging** — access log lines accumulate in memory (up to 500 lines). Flushed to disk every 10 seconds. Error log has a separate buffer. No disk write per request.
+If Wi-Fi drops, traffic falls back to BLE seamlessly. The PHP server never knows — it sees HTTP on localhost regardless of transport.
 
-**Time-series in SQLite** — one row per minute: request count, p50/p95/p99 latency, status code distribution, worker count, memory. Queryable from the dashboard. Retained 30 days by default.
+### BLE Chunking
 
-**Clickstream analytics** — tracks page transitions per session. Each `(from_page, to_page)` edge accumulates a count. The flow graph powers userflow diagrams on the dashboard. Sessions detected via framework-aware cookie matching (15 frameworks supported) with IP+UA fallback.
+HTTP payloads are chunked for BLE's MTU constraints (23–517 bytes per write). The chunking protocol is implemented identically in PHP, Swift, and Kotlin — flag byte + 4-byte length header, tested against MTU 23 (BLE 4.0), 247 (typical), and 517 (BLE 5.0 max). Maximum message size: 64KB over GATT.
 
-**Per-page stats** — hits, unique sessions, average response time, last hit. Queryable via `metrics/pages`.
+### Background Persistence
 
-**Prometheus endpoint** — `GET /Q/metrics` returns standard gauges and counters in Prometheus text format. Grafana, Datadog, or any scraper can consume it directly.
+- **iOS**: silent AVAudioEngine with `MixWithOthers` keeps the process alive. App Store precedent: PocketServer, Mob framework.
+- **Android**: Foreground Service with persistent notification. `START_STICKY` for auto-restart.
 
-**Log rotation** — daily rotation, old logs compressed to `.zip`, purged after N days (default 7). Zip compression saves 85-90% on repetitive log data.
+## New in the Control Panel
 
-**Anomaly webhook** — set `Q.webserver.metrics.anomalyWebhook` to a URL and the server POSTs a JSON alert on traffic spikes (3× average), error spikes (>10% 5xx), or latency spikes (avg >5s).
+Tab 14 ("Nearby") shows:
 
-**Framework-aware session cookies** — detects 15 frameworks and knows their session cookie names:
+- This server's mesh identity (peer_id)
+- Active transports (TCP, BLE, MultipeerConnectivity)
+- Connected peers with transport type, hop count, encryption status
+- Routing table (destination, next hop, hops)
+- Encrypted sessions list
+- Connect button for manually adding a TCP peer by address
 
-| Framework | Cookie |
+## Test Summary
+
+| Suite | Tests |
 |---|---|
-| Qbix | `Q_session_*` (prefix) |
-| Laravel | `laravel_session` |
-| WordPress | `wordpress_logged_in_*` (prefix) |
-| Drupal | `SESS*` (prefix) |
-| Symfony | `PHPSESSID` |
-| Magento | `frontend`, `adminhtml` |
-| Craft CMS | `CraftSessionId` |
-| Moodle | `MoodleSession` |
-| + 7 more | auto-detected |
+| Mesh identity + handshake | 37 |
+| Transport registry + events | 52 |
+| Encrypted P2P HTTP | 39 |
+| Routing + multi-hop | 65 |
+| Bloom filter sync | 59 |
+| BLE transport simulation | 63 |
+| Prolly tree sync | 41 |
+| Integration (all wired) | 37 |
+| Server (HTTP, panel, workers) | 71 |
+| **Total** | **464** |
 
-### Autohost — Auto-Provision Domains
+## Source Files (Mesh Layer)
 
-Enable `Q.webserver.autohost.enabled: true`. When a request arrives with an unknown Host header, the server validates the hostname, checks DNS (multi-resolver: system + 1.1.1.1 + 8.8.8.8), provisions a Let's Encrypt cert, writes the domain config, and serves the app. Authorization modes: open, allowlist with glob patterns, or a custom PHP hook.
-
-### Watchdog — Auto-Restart on Crash
-
-Fork an independent process that monitors the server and restarts it on crash with exponential backoff. Gives up after 10 crashes in one hour. On clean exit, the watchdog exits too — the shutdown handler explicitly kills it.
-
-### Graceful Worker Recycling
-
-Workers track their request count. After `maxRequests` (default 1000), a worker finishes its current request and is replaced with a fresh fork. Panel controls: recycle a single worker, or "Recycle All" for a rolling restart. Per-worker table shows PID, status, and request count.
-
-### Config File Watcher
-
-The server polls config files every 3 seconds. When a file changes, the config is re-read and merged. New requests see new values immediately. No restart needed.
-
-### Data Directory for Packed Binaries
-
-When running as a packed binary, data goes to `<binary>.data/` instead of `./local/`. Subdirectories for logs, certs, and keys created automatically. All components use `qbix_data_path()` so paths resolve correctly in both packed and normal mode.
-
-### SQLite Auto-Provisioning
-
-If your app bundles a `.sqlite` file at a conventional location, the server copies it to the data directory on first run and writes the framework config to point at it. The seed stays in the zip for factory reset — delete `myapp.data/` and re-run to start fresh.
-
-Seed locations checked: `database/database.sqlite` (Laravel), `var/data.db` (Symfony), `local/db.sqlite` (Qbix), `data/db.sqlite`, or any single `.sqlite` file in the app root.
-
-Config writing for six frameworks:
-
-- **Qbix** — modifies `local/app.json`, replaces `Db.connections.*` with SQLite DSN, preserves existing plugin connections, auto-detects installed plugins from `plugins/*/config/plugin.json` and adds connections with correct table prefixes. Preserves tab indentation and empty objects.
-- **Laravel** — sets `DB_CONNECTION=sqlite` and `DB_DATABASE=/path` in `.env`.
-- **Symfony** — sets `DATABASE_URL=sqlite:///path` in `.env`.
-- **WordPress** — writes `DB_DIR` and `DB_FILE` constants in `wp-config.php` (requires wp-sqlite-db drop-in).
-- **Craft CMS** — sets `CRAFT_DB_DRIVER=sqlite` in `.env`.
-- **Drupal** — appends SQLite driver config to `sites/default/settings.php`.
-
-Sets `QBIX_DB_PATH` environment variable so apps can find the provisioned database.
-
-### Hosts File Management
-
-The Domains tab reads `/etc/hosts` (Windows: `drivers\etc\hosts`), cross-references configured domains, and offers to add missing entries with platform-specific elevation commands (macOS auth dialog, Windows UAC, Linux pkexec).
-
-### Migration Guides
-
-- [Migrating from nginx](docs/migrate-nginx.md)
-- [Migrating from Apache](docs/migrate-apache.md)
-- [Migrating from Caddy](docs/migrate-caddy.md)
-
-### Built-in Cert Renewal
-
-A `_certRenewal` task runs every 12 hours via the internal scheduler. Scans all certs and renews any expiring within 30 days.
-
-## Download
-
-| Platform | Binary | Fork Model |
+| File | Lines | Purpose |
 |---|---|---|
-| Linux x86_64 | `qbixserver-linux-x86_64` | pcntl_fork (COW) |
-| Linux ARM64 | `qbixserver-linux-aarch64` | pcntl_fork (COW) |
-| macOS ARM64 | `qbixserver-macos-arm64` | pcntl_fork (COW) |
-| Windows x64 | `qbixserver-windows-x64.exe` | RtlCloneUserProcess (COW) |
-| Windows x64 | `qbixserver-windows-x64-gui.exe` | Same, no console window |
+| Mesh.php | 718 | Identity, handshake, ECDH, AES-256-GCM |
+| Transport.php | 692 | Peer registry, events, API, router wiring |
+| MeshRouter.php | 537 | Distance-vector routing, FORWARD relay |
+| MeshSync.php | 450 | Bloom filters, conflict resolution, sync flow |
+| MeshBLE.php | 332 | Chunking protocol, rate limiter, simulator |
+| ProllyTree.php | 448 | Content-addressed tree, O(d·log n) diff |
+| TransportManager.swift | 844 | iOS: LAN + MC + BLE, auto-fallback |
+| TransportManager.kt | 658 | Android: LAN + BLE, same protocol |
 
-## Stats
+## Upgrading from v1.x
 
-- 70 unit tests + 30 end-to-end API tests + 25 SQLite provisioning tests = 125 checks, 0 failures
-- 13-tab control panel (4,411 lines)
-- Trust system with ECDSA + M-of-N + Rekor (780 lines)
-- Metrics with clickstream + Prometheus (724 lines)
-- SQLite auto-provisioning for 6 frameworks (387 lines)
-- 22 documentation files
-- ~16,000 lines of PHP + 165 lines of C
+No breaking changes. All v1.x configuration, APIs, and behavior are preserved. The mesh layer is additive — it activates when peers are discovered and does nothing when running as a standalone server.
+
+The mesh identity keypair is generated automatically on first run and stored in the data directory. Deleting it generates a new identity (same as losing an Ethereum wallet).
+
+## What Was in v1.5
+
+Everything from v1.5 is included: ECDSA M-of-N signing, Sigstore Rekor transparency log, SQLite auto-provisioning, PHP 8.6 Io\Poll epoll driver, Metrics/Analytics with clickstream, autohost for 15 frameworks, 4-platform CI, `--pack` single-binary mode, Windows COW fork.
+
+## Fixes in this build
+
+- **Framework code in namespaces.** The source rewriter emitted `Q_WebServer_Compat::_header(...)` without a leading backslash, so inside any `namespace` block PHP looked for `Vendor\Namespace\Q_WebServer_Compat` and the request failed with "class not found". Every Symfony, Laravel and Drupal response goes through a namespaced `Response::sendHeaders()`, so all three returned 500. Shims are now emitted fully qualified. Regression test: `tests/test_compat_namespace.php`.
+- **`/Q/sync/*` and `/Q/api/transport/*` returned 500 for every request.** The raw query string was passed to `array_merge()`, which throws on a string. These are the endpoints the native TransportManager and remote peers call, so no peer could connect over HTTP.
+- **Peer requests hung.** A server receiving an encrypted request from a peer made an HTTP call back to its own port from inside its event loop, which could never be answered, and used an undeclared `$listenPort` that always resolved to 8080. Requests are now dispatched in-process through the router.
+- **A proxied peer response could crash the server.** API results whose `status` field was a string (`"ok"` from a peer's `/Q/health`) were used as the HTTP status code, and the metrics recorder then failed on arithmetic with a string. API status codes are now validated and metrics casts to int.
+- **Bloom filters saturated.** Sync filters were a fixed 1KB, which gave a 93% false-positive rate at 5,000 keys, meaning most missing records were never sent. Filters are now sized to the table (about 1.8 bytes per key, ~0.1% false positives).
+- `tests/test_mesh_e2e.sh` (two real servers: identity, handshake, encrypted request) now passes 14/14, and runs in CI with the other mesh suites.
+
+New docs: [compatibility.md](docs/compatibility.md) (rewritten), [images.md](docs/images.md), [sync.md](docs/sync.md), [mobile.md](docs/mobile.md), [app-mode.md](docs/app-mode.md). The phar now bundles `docs/` so `/Q/docs` works from it.

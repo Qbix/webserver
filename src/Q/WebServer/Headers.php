@@ -158,7 +158,11 @@ class Q_WebServer_Headers
 		);
 
 		$reason = $reasons[$status] ?? 'OK';
-		$out = "HTTP/1.1 $status $reason\r\n";
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
+		$out = "HTTP/1.1 $status $reason\r\nServer: $serverTag\r\n";
 		foreach ($headers as $k => $v) {
 			$out .= "$k: $v\r\n";
 		}
