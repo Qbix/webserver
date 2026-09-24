@@ -330,7 +330,7 @@ class Q_WebServer_Compat
 					break;
 				}
 				if ($hasParen) {
-					$out .= self::$replacements[$name];
+					$out .= self::qualified($name);
 					$changed = true;
 					continue;
 				}
@@ -355,7 +355,7 @@ class Q_WebServer_Compat
 				$out = substr($out, 0, -1); // remove the trailing '\'
 			}
 
-			$out .= self::$replacements[$name];
+			$out .= self::qualified($name);
 			$changed = true;
 		}
 
@@ -1374,6 +1374,28 @@ class Q_WebServer_Compat
 		}
 
 		return null;
+	}
+
+	/**
+	 * The replacement to write for a function name, fully qualified.
+	 *
+	 * The table holds plain names like Q_WebServer_Compat::_header. Written
+	 * as they are, a file that declares a namespace resolves them inside it:
+	 * Composer's autoloader, which is namespaced, asked PHP for
+	 * Composer\Autoload\Q_WebServer_Compat and got a fatal. A leading
+	 * backslash costs nothing in global code and is required in namespaced
+	 * code.
+	 *
+	 * @method qualified
+	 * @static
+	 * @protected
+	 * @param {string} $name Lowercased function name
+	 * @return {string}
+	 */
+	protected static function qualified($name)
+	{
+		$to = self::$replacements[$name];
+		return $to[0] === '\\' ? $to : '\\' . $to;
 	}
 
 	/**
