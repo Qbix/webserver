@@ -407,6 +407,19 @@ class Q_WebServer_Pool
 		ob_start(null, 0, 0);
 		$status = 200;
 		$headers = array();
+		// mod_php and fpm run a script with its own directory as the working
+		// directory. A persistent worker has no reason to change directory at
+		// all, so it kept the one the server was started in -- and an
+		// application resolving a relative path got the server's directory
+		// instead of its own. eZ Publish wrote its template cache into the
+		// server's tree, read a half-written file back and died on a parse
+		// error pointing at a file it had never heard of.
+		$prevCwd = getcwd();
+		$scriptDir = dirname($req['scriptFilename']);
+		if ($scriptDir !== '' and is_dir($scriptDir)) {
+			@chdir($scriptDir);
+		}
+
 		try {
 			include($req['scriptFilename']);
 			// Collect headers from native header() (works in fpm, no-op in CLI)
@@ -451,6 +464,12 @@ class Q_WebServer_Pool
 			if (ob_get_level()) ob_clean();
 			echo $e->getMessage();
 		}
+		// Back to where the worker started, so the next request is not
+		// affected by where this one went.
+		if ($prevCwd !== false) {
+			@chdir($prevCwd);
+		}
+
 		// ob_get_contents reads the non-removable buffer; ob_get_clean would
 		// return false. Then drop any buffers we can.
 		$body = '';
