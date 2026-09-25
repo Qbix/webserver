@@ -48,6 +48,7 @@ class Q_WebServer_Compat
 		'ini_set'              => 'Q_WebServer_Compat::_ini_set',
 		'set_time_limit'       => 'Q_WebServer_Compat::_set_time_limit',
 		'getallheaders'        => 'Q_WebServer_Compat::_getallheaders',
+		'phpinfo'              => 'Q_WebServer_Compat::_phpinfo',
 		'apache_request_headers' => 'Q_WebServer_Compat::_getallheaders',
 		// Octane safety — lifecycle functions that leak state in persistent workers
 		'register_shutdown_function' => 'Q_WebServer_Compat::_register_shutdown_function',
@@ -558,6 +559,33 @@ class Q_WebServer_Compat
 		}
 
 		Q_Response::header($string, $replace);
+	}
+
+	/**
+	 * Replacement for phpinfo().
+	 *
+	 * phpinfo() renders an HTML page under mod_php and fpm, but the CLI-family
+	 * SAPIs — phpmicro included — emit plain text instead, and the choice is a
+	 * SAPI flag no ini setting reaches. Q_WebServer_PhpInfo parses that text
+	 * back into the familiar tables.
+	 */
+	static function _phpinfo($flags = INFO_ALL)
+	{
+		ob_start();
+		phpinfo($flags);
+		echo self::phpinfoAsHtml((string) ob_get_clean());
+		return true;
+	}
+
+	/**
+	 * Render phpinfo() output as HTML. Markup is returned unchanged, so this
+	 * is safe to call whatever the SAPI produced.
+	 * @param {string} $out Raw phpinfo() output
+	 * @return {string}
+	 */
+	static function phpinfoAsHtml($out)
+	{
+		return Q_WebServer_PhpInfo::render($out);
 	}
 
 	/**

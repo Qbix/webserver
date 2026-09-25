@@ -1323,7 +1323,7 @@ class Q_WebServer
 		if ($path === '/Q/phpinfo') {
 			ob_start();
 			phpinfo();
-			$html = ob_get_clean();
+			$html = self::phpinfoHtml(ob_get_clean());
 			return array('status' => 200, 'body' => $html,
 				'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
 		}
@@ -1739,7 +1739,7 @@ class Q_WebServer
 			if ($path === '/Q/phpinfo') {
 				ob_start();
 				phpinfo();
-				$html = ob_get_clean();
+				$html = self::phpinfoHtml(ob_get_clean());
 				self::sendResponse($client, 200, $html, 'text/html; charset=utf-8');
 				return false;
 			}
@@ -4234,6 +4234,24 @@ HTML;
 	}
 
 	// ── Response helpers ─────────────────────────────────
+
+	/**
+	 * Make phpinfo() output presentable.
+	 *
+	 * The CLI-family SAPIs, phpmicro among them, make phpinfo() emit plain
+	 * text rather than the HTML page mod_php produces, and no ini setting
+	 * changes that. Q_WebServer_PhpInfo parses the text back into tables;
+	 * output that is already markup comes back untouched.
+	 *
+	 * @method phpinfoHtml
+	 * @static
+	 * @param {string} $out Raw phpinfo() output
+	 * @return {string}
+	 */
+	static function phpinfoHtml($out)
+	{
+		return Q_WebServer_PhpInfo::render($out);
+	}
 
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
 	{
