@@ -449,7 +449,20 @@ class Q_WebServer_Pool
 		} catch (\Throwable $e) {
 			$status = 500;
 			if (ob_get_level()) ob_clean();
-			echo $e->getMessage();
+			// The message on its own says nothing about where it came from.
+			// "Value of type null is not callable" with no file and no line
+			// is the kind of thing that costs an afternoon, so always say
+			// where, and say how it got there when --debug asks.
+			echo $e->getMessage(), ' in ', $e->getFile(), ':', $e->getLine();
+			if (Q_Config::get('Q', 'webserver', 'debug', false)) {
+				echo "\n\n", get_class($e), "\n", $e->getTraceAsString(), "\n";
+				for ($prev = $e->getPrevious(); $prev; $prev = $prev->getPrevious()) {
+					echo "\nCaused by ", get_class($prev), ': ',
+						$prev->getMessage(), ' in ', $prev->getFile(),
+						':', $prev->getLine(), "\n",
+						$prev->getTraceAsString(), "\n";
+				}
+			}
 		}
 		// ob_get_contents reads the non-removable buffer; ob_get_clean would
 		// return false. Then drop any buffers we can.
