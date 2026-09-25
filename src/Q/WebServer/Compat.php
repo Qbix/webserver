@@ -199,12 +199,26 @@ class Q_WebServer_Compat
 		}
 		self::$errorHandlerStack = array();
 
-		// ── Restore autoloader stack to boot state ──
-		if (self::$bootAutoloadersCaptured) {
-			foreach (self::$requestAutoloaders as $loader) {
-				spl_autoload_unregister($loader);
-			}
-		}
+		// ── Autoloaders stay registered ──
+		// They used to be unregistered here, to hand the next request the
+		// boot-time stack. But a class declared during a request stays
+		// declared, and an application registers its autoloader behind a
+		// guard on exactly that:
+		//
+		//     if (!class_exists('ezpAutoloader', false)) {
+		//         class ezpAutoloader { ... }
+		//         spl_autoload_register(array('ezpAutoloader', 'autoload'));
+		//     }
+		//
+		// Second request: the class is still there, the block is skipped,
+		// the autoloader is not registered again -- and nothing can be
+		// loaded any more. eZ Publish answered the first request and then
+		// reported "Class eZDB not found" for every one after it.
+		//
+		// Removing half of the pair is what breaks; keeping both matches
+		// what the worker actually is. An autoloader that closes over one
+		// request's state would be a problem, but that is rare, and far
+		// rarer than the guarded registration this used to break.
 		self::$requestAutoloaders = array();
 
 		// ── Restore environment variables ──
