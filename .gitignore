@@ -15,3 +15,7 @@ node_modules/
 
 # Compiled binary only — bin/uwebserver.c and bin/u_*.h are SOURCE and tracked
 bin/uwebserver
+bin/qbixserver
+qbixserver-linux-*
+qbixserver-macos-*
+qbixserver-windows-*
