@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import MultipeerConnectivity
 import CoreBluetooth
 import Network
@@ -56,6 +57,7 @@ class TransportManager: NSObject {
     private var mcSession: MCSession!
     private var mcAdvertiser: MCNearbyServiceAdvertiser?
     private var mcBrowser: MCNearbyServiceBrowser?
+    private var mcPeerMeshIds: [String: String] = [:]  // displayName → mesh prefix from discoveryInfo
 
     // BLE
     private var blePeripheralManager: CBPeripheralManager?
@@ -316,9 +318,8 @@ class TransportManager: NSObject {
             properties: [.notify, .read],
             value: nil, permissions: [.readable])
 
-        let identityJSON = """
-        {"peer_id":"\(meshId)","name":"\(deviceName)","port":\(serverPort)}
-        """.data(using: .utf8)
+        let identityDict: [String: Any] = ["peer_id": meshId, "name": deviceName, "port": serverPort]
+        let identityJSON = try? JSONSerialization.data(withJSONObject: identityDict)
         bleIdentityChar = CBMutableCharacteristic(
             type: Self.bleIdentityUUID,
             properties: [.read],
@@ -330,10 +331,8 @@ class TransportManager: NSObject {
     }
 
     private func updateBLEIdentity() {
-        let json = """
-        {"peer_id":"\(meshId)","name":"\(deviceName)","port":\(serverPort)}
-        """.data(using: .utf8)
-        bleIdentityChar?.value = json
+        let dict: [String: Any] = ["peer_id": meshId, "name": deviceName, "port": serverPort]
+        bleIdentityChar?.value = try? JSONSerialization.data(withJSONObject: dict)
     }
 
     /// Reassemble chunks received from a BLE central using the chunking protocol.
@@ -423,8 +422,17 @@ class TransportManager: NSObject {
             return
         }
 
-        var urlReq = URLRequest(
-            url: URL(string: "http://127.0.0.1:\(serverPort)\(parsed.path)")!)
+        guard parsed.path.hasPrefix("/") else {
+            // Reject paths without leading slash to prevent SSRF via userinfo@ trick
+            sendBLEResponse("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+                .data(using: .utf8)!, to: central)
+            return
+        }
+        guard let targetURL = URL(string: "http://127.0.0.1:\(serverPort)\(parsed.path)") else {
+            print("[BLE] Invalid URL from BLE request: \(parsed.path)")
+            return
+        }
+        var urlReq = URLRequest(url: targetURL)
         urlReq.httpMethod = parsed.method
         urlReq.allHTTPHeaderFields = parsed.headers
         urlReq.allHTTPHeaderFields?["X-Peer-Id"] = central.identifier.uuidString
@@ -482,9 +490,10 @@ class TransportManager: NSObject {
         // Advertise via Bonjour
         let params = NWParameters.tcp
         params.includePeerToPeer = true
-        nwListener = try? NWListener(using: params)
+        nwListener = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: UInt16(serverPort)) ?? .any)
         nwListener?.service = NWListener.Service(
-            name: deviceName, type: "_\(Self.serviceType)._tcp")
+            name: deviceName, type: "_\(Self.serviceType)._tcp",
+            txtRecord: NWTXTRecord(["port": "\(serverPort)", "peer_id": meshId]))
         nwListener?.serviceRegistrationUpdateHandler = { change in
             switch change {
             case .add(let endpoint):
@@ -529,7 +538,8 @@ class TransportManager: NSObject {
                 if let path = connection.currentPath,
                    let endpoint = path.remoteEndpoint,
                    case .hostPort(let host, let port) = endpoint {
-                    let addr = "http://\(host):\(port)"
+                    let hostStr = "\(host)"
+                    let addr = hostStr.contains(":") ? "http://[\(hostStr)]:\(port)" : "http://\(hostStr):\(port)"
                     print("[LAN] Resolved \(name) at \(addr)")
 
                     // Fetch their mesh identity over TCP
@@ -597,9 +607,10 @@ extension TransportManager: MCSessionDelegate {
                  didChange state: MCSessionState) {
         switch state {
         case .connected:
-            // Peer connected via MultipeerConnectivity. We need their mesh_id
-            // which we get from the discoveryInfo or by sending an identity request.
-            addPeer(peerId: peerID.displayName, name: peerID.displayName,
+            // Peer connected via MultipeerConnectivity. Use mesh prefix from
+            // discoveryInfo if available, otherwise fall back to displayName.
+            let mcMeshId = mcPeerMeshIds[peerID.displayName] ?? peerID.displayName
+            addPeer(peerId: mcMeshId, name: peerID.displayName,
                     transport: .multipeer, mcPeer: peerID)
 
         case .notConnected:
@@ -618,11 +629,12 @@ extension TransportManager: MCSessionDelegate {
     func session(_ session: MCSession, didReceive data: Data,
                  fromPeer peerID: MCPeerID) {
         // Incoming HTTP request from a peer — forward to localhost
-        handleBLERequest(data, central: CBCentral())  // Reuse the handler
-        // (In practice, MC requests go through forwardToLocalServer)
+        // Forward MC data to the local server directly
+        //
+        let mcMeshId = mcPeerMeshIds[peerID.displayName] ?? peerID.displayName
         phpRequest("POST", "/Q/api/transport/event", body: [
             "type": "message",
-            "peer_id": peerID.displayName,
+            "peer_id": mcMeshId,
             "message": String(data: data, encoding: .utf8) ?? ""
         ])
     }
@@ -663,6 +675,9 @@ extension TransportManager: MCNearbyServiceBrowserDelegate {
                  foundPeer peerID: MCPeerID,
                  withDiscoveryInfo info: [String: String]?) {
         print("[MC] Found: \(peerID.displayName) info: \(info ?? [:])")
+        if let meshPrefix = info?["mesh"] {
+            mcPeerMeshIds[peerID.displayName] = meshPrefix
+        }
         browser.invitePeer(peerID, to: mcSession, withContext: nil, timeout: 10)
     }
 
@@ -711,7 +726,17 @@ extension TransportManager: CBPeripheralManagerDelegate {
                           didReceiveRead request: CBATTRequest) {
         if request.characteristic.uuid == Self.bleIdentityUUID ||
            request.characteristic.uuid == Self.bleResponseUUID {
-            request.value = request.characteristic.value
+            guard let value = request.characteristic.value else {
+                peripheral.respond(to: request, withResult: .attributeNotFound)
+                return
+            }
+            // Respect offset for values larger than the ATT MTU — the BLE stack
+            // issues sequential reads with increasing offsets for long values.
+            guard request.offset < value.count else {
+                peripheral.respond(to: request, withResult: .invalidOffset)
+                return
+            }
+            request.value = value.subdata(in: request.offset..<value.count)
             peripheral.respond(to: request, withResult: .success)
         }
     }

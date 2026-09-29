@@ -159,8 +159,8 @@ The native bridge calls these PHP endpoints:
 
 The CI builds mobile transport bundles as experimental jobs:
 
-- **build-android**: cross-compiles PHP to `aarch64-linux-android` via static-php-cli + Android NDK. Produces `qbixserver-android-arm64.phar` — a phar archive the native shell embeds.
-- **build-ios**: builds PHP as a static library via static-php-cli on macOS. Produces `qbixserver-ios-arm64.phar` — embedded by the Swift app via `PhpBridge`.
+- **build-android**: cross-compiles PHP to `aarch64-linux-android` via static-php-cli + Android NDK. Produces `qbixserver-android-arm64.tar.gz` containing the phar (and optionally a micro binary) that the native shell embeds.
+- **build-ios**: builds PHP as a static library via static-php-cli on macOS. Produces `qbixserver-ios-arm64.tar.gz` containing the phar (and optionally a micro binary) embedded by the Swift app via `PhpBridge`.
 
 Both jobs use `continue-on-error: true` so mobile build failures don't block the desktop release. The native TransportManager files (`.swift`, `.kt`) are bundled into the release zip under `mobile/`.
 

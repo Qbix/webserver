@@ -239,7 +239,9 @@ class TransportManager(private val context: Context, private val serverPort: Int
         ))
         responseChar = responseCharacteristic
 
-        val identityJSON = """{"peer_id":"$meshId","name":"$deviceName","port":$serverPort}"""
+        val identityJSON = JSONObject().apply {
+            put("peer_id", meshId); put("name", deviceName); put("port", serverPort)
+        }.toString()
         val identityCharacteristic = BluetoothGattCharacteristic(
             IDENTITY_UUID,
             BluetoothGattCharacteristic.PROPERTY_READ,
@@ -278,8 +280,9 @@ class TransportManager(private val context: Context, private val serverPort: Int
     }
 
     private fun updateBLEIdentity() {
-        identityChar?.value =
-            """{"peer_id":"$meshId","name":"$deviceName","port":$serverPort}""".toByteArray()
+        identityChar?.value = JSONObject().apply {
+            put("peer_id", meshId); put("name", deviceName); put("port", serverPort)
+        }.toString().toByteArray()
     }
 
     // ── BLE Chunking (same protocol as MeshBLE.php) ─────
@@ -365,6 +368,7 @@ class TransportManager(private val context: Context, private val serverPort: Int
 
                 val method = tokens[0]
                 val path = tokens[1]
+                if (!path.startsWith("/")) return@submit  // reject paths without leading slash (SSRF prevention)
                 val url = URL("http://127.0.0.1:$serverPort$path")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = method
@@ -373,13 +377,22 @@ class TransportManager(private val context: Context, private val serverPort: Int
                 conn.setRequestProperty("X-Peer-Id", device.address)
                 conn.setRequestProperty("X-Transport", "ble")
 
-                for (line in lines.drop(1)) {
-                    if (line.isEmpty()) break
+                var bodyStartIdx = -1
+                for ((i, line) in lines.drop(1).withIndex()) {
+                    if (line.isEmpty()) { bodyStartIdx = i + 2; break }
                     val ci = line.indexOf(':')
                     if (ci > 0) conn.setRequestProperty(
                         line.substring(0, ci).trim(),
                         line.substring(ci + 1).trim()
                     )
+                }
+
+                if (method == "POST" || method == "PUT" || method == "PATCH") {
+                    conn.doOutput = true
+                    if (bodyStartIdx > 0 && bodyStartIdx < lines.size) {
+                        val reqBody = lines.subList(bodyStartIdx, lines.size).joinToString("\r\n")
+                        conn.outputStream.use { it.write(reqBody.toByteArray()) }
+                    }
                 }
 
                 val code = conn.responseCode
@@ -392,16 +405,21 @@ class TransportManager(private val context: Context, private val serverPort: Int
                 }
                 response.append("\r\n$body")
 
+                val rc = responseChar ?: return@submit
                 val responseBytes = response.toString().toByteArray()
                 val chunks = chunkForBLE(responseBytes)
                 for (chunk in chunks) {
-                    responseChar?.value = chunk
-                    gattServer?.notifyCharacteristicChanged(device, responseChar, false)
+                    rc.value = chunk
+                    gattServer?.notifyCharacteristicChanged(device, rc, false)
                 }
             } catch (e: Exception) {
+                val rc = responseChar ?: return@submit
                 val err = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".toByteArray()
-                responseChar?.value = err
-                gattServer?.notifyCharacteristicChanged(device, responseChar, false)
+                val errChunks = chunkForBLE(err)
+                for (chunk in errChunks) {
+                    rc.value = chunk
+                    gattServer?.notifyCharacteristicChanged(device, rc, false)
+                }
             }
         }
     }
@@ -434,7 +452,8 @@ class TransportManager(private val context: Context, private val serverPort: Int
             // Connect to read their identity characteristic
             if (!connectedDevices.containsKey(device.address)) {
                 connectedDevices[device.address] = device
-                device.connectGatt(context, false, clientGattCallback)
+                device.connectGatt(context, false, clientGattCallback,
+                    BluetoothDevice.TRANSPORT_LE)
             }
         }
     }
@@ -456,11 +475,26 @@ class TransportManager(private val context: Context, private val serverPort: Int
             gatt.readCharacteristic(idChar)
         }
 
+        // API 33+ callback (receives value as parameter)
+        override fun onCharacteristicRead(gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+            handleIdentityRead(gatt, characteristic.uuid, value, status)
+        }
+
+        // Pre-API 33 callback (reads value from characteristic object)
+        @Deprecated("Deprecated in API 33")
+        @Suppress("DEPRECATION")
         override fun onCharacteristicRead(gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic, status: Int) {
-            if (characteristic.uuid == IDENTITY_UUID && status == BluetoothGatt.GATT_SUCCESS) {
+            handleIdentityRead(gatt, characteristic.uuid,
+                characteristic.value ?: ByteArray(0), status)
+        }
+
+        private fun handleIdentityRead(gatt: BluetoothGatt,
+            uuid: java.util.UUID, value: ByteArray, status: Int) {
+            if (uuid == IDENTITY_UUID && status == BluetoothGatt.GATT_SUCCESS) {
                 try {
-                    val json = JSONObject(String(characteristic.value))
+                    val json = JSONObject(String(value))
                     val peerId = json.optString("peer_id", "")
                     val name = json.optString("name", "BLE Device")
                     if (peerId.isNotEmpty()) {
@@ -506,8 +540,9 @@ class TransportManager(private val context: Context, private val serverPort: Int
         // Discover other services
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onServiceFound(info: NsdServiceInfo) {
+                val myMeshSuffix = meshId.take(8)
                 if (info.serviceName.startsWith("QbixServer-") &&
-                    !info.serviceName.endsWith(meshId.take(8))) {
+                    (myMeshSuffix.isEmpty() || !info.serviceName.endsWith(myMeshSuffix))) {
                     nsdManager?.resolveService(info, resolveListener)
                 }
             }
@@ -534,7 +569,8 @@ class TransportManager(private val context: Context, private val serverPort: Int
         override fun onServiceResolved(info: NsdServiceInfo) {
             val host = info.host?.hostAddress ?: return
             val port = info.port
-            val address = "http://$host:$port"
+            val hostStr = if (host.contains(':')) "[$host]" else host
+            val address = "http://$hostStr:$port"
             println("[LAN] Resolved: ${info.serviceName} at $address")
 
             // Fetch their mesh identity over TCP
@@ -588,9 +624,12 @@ class TransportManager(private val context: Context, private val serverPort: Int
             device: BluetoothDevice, requestId: Int, offset: Int,
             characteristic: BluetoothGattCharacteristic
         ) {
+            val value = characteristic.value ?: ByteArray(0)
+            val slice = if (offset >= value.size) ByteArray(0)
+                        else value.copyOfRange(offset, value.size)
             gattServer?.sendResponse(
                 device, requestId, BluetoothGatt.GATT_SUCCESS,
-                offset, characteristic.value)
+                offset, slice)
         }
 
         override fun onDescriptorWriteRequest(
@@ -621,7 +660,11 @@ class TransportManager(private val context: Context, private val serverPort: Int
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        return conn.inputStream.bufferedReader().readText()
+        return try {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun httpPost(urlStr: String, body: String): String {
@@ -631,8 +674,12 @@ class TransportManager(private val context: Context, private val serverPort: Int
         conn.connectTimeout = 10000
         conn.readTimeout = 10000
         conn.setRequestProperty("Content-Type", "application/json")
-        conn.outputStream.write(body.toByteArray())
-        return conn.inputStream.bufferedReader().readText()
+        return try {
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
     }
 }
 

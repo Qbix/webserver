@@ -176,6 +176,8 @@ class Q_Evented_IoPoll extends Q_Evented_Driver
 				}
 			}
 		} catch (\Throwable $e) {
+			// A forked child on its way to its role, not a poll error
+			if ($e instanceof Q_WebServer_Role) throw $e;
 			// Poll error (e.g. closed resource) — skip this tick
 		}
 	}

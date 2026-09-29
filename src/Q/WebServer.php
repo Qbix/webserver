@@ -376,6 +376,15 @@ class Q_WebServer
 		// If $workers > 0, create the pool.
 		if ($workers > 0 && Q_WebServer_Fork::available()) {
 			self::$pool = new Q_WebServer_Pool($workers);
+			// Framework boot master (preset adapters). Off with
+			// Q.webserver.boot.skip = true.
+			if (!Q_Config::get('Q', 'webserver', 'boot', 'skip', false)) {
+				$bootFile = __DIR__ . '/WebServer/Boot.php';
+				if (is_file($bootFile)) {
+					require_once $bootFile;
+					Q_WebServer_Boot::start(self::$rootDir, $workers);
+				}
+			}
 		}
 
 		self::$running = true;
@@ -654,6 +663,13 @@ class Q_WebServer
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
 				while (($pid = Q_WebServer_Fork::waitpid(-1, $st, 1)) > 0) {
+					// This reaps every child, the framework boot master included
+					if (class_exists('Q_WebServer_Boot', false)
+						&& $pid === Q_WebServer_Boot::$masterPid
+					) {
+						Q_WebServer_Boot::masterExited($st);
+						continue;
+					}
 					$info = Q_WebServer::$workerPids[$pid] ?? null;
 					unset(Q_WebServer::$workerPids[$pid]);
 					if (!$info) continue;
@@ -1038,8 +1054,13 @@ class Q_WebServer
 		try {
 			$savedRoot = self::$rootDir;
 			$memBefore = memory_get_usage();
+			$__t0 = hrtime(true);
 			$keepOpen = self::handleRequest($client, $parsed);
+			$__dt = (hrtime(true) - $__t0) / 1e6;
+			if ($__dt > 5) fwrite(STDERR, sprintf("  SLOW handleRequest: %.1fms %s %s\n", $__dt, $parsed['method'], $parsed['uri']));
 		} catch (\Throwable $e) {
+			// A forked child on its way to its role, not an error
+			if ($e instanceof Q_WebServer_Role) throw $e;
 			// Never let a request crash the event loop
 			$msg = htmlspecialchars($e->getMessage());
 			self::sendResponse($client, 500, "Internal Server Error: $msg");
@@ -1194,6 +1215,9 @@ class Q_WebServer
 			$result = array('status' => 'ok') + $stats;
 			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
 				$result['cluster'] = Q_WebServer_Cluster::status();
+			}
+			if (class_exists('Q_WebServer_Boot', false) && Q_WebServer_Boot::$adapter) {
+				$result['boot'] = Q_WebServer_Boot::status();
 			}
 			return array('status'=>200, 'body'=>json_encode($result),
 				'headers'=>array('Content-Type'=>'application/json'));
@@ -1555,8 +1579,18 @@ class Q_WebServer
 	 */
 	private static function handleRequest($client, $parsed)
 	{
+		$__tp = array(); $__tp['start'] = hrtime(true);
 		$method = $parsed['method'];
 		$path = $parsed['path'];
+
+		// ?Q.clearCache — flush all in-memory caches and re-read config
+		$qs = $parsed['query'] ?? '';
+		if (is_string($qs) && strpos($qs, 'Q.clearCache') !== false) {
+			$cleared = self::clearCache();
+			return self::sendResponse($client, 200,
+				json_encode(array('cleared' => $cleared)),
+				'application/json');
+		}
 
 		// ACME HTTP-01 challenge handler (for automatic TLS)
 		if (strpos($path, '/.well-known/acme-challenge/') === 0) {
@@ -1609,6 +1643,7 @@ class Q_WebServer
 			}
 		}
 
+		$__tp['vhost'] = hrtime(true);
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
 		// 1. Serve built-in assets (JS clients, logo, bundled frontend)
 		$assetMap = array();
@@ -1655,6 +1690,7 @@ class Q_WebServer
 			}
 		}
 
+		$__tp['assets'] = hrtime(true);
 		// 2. Server discovery + federation endpoints
 		// RFC 8615 .well-known endpoints
 		if (strpos($path, '/.well-known/') === 0) {
@@ -1687,6 +1723,7 @@ class Q_WebServer
 			return false;
 		}
 
+		$__tp['wellknown'] = hrtime(true);
 		// 3. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
 			if ($path === '/Q/ws') {
@@ -1781,6 +1818,9 @@ class Q_WebServer
 				$result = array('status' => 'ok') + $stats;
 				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
 					$result['cluster'] = Q_WebServer_Cluster::status();
+				}
+				if (class_exists('Q_WebServer_Boot', false) && Q_WebServer_Boot::$adapter) {
+					$result['boot'] = Q_WebServer_Boot::status();
 				}
 				self::sendResponse($client, 200,
 					json_encode($result),
@@ -1895,9 +1935,12 @@ class Q_WebServer
 			return false;
 		}
 
+		$__tp['preResolve'] = hrtime(true);
+		$parsed['_tp'] = $__tp; // pass timing to handlePhp
 		// 4. Resolve filesystem path
 		$fsPath = self::resolveStatic($path);
 
+		$__tp['resolved'] = hrtime(true);
 		// 4. Directory handling
 		if ($fsPath && is_dir($fsPath)) {
 			if (substr($path, -1) !== '/') {
@@ -2240,6 +2283,22 @@ class Q_WebServer
 	 */
 	private static function handlePhp($client, $parsed, $scriptPath)
 	{
+		// Timing profile from handleRequest
+		if (isset($parsed['_tp'])) {
+			$tp = $parsed['_tp'];
+			$s = $tp['start'];
+			$parts = array();
+			$prev = $s;
+			foreach (array('vhost','assets','wellknown','preResolve','resolved') as $k) {
+				if (isset($tp[$k])) {
+					$parts[] = sprintf("%s=%.3fms", $k, ($tp[$k] - $prev) / 1e6);
+					$prev = $tp[$k];
+				}
+			}
+			$parts[] = sprintf("toHandlePhp=%.3fms", (hrtime(true) - $prev) / 1e6);
+			$parts[] = sprintf("TOTAL=%.3fms", (hrtime(true) - $s) / 1e6);
+			fwrite(STDERR, "  PROFILE handleRequest: " . implode(' | ', $parts) . "\n");
+		}
 		// ── CGI carveout: check if this script should use php-cgi ──
 		// Scripts matching Q.webserver.cgi.patterns run via php-cgi subprocess
 		// where native header(), setcookie(), headers_list() all work.
@@ -2278,7 +2337,19 @@ class Q_WebServer
 
 		if (self::$pool) {
 			self::$lastStatus = 200;
-			self::$pool->dispatch($client, $parsed, $scriptPath);
+			$__tp2 = hrtime(true);
+			// Booted framework workers first; they decline requests they
+			// cannot serve from booted state, which then go to the pool.
+			if (!(class_exists('Q_WebServer_Boot', false)
+				&& Q_WebServer_Boot::tryDispatch($client, $parsed, $scriptPath))
+			) {
+				self::$pool->dispatch($client, $parsed, $scriptPath);
+			}
+			$__tp3 = hrtime(true);
+			fwrite(STDERR, sprintf("  TIMING dispatch: %.3fms (pre-dispatch handlePhp: %.3fms)\n",
+				($__tp3 - $__tp2) / 1e6,
+				($__tp2 - ($__tp['start'] ?? $__tp2)) / 1e6
+			));
 			$key = (int) $client;
 			if (isset(self::$clientWatchers[$key])) {
 				Q_Evented::cancel(self::$clientWatchers[$key]);
@@ -2499,7 +2570,9 @@ WORKER;
 		if (!$workerFile || !file_exists($workerFile)) {
 			$workerFile = tempnam(sys_get_temp_dir(), 'qbix_worker_');
 			file_put_contents($workerFile, $workerCode);
-			register_shutdown_function(function () use (&$workerFile) {
+			$serverPid = getmypid();
+			register_shutdown_function(function () use (&$workerFile, $serverPid) {
+				if (getmypid() !== $serverPid) return; // inherited by forks
 				@unlink($workerFile);
 				Q_WebServer::cleanupUploadFiles();
 			});
@@ -2804,7 +2877,7 @@ WORKER;
 		$reason = $reasons[$status] ?? 'OK';
 		$out = "HTTP/1.1 $status $reason\r\n";
 		foreach ($headers as $k => $v) {
-			$out .= "$k: $v\r\n";
+			foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		}
 		// Append all Set-Cookie headers (can't use associative array)
 		foreach ($extraHeaders as $pair) {
@@ -3820,10 +3893,10 @@ HTML;
 					$hdrs['Connection'] = 'keep-alive';
 					if (!isset($hdrs['X-Accel-Buffering'])) $hdrs['X-Accel-Buffering'] = 'no';
 					foreach (Q_WebServer_State::cookieHeaders() as $ch) {
-						$hdrs['Set-Cookie'] = $ch;
+						$hdrs['Set-Cookie'][] = $ch;
 					}
 					$out = "HTTP/1.1 $status " . Q_WebServer::statusText($status) . "\r\n";
-					foreach ($hdrs as $k => $v) $out .= "$k: $v\r\n";
+					foreach ($hdrs as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 					$out .= "\r\n";
 					@fwrite($_streamingClient, $out);
 				}
@@ -3838,7 +3911,7 @@ HTML;
 				| PHP_OUTPUT_HANDLER_REMOVABLE);
 		} else {
 			// Platform mode or no client socket: non-removable buffer
-			ob_start(null, 0, 0);
+			ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE); // cleanable, not removable (flags 0 left every page in the buffer, printed at exit)
 		}
 
 		$status = 200;
@@ -4928,6 +5001,66 @@ init();
 		'pdf','zip'
 	);
 	private static $rateLimitData = array(); // ip => [timestamps]
+
+	/**
+	 * Clear all in-memory caches and re-read config files.
+	 * Call via PHP or trigger with ?Q.clearCache on any request.
+	 * @method clearCache
+	 * @static
+	 * @return {array} Summary of what was cleared
+	 */
+	static function clearCache()
+	{
+		$cleared = array();
+
+		// 1. Clear file response cache
+		$fileCount = count(self::$fileCache);
+		self::$fileCache = array();
+		self::$fileCacheSize = 0;
+		if ($fileCount) $cleared[] = "file cache ($fileCount entries)";
+
+		// 2. Clear PHP stat cache
+		clearstatcache(true);
+		$cleared[] = 'stat cache';
+
+		// 3. Clear shortcut resolution cache
+		if (class_exists('Q_WebServer_Shortcut', false)) {
+			Q_WebServer_Shortcut::clearCache();
+			$cleared[] = 'shortcut cache';
+		}
+
+		// 4. Clear compat transform cache
+		if (class_exists('Q_WebServer_Compat', false)
+			&& method_exists('Q_WebServer_Compat', 'clearStatCache')
+		) {
+			Q_WebServer_Compat::clearStatCache();
+			$cleared[] = 'compat stat cache';
+		}
+
+		// 5. Re-read config files
+		$configFiles = array_filter(array(
+			'local/app.json',
+			'local/panel.json',
+			'config/app.json',
+		), 'is_file');
+		$reloaded = array();
+		foreach ($configFiles as $cf) {
+			$data = @json_decode(file_get_contents($cf), true);
+			if ($data && is_array($data)) {
+				Q_Config::merge($data);
+				$reloaded[] = $cf;
+			}
+		}
+		if ($reloaded) $cleared[] = 'config (' . implode(', ', $reloaded) . ')';
+
+		// 6. Clear OPcache if available
+		if (function_exists('opcache_reset')) {
+			@opcache_reset();
+			$cleared[] = 'opcache';
+		}
+
+		return $cleared;
+	}
 
 	// ── Static file response cache ──────────────────────
 	// Caches full response bytes (headers+body) keyed by fsPath.

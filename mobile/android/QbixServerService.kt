@@ -2,9 +2,11 @@ package com.qbix.server
 
 import android.app.*
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.qbix.server.transport.TransportBridge
+import com.qbix.server.transport.TransportManager
 
 /**
  * Foreground Service that keeps the PHP server and BLE transport alive
@@ -25,7 +27,7 @@ class QbixServerService : Service() {
         const val EXTRA_PORT = "port"
     }
 
-    private var transportBridge: TransportBridge? = null
+    private var transportManager: TransportManager? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -44,18 +46,23 @@ class QbixServerService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
-        // Start BLE transport bridge
-        transportBridge = TransportBridge(this, port)
-        transportBridge?.start()
+        // Start transport manager for peer discovery
+        transportManager = TransportManager(this, port)
+        transportManager?.start()
 
         // START_STICKY: restart the service if the OS kills it
         return START_STICKY
     }
 
     override fun onDestroy() {
-        transportBridge?.stop()
+        transportManager?.stop()
         super.onDestroy()
     }
 

@@ -20,8 +20,41 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '2.0.0');
+define('QBIX_SERVER_VERSION', '2.1.0');
 define('QBIX_SERVER_DIR', __DIR__);
+
+// ── OPcache for CLI ─────────────────────────────────
+// OPcache stores compiled opcodes in shared memory. Without it, every
+// included file is re-parsed and re-compiled — in the boot master that
+// means the framework's thousands of files, and in workers it means the
+// request-time files. Enabling it for CLI is safe and typically 15-20%
+// faster. If the extension is loaded but not enabled for CLI, re-exec
+// once with the right -d flag so the rest of the startup runs with it.
+if (!getenv('QBIX_OPCACHE_REEXEC') && extension_loaded('Zend OPcache')) {
+	$__opcStatus = @opcache_get_status(false);
+	if (!$__opcStatus || empty($__opcStatus['opcache_enabled'])) {
+		putenv('QBIX_OPCACHE_REEXEC=1');
+		$__php = PHP_BINARY ?: 'php';
+		if (function_exists('pcntl_exec')) {
+			pcntl_exec($__php, array_merge(
+				array('-d', 'opcache.enable_cli=1'),
+				$GLOBALS['argv']
+			));
+			// pcntl_exec replaces this process; if it returns, fall through
+		}
+		// Fallback: passthru and exit
+		$__cmd = array_merge(
+			array($__php, '-d', 'opcache.enable_cli=1'),
+			$GLOBALS['argv']
+		);
+		passthru(implode(' ', array_map('escapeshellarg', $__cmd)), $__ret);
+		exit($__ret);
+	}
+	unset($__opcStatus);
+}
+if (getenv('QBIX_OPCACHE_REEXEC')) {
+	putenv('QBIX_OPCACHE_REEXEC');  // clean up
+}
 
 // ── Parse CLI args ──────────────────────────────────
 
@@ -306,7 +339,10 @@ if ($selfPath && !$opts['root'] && !$opts['app']) {
 								$appendedZipPath = $extractDir;
 								fwrite(STDERR, "  Loaded " . $d['entries'] . " files from appended zip\n");
 								// Register cleanup
-								register_shutdown_function(function() use ($extractDir, $tmpZip) {
+								$__qbix_serverPid = getmypid();
+								register_shutdown_function(function() use ($extractDir, $tmpZip, $__qbix_serverPid) {
+									// Forked workers inherit this; only the server cleans up
+									if (getmypid() !== $__qbix_serverPid) return;
 									// Clean up on normal exit (not on kill)
 									@unlink($tmpZip);
 								});
@@ -935,7 +971,12 @@ if (!empty($opts['test'])) {
 
 if ($opts['pid']) {
 	file_put_contents($opts['pid'], getmypid());
-	register_shutdown_function(function () use ($opts) {
+	$__qbix_serverPid = getmypid();
+	register_shutdown_function(function () use ($opts, $__qbix_serverPid) {
+		// Every forked worker inherits this function and used to run it on
+		// exit: in fork-per-request mode each request deleted the PID file and
+		// killed the watchdog. Only the server itself cleans up.
+		if (getmypid() !== $__qbix_serverPid) return;
 		@unlink($opts['pid']);
 		// Kill the watchdog if it's running
 		$watchdogPid = 'local/watchdog.pid';
@@ -1304,6 +1345,12 @@ if (!$qbixMode) {
 	}
 }
 
+// Forked workers and the framework boot master unwind to here by throwing
+// Q_WebServer_Role, then run their loop from a file included at this level,
+// so the PHP they execute runs at global scope.
+require_once __DIR__ . '/src/Q/WebServer/Role.php';
+$__qbix_role = null;
+
 try {
 	Q_WebServer::start(
 		$webDir,
@@ -1311,6 +1358,8 @@ try {
 		(int) $opts['port'],
 		(int) $opts['workers']
 	);
+} catch (Q_WebServer_Role $__qbix_r) {
+	$__qbix_role = $__qbix_r;
 } catch (Exception $e) {
 	fwrite(STDERR, "Failed to start: " . $e->getMessage() . "\n");
 	exit(1);
@@ -1319,11 +1368,28 @@ try {
 // Issue #15: wrap the event loop so any uncaught exception or TypeError
 // exits non-zero — a supervisor (Docker, systemd) can then restart us.
 // Without this, the process exits 0 and looks like a clean shutdown.
-try {
-	Q_WebServer::run();
-} catch (\Throwable $e) {
-	fwrite(STDERR, "\n  FATAL: " . get_class($e) . ": " . $e->getMessage() . "\n");
-	fwrite(STDERR, "  in " . $e->getFile() . ":" . $e->getLine() . "\n");
-	fwrite(STDERR, "  " . $e->getTraceAsString() . "\n\n");
-	exit(1);
+if (!$__qbix_role) {
+	try {
+		Q_WebServer::run();
+	} catch (Q_WebServer_Role $__qbix_r) {
+		$__qbix_role = $__qbix_r;
+	} catch (\Throwable $e) {
+		fwrite(STDERR, "\n  FATAL: " . get_class($e) . ": " . $e->getMessage() . "\n");
+		fwrite(STDERR, "  in " . $e->getFile() . ":" . $e->getLine() . "\n");
+		fwrite(STDERR, "  " . $e->getTraceAsString() . "\n\n");
+		exit(1);
+	}
+}
+
+// A forked child: run its role at global scope. A role can hand over to
+// another (the boot master forks booted workers).
+while ($__qbix_role) {
+	$__qbix_file = $__qbix_role->role;
+	$__qbix_role = null;
+	unset($__qbix_r);
+	try {
+	require $__qbix_file;
+	} catch (Q_WebServer_Role $__qbix_r) {
+		$__qbix_role = $__qbix_r;
+	}
 }

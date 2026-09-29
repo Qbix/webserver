@@ -164,7 +164,7 @@ class Q_WebServer_Headers
 		}
 		$out = "HTTP/1.1 $status $reason\r\nServer: $serverTag\r\n";
 		foreach ($headers as $k => $v) {
-			$out .= "$k: $v\r\n";
+			foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		}
 		// Multiple Set-Cookie headers (can't use the associative array for dupes)
 		if (class_exists('Q_Response', false)) {
@@ -219,7 +219,7 @@ class Q_WebServer_Headers
 			$headers['Connection'] = 'close';
 
 			$out = "HTTP/1.1 200 OK\r\n";
-			foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+			foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 			fwrite($client, $out . "\r\n");
 
 			$fp = fopen($compressed['path'], 'rb');
@@ -245,7 +245,7 @@ class Q_WebServer_Headers
 			$headers['Connection'] = 'close';
 
 			$out = "HTTP/1.1 200 OK\r\n";
-			foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+			foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 			@fwrite($client, $out . "\r\n" . $body);
 			return;
 		}
@@ -255,7 +255,7 @@ class Q_WebServer_Headers
 		$headers['Connection'] = 'close';
 
 		$out = "HTTP/1.1 200 OK\r\n";
-		foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+		foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		fwrite($client, $out . "\r\n");
 
 		$fp = fopen($fsPath, 'rb');

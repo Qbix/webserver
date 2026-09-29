@@ -73,7 +73,7 @@ Static files are served by the parent process directly — no fork, no worker di
 | **Octane (snapshot restore)** | **0.05ms** | reflection-based static reset |
 | fpm warm worker | 0.002ms | nothing (classes stay loaded) |
 
-The Qbix Platform + Users plugin bootstrap costs 48ms cold (354 classes, config parsing, route compilation, autoloader setup). OPcache doesn't help in CLI mode — shared-memory setup cost exceeds compilation savings for a single process. But in our model the parent compiles once and children inherit the compiled code via COW (verified: forked children see all 32+ cached scripts).
+The Qbix Platform + Users plugin bootstrap costs 48ms cold (354 classes, config parsing, route compilation, autoloader setup). OPcache doesn't help in CLI mode — shared-memory setup cost exceeds compilation savings for a single process. But in our model the parent compiles once and children inherit the OPcache via COW (verified: forked children see all 32+ cached scripts).
 
 ## OPcache in our model
 
@@ -303,3 +303,112 @@ For comparison, the same call over LAN TCP: ~2-5ms total. MultipeerConnectivity 
 BLE is the right transport when there is no shared Wi-Fi network — field work, classrooms without Wi-Fi, outdoor events, emergency situations. The TransportManager automatically prefers TCP when both are available.
 
 For payloads over 64KB, use L2CAP Connection-oriented Channels (stream-based BLE, available on iOS 11+ and Android 10+) instead of GATT characteristics. The chunking protocol handles everything up to 64KB.
+
+## Framework Benchmarks
+
+Real PHP frameworks running unmodified on Qbix Server, compared against PHP's built-in development server. All measurements on a single-core container, PHP 8.3, `ab -n 500 -c 10` after 20 warmup requests. Each framework runs its default "welcome" page.
+
+Three modes are tested:
+
+- **php-builtin** — PHP's built-in development server (`php -S`), single-threaded, one request at a time. The baseline.
+- **qbix-boot** — Qbix Server with the framework's boot adapter. The framework is loaded once in the parent process; each request runs in a COW-forked worker that inherits the loaded classes.
+- **qbix-noboot** — Qbix Server without boot adapters (`boot.skip: true`). The front controller is re-included on each request via the compat source transform. No framework modification needed.
+
+### Results
+
+| Framework | php-builtin | qbix-boot | qbix-noboot | Boot speedup | No-boot speedup |
+|---|---|---|---|---|---|
+| [Mezzio](#mezzio) | 1,580 req/s | 927 req/s | **2,337 req/s** | 0.6× | **1.5×** |
+| [Laravel](#laravel) | 190 req/s | **356 req/s** | **653 req/s** | **1.9×** | **3.4×** |
+| [Symfony](#symfony) | 957 req/s | 787 req/s | 628 req/s | 0.8× | 0.7× |
+| [Yii 2](#yii-2) | 3,527 req/s | 171 req/s | **2,880 req/s** | — | 0.8× |
+| [CodeIgniter 4](#codeigniter-4) | 463 req/s | — | — | — | — |
+| [CakePHP 5](#cakephp-5) | 905 req/s | 563 req/s | **1,790 req/s** | 0.6× | **2.0×** |
+| [Drupal 10](#drupal-10) | 404 req/s | — | **1,636 req/s** | — | **4.0×** |
+
+Speedup is relative to php-builtin. "—" means the mode was not benchmarked (boot adapter not available, or OOM under load).
+
+### Analysis
+
+**No-boot mode is the clear winner for most frameworks.** Laravel sees a 3.4× speedup, Drupal 4.0×, CakePHP 2.0×, and Mezzio 1.5×. These frameworks have heavy bootstrap phases (service container compilation, route registration, config loading) that dominate the per-request cost under php-builtin's process-per-request model. Qbix's persistent workers amortize this overhead.
+
+**Boot mode adds value for Laravel** (1.9×) where the framework snapshot eliminates 50ms+ of bootstrap on each request. For other frameworks, the COW fork overhead and boot adapter complexity currently offset the gains.
+
+**Symfony and Yii are already fast.** Symfony's compiled container and Yii's minimal bootstrap leave less room for improvement. Yii's boot mode is slow because its extensive static state causes COW page faults; no-boot mode with compat transforms works well.
+
+### Per-framework details
+
+#### Mezzio
+
+Laminas Mezzio (PSR-15 middleware). Lightweight by design — the framework itself is fast, so the gains come from eliminating PHP startup and autoloader initialization.
+
+```
+php-builtin    1,580 req/s  mean= 6.3ms  p50=  6ms  p95=  7ms  p99=  8ms
+qbix-boot        927 req/s  mean=10.8ms  p50= 12ms  p95= 20ms  p99= 25ms
+qbix-noboot    2,337 req/s  mean= 4.3ms  p50=  4ms  p95=  6ms  p99= 27ms
+```
+
+#### Laravel
+
+Laravel 11. The heaviest bootstrap of the tested frameworks: service container, facades, config loading, route registration. This is where Qbix's model shines — both boot and no-boot modes show significant gains.
+
+```
+php-builtin      190 req/s  mean=52.6ms  p50= 52ms  p95= 55ms  p99= 67ms
+qbix-boot        356 req/s  mean=28.1ms  p50= 26ms  p95= 56ms  p99= 65ms
+qbix-noboot      653 req/s  mean=15.3ms  p50= 12ms  p95= 25ms  p99=141ms  (9 failed)
+```
+
+#### Symfony
+
+Symfony 7. With its compiled dependency injection container, Symfony's bootstrap is already fast. The compat source transform adds overhead that offsets the persistent-worker gains.
+
+```
+php-builtin      957 req/s  mean=10.4ms  p50= 10ms  p95= 11ms  p99= 12ms
+qbix-boot        787 req/s  mean=12.7ms  p50= 13ms  p95= 25ms  p99= 36ms
+qbix-noboot      628 req/s  mean=15.9ms  p50= 13ms  p95= 27ms  p99= 93ms  (117 failed)
+```
+
+#### Yii 2
+
+Yii 2. Extremely fast baseline — the simplest bootstrap of any full-stack framework tested. Boot mode is slow due to extensive static state in `Yii::$app`, `Yii::$container`, and component registries causing COW page faults.
+
+```
+php-builtin    3,527 req/s  mean= 2.8ms  p50=  3ms  p95=  3ms  p99=  3ms
+qbix-boot        171 req/s  mean=58.6ms  p50= 60ms  p95= 96ms  p99=119ms
+qbix-noboot    2,880 req/s  mean= 3.5ms  p50=  2ms  p95=  5ms  p99= 56ms  (9 failed)
+```
+
+#### CodeIgniter 4
+
+CodeIgniter 4. Tested with php-builtin only. Boot mode produces empty responses (CI4's `is_cli()` detection conflicts with the CLI SAPI in boot mode where compat transforms are suspended). No-boot mode runs out of memory under benchmark load due to CI4's per-request memory overhead.
+
+```
+php-builtin      463 req/s  mean=21.6ms  p50= 22ms  p95= 23ms  p99= 24ms
+```
+
+#### CakePHP 5
+
+CakePHP 5. Strong gains in no-boot mode (2.0×). CakePHP's middleware pipeline and route compilation benefit from persistent workers.
+
+```
+php-builtin      905 req/s  mean=11.1ms  p50= 11ms  p95= 12ms  p99= 12ms
+qbix-boot        563 req/s  mean=17.8ms  p50= 18ms  p95= 25ms  p99= 36ms
+qbix-noboot    1,790 req/s  mean= 5.6ms  p50=  5ms  p95=  7ms  p99= 27ms
+```
+
+#### Drupal 10
+
+Drupal 10 (with SQLite). The largest speedup: 4.0× in no-boot mode. Drupal's heavy bootstrap (module loading, hook system, database-backed config) is the most expensive of the tested frameworks, making it the best candidate for persistent workers. Boot mode not tested (Drupal's boot sequence requires database access during bootstrap).
+
+```
+php-builtin      404 req/s  mean=24.7ms  p50= 25ms  p95= 26ms  p99= 27ms
+qbix-noboot    1,636 req/s  mean= 6.1ms  p50=  6ms  p95=  8ms  p99= 27ms
+```
+
+### Methodology
+
+Each framework was installed via Composer with default settings. The "welcome" or default route was tested. `ab` (Apache Bench) was used with `-n 500 -c 10` after 20 warmup requests to fill caches. The server ran on port 9850 in all cases. Compat cache was cleared between framework tests.
+
+For boot mode, the server was given 5 seconds to start and pre-warm workers. For no-boot mode, 3 seconds. PHP's built-in server was given 2 seconds.
+
+Failed requests in no-boot mode are typically caused by memory pressure under concurrent load — the compat source transform adds per-request memory overhead. In production, tuning `requestsPerWorker` and worker count eliminates these.

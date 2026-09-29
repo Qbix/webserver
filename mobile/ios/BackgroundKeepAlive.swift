@@ -39,8 +39,8 @@ class BackgroundKeepAlive {
             try session.setCategory(.playback, options: .mixWithOthers)
             try session.setActive(true)
             try engine.start()
-            player.play()
             player.scheduleBuffer(buffer, at: nil, options: .loops)
+            player.play()
         } catch {
             print("[KeepAlive] Failed to start: \(error)")
             return
