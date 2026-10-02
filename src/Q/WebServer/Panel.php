@@ -135,8 +135,8 @@ class Q_WebServer_Panel
 			: array();
 
 		if ($route === 'auth/setup') {
-			// First-time setup: set password
-			if (!empty($config['passwordHash'])) {
+			// First-time setup: set owner password
+			if (!empty($config['passwordHash']) || !empty($config['users'])) {
 				return array('error' => 'Password already set. Use auth/login.',
 					'needsSetup' => false);
 			}
@@ -144,9 +144,21 @@ class Q_WebServer_Panel
 			if (strlen($password) < 6) {
 				return array('error' => 'Password must be at least 6 characters');
 			}
+			// Store as the owner user in the new users structure
 			$config['passwordHash'] = password_hash($password, PASSWORD_DEFAULT);
+			$config['users'] = array(
+				'owner' => array(
+					'passwordHash' => $config['passwordHash'],
+					'role' => 'owner',
+					'created' => time(),
+				),
+			);
 			$token = bin2hex(random_bytes(32));
-			$config['sessions'][$token] = time() + 86400 * 7; // 7 day expiry
+			$config['sessions'][$token] = array(
+				'user' => 'owner',
+				'role' => 'owner',
+				'expiry' => time() + 86400 * 7,
+			);
 			$dir = dirname($configPath);
 			if (!is_dir($dir)) @mkdir($dir, 0700, true);
 			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
@@ -156,11 +168,11 @@ class Q_WebServer_Panel
 			}
 			@chmod($configPath, 0600);
 			clearstatcache(true, $configPath);
-			return array('ok' => true, 'token' => $token);
+			return array('ok' => true, 'token' => $token, 'user' => 'owner', 'role' => 'owner');
 		}
 
 		if ($route === 'auth/login') {
-			if (empty($config['passwordHash'])) {
+			if (empty($config['passwordHash']) && empty($config['users'])) {
 				return array('needsSetup' => true);
 			}
 			// SECURITY: brute force protection — block IP after 5 failed attempts
@@ -169,7 +181,6 @@ class Q_WebServer_Panel
 			if (!isset(self::$loginAttempts[$ip])) {
 				self::$loginAttempts[$ip] = array();
 			}
-			// Clean old attempts (older than 5 minutes)
 			self::$loginAttempts[$ip] = array_filter(
 				self::$loginAttempts[$ip],
 				function ($t) use ($now) { return $t > $now - 300; }
@@ -178,9 +189,42 @@ class Q_WebServer_Panel
 				return array('error' => 'Too many attempts, try again later', 'status' => 429);
 			}
 			$password = $body['password'] ?? '';
-			if (!password_verify($password, $config['passwordHash'])) {
+			$username = $body['username'] ?? 'owner';
+
+			// Migrate old single-password config to multi-user
+			if (!empty($config['passwordHash']) && empty($config['users'])) {
+				$config['users'] = array(
+					'owner' => array(
+						'passwordHash' => $config['passwordHash'],
+						'role' => 'owner',
+						'created' => time(),
+					),
+				);
+				// Migrate old sessions (expiry int) to new format (user+expiry)
+				if (!empty($config['sessions'])) {
+					foreach ($config['sessions'] as $tk => $val) {
+						if (is_int($val) || is_numeric($val)) {
+							$config['sessions'][$tk] = array(
+								'user' => 'owner',
+								'role' => 'owner',
+								'expiry' => (int) $val,
+							);
+						}
+					}
+				}
+				self::savePanelConfig($configPath, $config);
+			}
+
+			// Look up the user
+			$users = $config['users'] ?? array();
+			if (!isset($users[$username])) {
 				self::$loginAttempts[$ip][] = $now;
-				return array('error' => 'Wrong password', 'status' => 401);
+				return array('error' => 'Wrong username or password', 'status' => 401);
+			}
+			$userRec = $users[$username];
+			if (!password_verify($password, $userRec['passwordHash'])) {
+				self::$loginAttempts[$ip][] = $now;
+				return array('error' => 'Wrong username or password', 'status' => 401);
 			}
 			// Success — clear attempts
 			unset(self::$loginAttempts[$ip]);
@@ -188,21 +232,37 @@ class Q_WebServer_Panel
 			$token = bin2hex(random_bytes(32));
 			if (!isset($config['sessions'])) $config['sessions'] = array();
 			// Clean expired sessions
-			$now = time();
-			foreach ($config['sessions'] as $t => $exp) {
+			foreach ($config['sessions'] as $t => $sess) {
+				$exp = is_array($sess) ? ($sess['expiry'] ?? 0) : (int) $sess;
 				if ($exp < $now) unset($config['sessions'][$t]);
 			}
-			$config['sessions'][$token] = $now + 86400 * 7;
-			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
-			file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
-			return array('ok' => true, 'token' => $token);
+			$role = $userRec['role'] ?? 'user';
+			$config['sessions'][$token] = array(
+				'user' => $username,
+				'role' => $role,
+				'expiry' => $now + 86400 * 7,
+			);
+			self::savePanelConfig($configPath, $config);
+			return array('ok' => true, 'token' => $token, 'user' => $username, 'role' => $role);
 		}
 
 		return array('error' => 'Unknown auth endpoint');
 	}
 
 	/**
-	 * Check if the request has a valid auth token
+	 * Save panel config atomically
+	 */
+	private static function savePanelConfig($configPath, $config)
+	{
+		$dir = dirname($configPath);
+		if (!is_dir($dir)) @mkdir($dir, 0700, true);
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		@chmod($configPath, 0600);
+	}
+
+	/**
+	 * Check if the request has a valid auth token.
+	 * Returns array with 'ok', and on success: 'user', 'role'.
 	 */
 	private static function checkAuth($parsed)
 	{
@@ -213,7 +273,7 @@ class Q_WebServer_Panel
 				'error' => 'No password set. Call auth/setup first.');
 		}
 		$config = json_decode(file_get_contents($configPath), true);
-		if (empty($config['passwordHash'])) {
+		if (empty($config['passwordHash']) && empty($config['users'])) {
 			return array('ok' => false, 'needsSetup' => true,
 				'error' => 'No password set. Call auth/setup first.');
 		}
@@ -238,20 +298,35 @@ class Q_WebServer_Panel
 		}
 
 		$sessions = $config['sessions'] ?? array();
-		$expiry = $sessions[$token] ?? 0;
-		if ($expiry < time()) {
+		$sess = $sessions[$token] ?? null;
+		if (!$sess) {
 			return array('ok' => false, 'error' => 'Token expired or invalid');
 		}
-
-		return array('ok' => true);
+		// Support old format (int expiry) and new format (array)
+		if (is_array($sess)) {
+			if (($sess['expiry'] ?? 0) < time()) {
+				return array('ok' => false, 'error' => 'Token expired or invalid');
+			}
+			return array(
+				'ok' => true,
+				'user' => $sess['user'] ?? 'owner',
+				'role' => $sess['role'] ?? 'owner',
+			);
+		}
+		// Legacy: integer expiry = owner session
+		if ((int) $sess < time()) {
+			return array('ok' => false, 'error' => 'Token expired or invalid');
+		}
+		return array('ok' => true, 'user' => 'owner', 'role' => 'owner');
 	}
 
 	/**
 	 * Validate a session token (for WebSocket auth, etc.)
+	 * Returns false if invalid, or array('user'=>..., 'role'=>...) if valid.
 	 * @method validateToken
 	 * @static
 	 * @param {string} $token
-	 * @return {boolean}
+	 * @return {boolean|array}
 	 */
 	static function validateToken($token)
 	{
@@ -260,7 +335,15 @@ class Q_WebServer_Panel
 		if (!file_exists($configPath)) return false;
 		$config = json_decode(file_get_contents($configPath), true);
 		$sessions = $config['sessions'] ?? array();
-		return isset($sessions[$token]) && $sessions[$token] > time();
+		$sess = $sessions[$token] ?? null;
+		if (!$sess) return false;
+		if (is_array($sess)) {
+			if (($sess['expiry'] ?? 0) < time()) return false;
+			return array('user' => $sess['user'] ?? 'owner', 'role' => $sess['role'] ?? 'owner');
+		}
+		// Legacy integer expiry
+		if ((int) $sess < time()) return false;
+		return array('user' => 'owner', 'role' => 'owner');
 	}
 
 	/**
@@ -326,6 +409,38 @@ class Q_WebServer_Panel
 				return self::apiChangePassword($parsed);
 			case 'auth/logout':
 				return self::apiLogout($parsed);
+			case 'auth/me':
+				return self::apiAuthMe($parsed);
+			// ── User Management ──────────────
+			case 'users':
+				return self::apiListUsers($parsed);
+			case 'users/add':
+				return self::apiAddUser($parsed);
+			case 'users/update':
+				return self::apiUpdateUser($parsed);
+			case 'users/remove':
+				return self::apiRemoveUser($parsed);
+			// ── Branch Management ──────────────
+			case 'branches':
+				return self::apiListBranches($parsed);
+			case 'branches/create':
+				return self::apiBranchCreate($parsed);
+			case 'branches/delete':
+				return self::apiBranchDelete($parsed);
+			case 'branches/access':
+				return self::apiBranchAccess($parsed);
+			case 'branches/merge':
+				return self::apiBranchMerge($parsed);
+			case 'branches/switch-production':
+				return self::apiBranchSwitchProduction($parsed);
+			case 'branches/mergerequests':
+				return self::apiBranchMergeRequests($parsed);
+			case 'branches/db-config':
+				return self::apiBranchDbConfig($parsed);
+			case 'branches/lockdown':
+				return self::apiBranchLockdown($parsed);
+			case 'branches/defaults':
+				return self::apiBranchDefaults($parsed);
 			case 'playground/run':
 				return self::apiPlaygroundRun($parsed);
 			case 'platform/install':
@@ -484,58 +599,643 @@ class Q_WebServer_Panel
 			? json_decode($parsed['body'], true) : array();
 		$configPath = self::panelConfigPath();
 		$config = json_decode(file_get_contents($configPath), true);
-		if (!is_array($config) || !isset($config['passwordHash'])) {
+		if (!is_array($config)) {
 			return array('error' => 'Panel config file is missing or corrupted');
 		}
+
+		$authResult = self::checkAuth($parsed);
+		$currentUser = $authResult['user'] ?? 'owner';
 
 		$oldPw = $body['oldPassword'] ?? '';
 		$newPw = $body['newPassword'] ?? '';
 
-		if (!password_verify($oldPw, $config['passwordHash'])) {
+		// Verify against the user's own password
+		$users = $config['users'] ?? array();
+		$userRec = $users[$currentUser] ?? null;
+		$hashToCheck = $userRec ? $userRec['passwordHash'] : ($config['passwordHash'] ?? '');
+		if (!password_verify($oldPw, $hashToCheck)) {
 			return array('error' => 'Current password is wrong');
 		}
 		if (strlen($newPw) < 6) {
 			return array('error' => 'New password must be at least 6 characters');
 		}
 
-		$config['passwordHash'] = password_hash($newPw, PASSWORD_DEFAULT);
-		// Invalidate all other sessions — find current token from all sources (matching checkAuth)
-		$currentToken = '';
+		$newHash = password_hash($newPw, PASSWORD_DEFAULT);
+		if ($userRec) {
+			$config['users'][$currentUser]['passwordHash'] = $newHash;
+		}
+		if ($currentUser === 'owner') {
+			$config['passwordHash'] = $newHash;
+		}
+
+		// Invalidate all sessions for this user except current
+		$currentToken = self::extractToken($parsed);
+		foreach ($config['sessions'] as $tk => $sess) {
+			$sessUser = is_array($sess) ? ($sess['user'] ?? 'owner') : 'owner';
+			if ($sessUser === $currentUser && $tk !== $currentToken) {
+				unset($config['sessions'][$tk]);
+			}
+		}
+		self::savePanelConfig($configPath, $config);
+		return array('ok' => true);
+	}
+
+	/**
+	 * Extract session token from request headers/cookies
+	 */
+	private static function extractToken($parsed)
+	{
 		$authH = $parsed['headers']['authorization'] ?? '';
 		if (strpos($authH, 'Bearer ') === 0) {
-			$currentToken = substr($authH, 7);
+			return substr($authH, 7);
 		}
-		if (empty($currentToken)) {
-			$currentToken = $parsed['headers']['x-panel-token']
-				?? $parsed['cookies']['Q_panel_token'] ?? '';
-		}
-		$config['sessions'] = array();
-		if ($currentToken) {
-			$config['sessions'][$currentToken] = time() + 86400 * 7;
-		}
-			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
-		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
-		return array('ok' => true);
+		$token = $parsed['headers']['x-panel-token'] ?? '';
+		if ($token) return $token;
+		return $parsed['cookies']['Q_panel_token'] ?? '';
 	}
 
 	private static function apiLogout($parsed)
 	{
 		$configPath = self::panelConfigPath();
 		$config = json_decode(file_get_contents($configPath), true);
-		$token = '';
-		$authH = $parsed['headers']['authorization'] ?? '';
-		if (strpos($authH, 'Bearer ') === 0) {
-			$token = substr($authH, 7);
-		}
-		if (empty($token)) {
-			$token = $parsed['headers']['x-panel-token']
-				?? $parsed['cookies']['Q_panel_token'] ?? '';
-		}
+		$token = self::extractToken($parsed);
 		if ($token && isset($config['sessions'][$token])) {
 			unset($config['sessions'][$token]);
-			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
-			file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+			self::savePanelConfig($configPath, $config);
 		}
+		return array('ok' => true);
+	}
+
+	// ── Auth Info ────────────────────────────────────────
+
+	private static function apiAuthMe($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		return array('user' => $auth['user'], 'role' => $auth['role']);
+	}
+
+	// ── User Management API ─────────────────────────────
+	// Only owner/admin can manage users.
+
+	private static function requireOwner($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can manage users', 'status' => 403);
+		}
+		return null; // no error
+	}
+
+	private static function apiListUsers($parsed)
+	{
+		$err = self::requireOwner($parsed);
+		if ($err) return $err;
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		$users = $config['users'] ?? array();
+		$result = array();
+		foreach ($users as $uname => $urec) {
+			$result[] = array(
+				'username' => $uname,
+				'role' => $urec['role'] ?? 'user',
+				'created' => $urec['created'] ?? null,
+				'branches' => $urec['branches'] ?? array(),
+			);
+		}
+		return array('users' => $result);
+	}
+
+	private static function apiAddUser($parsed)
+	{
+		$err = self::requireOwner($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$username = $body['username'] ?? '';
+		$password = $body['password'] ?? '';
+		$role = $body['role'] ?? 'user';
+
+		if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/', $username)) {
+			return array('error' => 'Invalid username: alphanumeric, dots, hyphens, underscores; 1-63 chars');
+		}
+		if ($username === 'owner') {
+			return array('error' => 'Cannot create user named "owner" — that name is reserved');
+		}
+		if (strlen($password) < 6) {
+			return array('error' => 'Password must be at least 6 characters');
+		}
+		if (!in_array($role, array('user', 'admin'), true)) {
+			return array('error' => 'Role must be "user" or "admin"');
+		}
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		if (!isset($config['users'])) $config['users'] = array();
+		if (isset($config['users'][$username])) {
+			return array('error' => 'User already exists: ' . $username);
+		}
+
+		$config['users'][$username] = array(
+			'passwordHash' => password_hash($password, PASSWORD_DEFAULT),
+			'role' => $role,
+			'created' => time(),
+			'branches' => $body['branches'] ?? array(),
+		);
+		self::savePanelConfig($configPath, $config);
+		return array('ok' => true, 'username' => $username);
+	}
+
+	private static function apiUpdateUser($parsed)
+	{
+		$err = self::requireOwner($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$username = $body['username'] ?? '';
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		if (!isset($config['users'][$username])) {
+			return array('error' => 'User not found: ' . $username);
+		}
+
+		// Update role
+		if (isset($body['role'])) {
+			if ($username === 'owner') {
+				return array('error' => 'Cannot change owner role');
+			}
+			if (!in_array($body['role'], array('user', 'admin'), true)) {
+				return array('error' => 'Role must be "user" or "admin"');
+			}
+			$config['users'][$username]['role'] = $body['role'];
+		}
+
+		// Update password
+		if (!empty($body['password'])) {
+			if (strlen($body['password']) < 6) {
+				return array('error' => 'Password must be at least 6 characters');
+			}
+			$config['users'][$username]['passwordHash'] = password_hash(
+				$body['password'], PASSWORD_DEFAULT
+			);
+			// Invalidate that user's sessions
+			foreach ($config['sessions'] as $tk => $sess) {
+				$su = is_array($sess) ? ($sess['user'] ?? 'owner') : 'owner';
+				if ($su === $username) unset($config['sessions'][$tk]);
+			}
+		}
+
+		// Update branch access list
+		if (isset($body['branches'])) {
+			$config['users'][$username]['branches'] = $body['branches'];
+		}
+
+		self::savePanelConfig($configPath, $config);
+		return array('ok' => true);
+	}
+
+	private static function apiRemoveUser($parsed)
+	{
+		$err = self::requireOwner($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$username = $body['username'] ?? '';
+
+		if ($username === 'owner') {
+			return array('error' => 'Cannot remove the owner account');
+		}
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		if (!isset($config['users'][$username])) {
+			return array('error' => 'User not found: ' . $username);
+		}
+		unset($config['users'][$username]);
+		// Invalidate sessions
+		foreach ($config['sessions'] as $tk => $sess) {
+			$su = is_array($sess) ? ($sess['user'] ?? 'owner') : 'owner';
+			if ($su === $username) unset($config['sessions'][$tk]);
+		}
+		self::savePanelConfig($configPath, $config);
+		return array('ok' => true);
+	}
+
+	// ── Branch Management API ───────────────────────────
+
+	private static function apiBranchRequireAuth($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return array(null, $auth);
+		return array($auth, null);
+	}
+
+	private static function apiListBranches($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$all = Q_WebServer_Branch::listBranches();
+		$result = array();
+		foreach ($all as $key => $rec) {
+			// Non-owner users see only branches they have access to
+			if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+				$access = $rec['access'] ?? array();
+				if (!isset($access[$auth['user']]) && !isset($access['*'])) {
+					continue;
+				}
+			}
+			$parts = explode('/', $key, 2);
+			$result[] = array(
+				'key' => $key,
+				'appHost' => $rec['appHost'] ?? ($parts[0] ?? ''),
+				'name' => $parts[1] ?? '',
+				'root' => $rec['root'] ?? '',
+				'created' => $rec['created'] ?? null,
+				'createdBy' => $rec['createdBy'] ?? null,
+				'access' => $rec['access'] ?? array(),
+				'db' => !empty($rec['db']) ? array('name' => $rec['db']['name'] ?? null) : null,
+			);
+		}
+		return array('branches' => $result);
+	}
+
+	private static function apiBranchCreate($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		// Non-owner users: branch name defaults to their username
+		// and they can only create branches for themselves
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			if ($branchName !== $auth['user']) {
+				return array('error' => 'Users can only create their own branch (name must match username)');
+			}
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+
+		// Determine which database to clone
+		$cloneDb = $body['cloneDb'] ?? null;
+		if (!$cloneDb) {
+			$dbConfig = Q_WebServer_Branch::getDbConfig($appHost);
+			$cloneDb = $dbConfig['cloneDb'] ?? $dbConfig['defaultCloneDb'] ?? null;
+		}
+
+		$options = array(
+			'createdBy' => $auth['user'],
+			'access' => array(
+				$auth['user'] => array('branch' => 'edit', 'files' => 'frontend'),
+			),
+		);
+		if ($cloneDb) {
+			$options['cloneDb'] = $cloneDb;
+		}
+
+		// Owner/admin get admin access to the branch
+		if ($auth['role'] === 'owner' || $auth['role'] === 'admin') {
+			$options['access'][$auth['user']] = 'admin';
+		}
+
+		// If creating a branch for another user, give that user edit access
+		if ($branchName !== $auth['user']
+			&& !isset($options['access'][$branchName])
+		) {
+			$options['access'][$branchName] = array(
+				'branch' => 'edit', 'files' => 'frontend',
+			);
+		}
+
+		// Merge any explicit access from the request
+		if (!empty($body['access'])) {
+			$options['access'] = array_merge($options['access'], $body['access']);
+		}
+
+		$result = Q_WebServer_Branch::create($appHost, $branchName, $options);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+		return array('ok' => true, 'branch' => $result);
+	}
+
+	private static function apiBranchDelete($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		// Only owner/admin can delete branches
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			// Users can delete their own branch
+			if ($branchName !== $auth['user']) {
+				return array('error' => 'Only admins can delete other users\' branches');
+			}
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$result = Q_WebServer_Branch::delete($appHost, $branchName);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+		return array('ok' => true);
+	}
+
+	private static function apiBranchAccess($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		// Only owner/admin can change access
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can manage branch access', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+		$access = $body['access'] ?? null;
+
+		if (!$appHost || !$branchName || !is_array($access)) {
+			return array('error' => 'appHost, branchName, and access are required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$branchKey = $appHost . '/' . $branchName;
+		$rec = Q_WebServer_Branch::get($appHost, $branchName);
+		if (!$rec) {
+			return array('error' => 'Branch not found: ' . $branchKey);
+		}
+
+		Q_WebServer_Branch::update($appHost, $branchName, array('access' => $access));
+		return array('ok' => true);
+	}
+
+	private static function apiBranchMerge($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can merge branches', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$result = Q_WebServer_Branch::merge($appHost, $branchName);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+		return array('ok' => true, 'merged' => $result);
+	}
+
+	private static function apiBranchSwitchProduction($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can switch production', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$result = Q_WebServer_Branch::switchProduction($appHost, $branchName);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+		return array('ok' => true, 'production' => $branchName);
+	}
+
+	private static function apiBranchMergeRequests($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can view merge requests', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$requests = array();
+		$branches = Q_WebServer_Branch::listBranches();
+		foreach ($branches as $key => $rec) {
+			if ($appHost && ($rec['appHost'] ?? '') !== $appHost) continue;
+			$mr = $rec['mergeRequests'] ?? array();
+			foreach ($mr as $id => $req) {
+				$req['id'] = $id;
+				$req['branchKey'] = $key;
+				$requests[] = $req;
+			}
+		}
+		return array('mergeRequests' => $requests);
+	}
+
+	private static function apiBranchDbConfig($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can configure database settings', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+
+		// Read current config
+		if ($parsed['method'] === 'GET' || empty($body['cloneDb'])) {
+			return Q_WebServer_Branch::getDbConfig($appHost);
+		}
+
+		// Update clone DB config
+		Q_WebServer_Branch::setDbConfig($appHost, $body['cloneDb'], $auth['user']);
+		return array('ok' => true, 'cloneDb' => $body['cloneDb']);
+	}
+
+	/**
+	 * Get or update the lockdown settings for a specific branch.
+	 * Admin can relax restrictions by adding allowPaths, changing
+	 * the default file tier, or adjusting sandbox settings.
+	 */
+	private static function apiBranchLockdown($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can manage lockdown settings', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+		$rec = Q_WebServer_Branch::get($appHost, $branchName);
+		if (!$rec) {
+			return array('error' => 'Branch not found');
+		}
+
+		// GET: return current lockdown settings
+		if ($parsed['method'] === 'GET' || (
+			!isset($body['sandbox']) && !isset($body['denyPaths'])
+			&& !isset($body['defaultFileTier'])
+		)) {
+			return array(
+				'ok' => true,
+				'lockdown' => array(
+					'defaultFileTier' => $rec['defaultFileTier'] ?? 'styles',
+					'sandbox' => $rec['sandbox'] ?? array(),
+					'denyPaths' => $rec['denyPaths'] ?? array(),
+				),
+			);
+		}
+
+		// POST: update lockdown settings
+		$update = array();
+
+		if (isset($body['defaultFileTier'])) {
+			$tier = $body['defaultFileTier'];
+			if (!isset(Q_WebServer_Branch::$tierLevel[$tier])) {
+				return array('error' => "Invalid file tier: $tier");
+			}
+			$update['defaultFileTier'] = $tier;
+		}
+
+		if (isset($body['sandbox'])) {
+			// Merge over existing sandbox config
+			$existing = $rec['sandbox'] ?? array();
+			$update['sandbox'] = array_merge($existing, $body['sandbox']);
+		}
+
+		if (isset($body['denyPaths'])) {
+			if (!is_array($body['denyPaths'])) {
+				return array('error' => 'denyPaths must be an array of glob patterns');
+			}
+			$update['denyPaths'] = $body['denyPaths'];
+		}
+
+		Q_WebServer_Branch::update($appHost, $branchName, $update);
+		return array('ok' => true);
+	}
+
+	/**
+	 * Get or update default lockdown settings for new branches (per-app).
+	 * These are stored in Q.webserver config and apply to all branches
+	 * created for the given app from this point forward.
+	 */
+	private static function apiBranchDefaults($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			return array('error' => 'Only owners and admins can manage branch defaults', 'status' => 403);
+		}
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+
+		// GET: return current defaults
+		$defaults = Q_WebServer_Branch::getDefaults($appHost);
+		if ($parsed['method'] === 'GET' || (
+			!isset($body['fileTier']) && !isset($body['sandbox'])
+			&& !isset($body['denyPaths'])
+		)) {
+			return array('ok' => true, 'defaults' => $defaults);
+		}
+
+		// POST: update defaults in config
+		// This stores the overrides in the branches state so they
+		// persist without modifying the config files
+		if (!Q_WebServer_Branch::$state) {
+			Q_WebServer_Branch::loadState();
+		}
+		$appDefaultsKey = '_defaults/' . $appHost;
+		$existing = Q_WebServer_Branch::$state[$appDefaultsKey] ?? array();
+
+		if (isset($body['fileTier'])) {
+			$tier = $body['fileTier'];
+			if (!isset(Q_WebServer_Branch::$tierLevel[$tier])) {
+				return array('error' => "Invalid file tier: $tier");
+			}
+			$existing['fileTier'] = $tier;
+		}
+		if (isset($body['sandbox'])) {
+			$existing['sandbox'] = array_merge(
+				$existing['sandbox'] ?? array(), $body['sandbox']
+			);
+		}
+		if (isset($body['denyPaths'])) {
+			$existing['denyPaths'] = $body['denyPaths'];
+		}
+
+		Q_WebServer_Branch::$state[$appDefaultsKey] = $existing;
+		Q_WebServer_Branch::saveState();
 		return array('ok' => true);
 	}
 
@@ -4611,6 +5311,8 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('servers',event)">Servers</div>
   <div class="tab" onclick="showTab('nearby',event)">Nearby</div>
   <div class="tab" onclick="showTab('mobile',event)">Mobile</div>
+  <div class="tab" onclick="showTab('users',event)">Users</div>
+  <div class="tab" onclick="showTab('branches',event)">Branches</div>
 </div>
 
 <!-- APPS TAB -->
@@ -4972,6 +5674,44 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div id="cron-list"></div>
 </div>
 
+<!-- USERS TAB -->
+<div id="tab-users" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">User Management</h2>
+  <div id="users-list"></div>
+  <div class="card" style="margin-top:16px" id="user-add-form">
+    <h3 style="font-size:14px;margin-bottom:12px">Add User</h3>
+    <div class="form-row"><label>Username</label><input type="text" id="user-add-name" placeholder="username (lowercase, no spaces)"></div>
+    <div class="form-row"><label>Password</label><input type="password" id="user-add-pw" placeholder="6+ characters"></div>
+    <div class="form-row"><label>Role</label><select id="user-add-role"><option value="user">user</option><option value="admin">admin</option></select></div>
+    <button class="btn btn-primary" onclick="addUser()">Add User</button>
+    <div id="user-add-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
+  </div>
+</div>
+
+<!-- BRANCHES TAB -->
+<div id="tab-branches" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Branch Management</h2>
+  <div id="branches-list"></div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Create Branch</h3>
+    <div class="form-row"><label>App Host</label><input type="text" id="br-app" placeholder="e.g. myapp.localhost"></div>
+    <div class="form-row"><label>Branch Name</label><input type="text" id="br-name" placeholder="branch-name"></div>
+    <button class="btn btn-primary" onclick="createBranch()">Create Branch</button>
+    <div id="br-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
+  </div>
+  <div class="card" style="margin-top:16px" id="br-db-config">
+    <h3 style="font-size:14px;margin-bottom:12px">Database Clone Config</h3>
+    <div class="form-row"><label>App Host</label><input type="text" id="br-db-app" placeholder="e.g. myapp.localhost"></div>
+    <div class="form-row"><label>Clone DB Name</label><input type="text" id="br-db-name" placeholder="test_database_name"></div>
+    <button class="btn btn-primary" onclick="saveBranchDbConfig()">Save</button>
+    <div id="br-db-info" style="font-size:12px;color:var(--dim);margin-top:8px"></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Merge Requests</h3>
+    <div id="br-merge-requests"><p style="color:var(--dim);font-size:12px">No pending merge requests.</p></div>
+  </div>
+</div>
+
 <script>
 const API = '/Q/api';
 let hasNode = false;
@@ -5042,6 +5782,7 @@ function showAuthScreen(isSetup) {
   screen.innerHTML = '<div class="card">'
     + '<h3 style="margin-bottom:12px">' + (isSetup ? 'Set Panel Password' : 'Panel Login') + '</h3>'
     + (isSetup ? '<p style="font-size:13px;color:var(--dim);margin-bottom:16px">You\'re the first person to access this panel. Set a password to secure it.</p>' : '')
+    + (isSetup ? '' : '<div class="form-row"><label>Username</label><input type="text" id="auth-user" placeholder="owner" value="owner"></div>')
     + '<div class="form-row"><label>Password</label><input type="password" id="auth-pw" placeholder="' + (isSetup ? 'Choose a password (6+ chars)' : 'Enter password') + '"></div>'
     + (isSetup ? '<div class="form-row"><label>Confirm</label><input type="password" id="auth-pw2" placeholder="Confirm password"></div>' : '')
     + '<button class="btn btn-primary" onclick="doAuth(' + (isSetup ? 'true' : 'false') + ')" style="width:100%">' + (isSetup ? 'Set Password' : 'Login') + '</button>'
@@ -5068,10 +5809,15 @@ async function doAuth(isSetup) {
   }
 
   var endpoint = isSetup ? 'auth/setup' : 'auth/login';
+  var payload = {password: pw};
+  if (!isSetup) {
+    var userEl = document.getElementById('auth-user');
+    if (userEl && userEl.value) payload.username = userEl.value;
+  }
   var r = await fetch(API + '/' + endpoint, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({password: pw})
+    body: JSON.stringify(payload)
   });
   var data = await r.json();
   if (data.error) {
@@ -5229,6 +5975,8 @@ function showTab(name, ev) {
   if (name==='frameworks') loadFrameworks();
   if (name==='scripts') loadAppSelect();
   if (name==='mobile') { loadToolchains(); loadMobileAppSelect(); }
+  if (name==='users') loadUsers();
+  if (name==='branches') loadBranches();
 }
 
 // Apps
@@ -6565,6 +7313,175 @@ async function loadCron() {
 }
 async function runCron(n){var r=await api('cron/run',{task:n});alert(r.error||'Dispatched '+n);}
 
+// ── Users ──────────────────────────────────────────
+async function loadUsers() {
+  var r = await api('users');
+  var el = document.getElementById('users-list');
+  if (r.error) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">' + escHtml(r.error) + '</p></div>'; return; }
+  if (!r.users || !r.users.length) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">No users.</p></div>'; return; }
+  el.innerHTML = r.users.map(function(u) {
+    var roleBadge = u.role === 'owner' ? '<span style="color:var(--grn)">owner</span>'
+      : u.role === 'admin' ? '<span style="color:var(--yel)">admin</span>'
+      : '<span style="color:var(--dim)">user</span>';
+    var btns = '';
+    if (u.role !== 'owner') {
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="changeUserRole(\'' + escHtml(u.username) + '\')">Role</button>';
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="resetUserPw(\'' + escHtml(u.username) + '\')">Reset PW</button>';
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="removeUser(\'' + escHtml(u.username) + '\')">Remove</button>';
+    }
+    var branches = u.branches && u.branches.length ? u.branches.join(', ') : '<span style="color:var(--dim)">none</span>';
+    return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
+      + '<div><strong>' + escHtml(u.username) + '</strong> ' + roleBadge
+      + '<div style="font-size:11px;color:var(--dim)">Created: ' + (u.created || '?') + ' · Branches: ' + branches + '</div></div>'
+      + '<div>' + btns + '</div></div></div>';
+  }).join('');
+  // Hide add form for non-admin
+  var me = await api('auth/me');
+  if (me.role !== 'owner' && me.role !== 'admin') {
+    document.getElementById('user-add-form').style.display = 'none';
+  }
+}
+async function addUser() {
+  var errEl = document.getElementById('user-add-error');
+  errEl.style.display = 'none';
+  var username = document.getElementById('user-add-name').value.trim();
+  var password = document.getElementById('user-add-pw').value;
+  var role = document.getElementById('user-add-role').value;
+  if (!username || !password) { errEl.textContent = 'Username and password required'; errEl.style.display = 'block'; return; }
+  var r = await api('users/add', {username: username, password: password, role: role});
+  if (r.error) { errEl.textContent = r.error; errEl.style.display = 'block'; return; }
+  document.getElementById('user-add-name').value = '';
+  document.getElementById('user-add-pw').value = '';
+  loadUsers();
+}
+async function changeUserRole(username) {
+  var role = prompt('New role for ' + username + ' (admin or user):');
+  if (!role) return;
+  var r = await api('users/update', {username: username, role: role});
+  if (r.error) { alert(r.error); return; }
+  loadUsers();
+}
+async function resetUserPw(username) {
+  var pw = prompt('New password for ' + username + ':');
+  if (!pw) return;
+  var r = await api('users/update', {username: username, password: pw});
+  if (r.error) { alert(r.error); return; }
+  alert('Password updated for ' + username);
+}
+async function removeUser(username) {
+  if (!confirm('Remove user ' + username + '? This cannot be undone.')) return;
+  var r = await api('users/remove', {username: username});
+  if (r.error) { alert(r.error); return; }
+  loadUsers();
+}
+
+// ── Branches ───────────────────────────────────────
+async function loadBranches() {
+  var r = await api('branches');
+  var el = document.getElementById('branches-list');
+  if (r.error) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">' + escHtml(r.error) + '</p></div>'; return; }
+  if (!r.branches || !r.branches.length) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">No branches created yet.</p></div>'; return; }
+  el.innerHTML = r.branches.map(function(b) {
+    var db = b.db && b.db.name ? b.db.name : '<span style="color:var(--dim)">none</span>';
+    var ek = b.key.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    var parts = b.key.split('/');
+    var btns = '<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="branchAccess(\'' + ek + '\')">Access</button>';
+    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="mergeBranch(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Merge</button>';
+    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--yel)" onclick="switchProd(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Switch Prod</button>';
+    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="deleteBranch(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Delete</button>';
+    return '<div class="card" style="margin-bottom:8px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
+      + '<div><strong>' + escHtml(b.name) + '</strong> <span style="font-size:11px;color:var(--dim)">(' + escHtml(b.appHost) + ')</span>'
+      + '<div style="font-size:11px;color:var(--dim)">By: ' + escHtml(b.createdBy || '?') + ' · ' + (b.created || '') + ' · DB: ' + db + '</div></div>'
+      + '<div style="margin-top:4px">' + btns + '</div></div></div>';
+  }).join('');
+  loadMergeRequests();
+}
+async function createBranch() {
+  var errEl = document.getElementById('br-error');
+  errEl.style.display = 'none';
+  var appHost = document.getElementById('br-app').value.trim();
+  var branchName = document.getElementById('br-name').value.trim();
+  if (!appHost || !branchName) { errEl.textContent = 'App host and branch name required'; errEl.style.display = 'block'; return; }
+  var r = await api('branches/create', {appHost: appHost, branchName: branchName});
+  if (r.error) { errEl.textContent = r.error; errEl.style.display = 'block'; return; }
+  document.getElementById('br-name').value = '';
+  loadBranches();
+}
+async function deleteBranch(appHost, name) {
+  if (!confirm('Delete branch ' + name + '? This removes all branch files and cannot be undone.')) return;
+  var r = await api('branches/delete', {appHost: appHost, branchName: name});
+  if (r.error) { alert(r.error); return; }
+  loadBranches();
+}
+async function mergeBranch(appHost, name) {
+  if (!confirm('Merge branch ' + name + ' into trunk? This copies all branch changes to the main app.')) return;
+  var r = await api('branches/merge', {appHost: appHost, branchName: name});
+  if (r.error) { alert(r.error); return; }
+  var m = r.merged || {};
+  alert('Merged: ' + (m.added||0) + ' added, ' + (m.changed||0) + ' changed, ' + (m.removed||0) + ' removed');
+  loadBranches();
+}
+async function switchProd(appHost, name) {
+  if (!confirm('Switch production to branch ' + name + '? This merges all branch changes into the live app.')) return;
+  var r = await api('branches/switch-production', {appHost: appHost, branchName: name});
+  if (r.error) { alert(r.error); return; }
+  alert('Production switched to ' + name);
+  loadBranches();
+}
+async function branchAccess(branchKey) {
+  var parts = branchKey.split('/');
+  var appHost = parts[0], name = parts.slice(1).join('/');
+  var access = prompt('Access list as JSON, e.g. {"alice":{"branch":"edit","files":"frontend"}}');
+  if (!access) return;
+  try { access = JSON.parse(access); } catch(e) { alert('Invalid JSON'); return; }
+  var r = await api('branches/access', {appHost: appHost, branchName: name, access: access});
+  if (r.error) { alert(r.error); return; }
+  loadBranches();
+}
+async function saveBranchDbConfig() {
+  var appHost = document.getElementById('br-db-app').value.trim();
+  var cloneDb = document.getElementById('br-db-name').value.trim();
+  var infoEl = document.getElementById('br-db-info');
+  if (!appHost) { infoEl.textContent = 'App host required'; infoEl.style.color = 'var(--red)'; return; }
+  if (!cloneDb) {
+    var r = await api('branches/db-config', {appHost: appHost});
+    infoEl.textContent = 'Current: ' + (r.cloneDb || r.defaultCloneDb || 'not set');
+    infoEl.style.color = 'var(--dim)';
+    return;
+  }
+  var r = await api('branches/db-config', {appHost: appHost, cloneDb: cloneDb});
+  if (r.error) { infoEl.textContent = r.error; infoEl.style.color = 'var(--red)'; return; }
+  infoEl.textContent = 'Saved: ' + cloneDb;
+  infoEl.style.color = 'var(--grn)';
+}
+async function loadMergeRequests() {
+  var r = await api('branches/mergerequests', {});
+  var el = document.getElementById('br-merge-requests');
+  if (!r.mergeRequests || !r.mergeRequests.length) {
+    el.innerHTML = '<p style="color:var(--dim);font-size:12px">No pending merge requests.</p>';
+    return;
+  }
+  el.innerHTML = r.mergeRequests.map(function(mr) {
+    return '<div class="card" style="margin-bottom:6px;padding:8px 12px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<div><strong>' + escHtml(mr.branchKey || '') + '</strong>'
+      + '<div style="font-size:11px;color:var(--dim)">' + escHtml(mr.message || '') + ' · by ' + escHtml(mr.requestedBy || '?') + '</div></div>'
+      + '<div><button class="btn btn-primary" style="font-size:11px;padding:3px 8px" onclick="approveMerge(\'' + escHtml(mr.branchKey) + '\')">Approve &amp; Merge</button></div>'
+      + '</div></div>';
+  }).join('');
+}
+async function approveMerge(branchKey) {
+  var parts = branchKey.split('/');
+  if (parts.length < 2) { alert('Invalid branch key'); return; }
+  var appHost = parts[0], name = parts.slice(1).join('/');
+  if (!confirm('Approve and merge ' + name + ' into trunk?')) return;
+  var r = await api('branches/merge', {appHost: appHost, branchName: name});
+  if (r.error) { alert(r.error); return; }
+  var m = r.merged || {};
+  alert('Merged: ' + (m.added||0) + ' added, ' + (m.changed||0) + ' changed, ' + (m.removed||0) + ' removed');
+  loadBranches();
+}
 
 // ── Frameworks ──────────────────────────────────────
 async function loadFrameworks() {

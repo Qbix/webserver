@@ -1,4 +1,4 @@
-# ⚡ Qbix Server v2
+# ⚡ Qbix Server v2.3
 
 https://qbixserver.com is an all-in-one server that handles everything for you. Drop files in folders. Get real-time applications that can handle millions of users. Produce and distribute [standalone binaries](#single-binary-distribution) that run on Linux, Mac, Windows, and now iOS and Android too. Qbix Server v2 lets you build secure decentralized apps that can even work offline, over WiFi and Bluetooth.
 
@@ -52,6 +52,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 - [Single-Binary Distribution](#single-binary-distribution)
 - [Mesh Networking](#mesh-networking)
 - [Mobile](#mobile)
+- [Collaborative Branches](#-collaborative-branches)
 - [With Qbix Platform](#-with-qbix-platform)
 - [Architecture](#️-architecture)
 - [HTTP/2 Support](#-http2-support)
@@ -90,7 +91,9 @@ You can also package your entire app — code, assets, SQLite database — into 
 | 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
 | 🔀 | [Migrate from Apache](docs/migrate-apache.md) | .htaccess unchanged, VirtualHost mapping |
 | 🔀 | [Migrate from Caddy](docs/migrate-caddy.md) | Automatic HTTPS, on-demand TLS → autohost |
-| ✅ | [Test Results](docs/TestResults.md) | 140 end-to-end tests |
+| ✅ | [Test Results](docs/TestResults.md) | 197 end-to-end tests |
+| 🌿 | [Branches](docs/branches-plan.md) | Collaborative branching, permissions, database cloning |
+| 🤖 | [AI Collaboration](docs/COLLABORATION.md) | MCP workflow, patch-based editing, VCS integration, multi-server sync |
 | 🗺️ | [Roadmap](docs/roadmap.md) | What's next |
 | 📄 | [License](docs/license.md) | MIT |
 
@@ -330,6 +333,9 @@ php qbixserver.php --port=8080  # done
 | **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
 | **Image processing** | Resize with `?w=`, automatic AVIF/WebP negotiation, disk cache |
 | **Framework presets** | Built-in presets for [13 frameworks](docs/FRAMEWORKS.md) — Laravel, Symfony, WordPress, Drupal, and more |
+| **Collaborative branches** | Copy-on-write branches with per-user permissions, database cloning, and merge review |
+| **Default lockdown** | Branches locked down by default — file-tier permissions, deny paths, optional OS-level UID isolation |
+| **MCP integration** | Model Context Protocol endpoint for AI-assisted editing with branch push, patch, export, and merge requests |
 | **Mesh networking** | Encrypted P2P over BLE + Wi-Fi with multi-hop routing |
 | **Data sync** | Bloom filter + prolly tree sync between peers |
 
@@ -814,6 +820,75 @@ For distribution, sign the release AAB and upload to the Google Play Console. Se
 - [mobile/README.md](mobile/README.md) — transport layer architecture, BLE GATT service definition, chunking protocol, platform requirements
 - [mobile/iOS.md](mobile/iOS.md) — PhpBridge, xcodegen, background persistence, signing, TestFlight, App Store
 - [mobile/Android.md](mobile/Android.md) — PhpBridge, Gradle, Foreground Service, signing, Play Store
+
+---
+
+## 🌿 Collaborative Branches
+
+Multiple people — or AI assistants — can work on a running PHP app at the same time without stepping on each other. Each branch is a copy-on-write clone of the live app: its own filesystem, its own database, its own credentials. Changes are merged back when ready.
+
+### How it works
+
+```bash
+# Create a branch from the control panel or API
+curl -X POST http://localhost:8080/Q/panel/api/branches/create \
+  -d '{"appHost":"myapp.test","branchName":"feature-redesign"}' \
+  -H "Authorization: Bearer $TOKEN"
+
+# The branch is immediately accessible
+# - By subdomain: feature-redesign.myapp.test
+# - By header: X-Q-Branch: feature-redesign
+# - By cookie: _q_branch=feature-redesign
+```
+
+Each branch gets a copy-on-write filesystem (symlinks to trunk files; writes create real copies in the branch directory) and a cloned database (SQLite file copy, MySQL `mysqldump` pipe, or PostgreSQL `CREATE DATABASE ... TEMPLATE`). The branch is a fully working copy of the app that can be previewed, edited, and tested independently.
+
+### Permissions
+
+Branches use a two-axis permission model:
+
+| Axis | Values | Controls |
+|---|---|---|
+| **Branch permission** | `view`, `edit`, `admin` | Who can see, push to, or configure the branch |
+| **File tier** | `styles`, `markup`, `frontend`, `code` | Which file types the user can push |
+
+The `styles` tier allows only CSS/SCSS/LESS/SASS. `markup` adds HTML, SVG, Markdown, images, fonts, JSON, XML, YAML. `frontend` adds JS/TS/JSX/TSX/Vue/Svelte. `code` allows everything including PHP. Tiers are cumulative — each includes everything from the tier below.
+
+### Default lockdown
+
+Branches are locked down by default. New branches get:
+
+- **File tier**: `markup` (no JavaScript or PHP)
+- **Deny paths**: `.env*`, `.git/`, `vendor/`, `node_modules/`
+- **Sandbox**: shell execution disabled
+
+Admins can relax restrictions per-branch or change app-level defaults through the lockdown management API. The `code` tier bypasses deny-path checks entirely, since someone with code-level access already has equivalent power through PHP.
+
+On Linux, branches can also use OS-level UID/GID isolation as a belt-and-suspenders measure: each branch gets its own system user, and the branch root is `chown`'d to that user. This is optional and off by default — it adds real isolation but slows down fork-per-request mode.
+
+### MCP integration
+
+Each branch exposes a [Model Context Protocol](https://modelcontextprotocol.io) endpoint so AI coding assistants (Claude, Cursor, etc.) can push file changes, apply patches, export branch contents, and create merge requests — all subject to the same permission model.
+
+```
+POST /Q/mcp/{appHost}/{branchName}
+Authorization: Bearer <mcp-token>
+Content-Type: application/json
+
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"branch_patch","arguments":{"appHost":"myapp.test","branchName":"feature","patch":"<unified diff>","commitMessage":"Fix header layout"}}}
+```
+
+Available MCP tools: `health`, `branch_export`, `branch_push`, `branch_patch`, `branch_request_merge`.
+
+The `branch_patch` tool accepts unified diffs (the output of `git diff`, `diff -u`, etc.) and applies them to the branch. If git is installed, the branch directory becomes a git repo with real commits. Falls back to mercurial, then to the `patch` command. The MCP `initialize` response includes contextual instructions for LLMs: available VCS, detected framework, and a hint to check for `LLM.txt` at the app root.
+
+### Merge review
+
+When a branch is ready, a collaborator creates a merge request. Admins review the request in the control panel and approve or reject it. On approval, branch files are copied to trunk.
+
+### AI-assisted editing on public servers
+
+Any Qbix Server exposed to the network becomes a workspace that AI coding assistants can safely edit. Claude, ChatGPT plugins, Cursor, Windsurf, or any MCP-compatible tool connects to the server's MCP endpoint, authenticates with a scoped token, and reads/writes files on a branch — never trunk. The server enforces file-tier permissions and deny-path rules on every write. When git or mercurial is installed (as it typically is on any Linux server), each patch the AI applies becomes a real VCS commit with a message and hash, so admins reviewing a merge request see a proper commit log. Because branches have real git repos, they can also push to or pull from repos on other servers, enabling staging-to-production promotion, distributed editing across multiple Qbix instances, and CI integration. See [AI Collaboration](docs/COLLABORATION.md) for the full workflow, permission model, and multi-server patterns.
 
 ---
 

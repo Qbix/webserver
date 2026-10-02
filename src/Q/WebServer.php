@@ -109,6 +109,8 @@ class Q_WebServer
 	private static $udsWatcher = null;
 	/** @property $onRequest Logging callback(method, uri, status, ms) */
 	static $onRequest = null;
+	/** @property $currentHostConfig Virtual host config for the current request */
+	static $currentHostConfig = null;
 
 	// ── Lifecycle ────────────────────────────────────────
 
@@ -205,6 +207,16 @@ class Q_WebServer
 		self::$fileUploads = (bool) Q_Config::get(
 			'Q', 'webserver', 'fileUploads', ini_get('file_uploads') !== '0'
 		);
+
+		// ── Sandbox capability detection ─────────────────────
+		require_once __DIR__ . '/WebServer/Sandbox.php';
+		Q_WebServer_Sandbox::detectCapabilities();
+
+		// ── Branch system initialisation ─────────────────────
+		if (Q_Config::get('Q', 'webserver', 'branches', 'enabled', false)) {
+			require_once __DIR__ . '/WebServer/Branch.php';
+			Q_WebServer_Branch::init();
+		}
 
 		// File response cache config
 		self::$fileCacheMaxSize = Q_Config::get('Q', 'webserver', 'fileCache', 'maxSize', 67108864);
@@ -1205,6 +1217,18 @@ class Q_WebServer
 			if (strpos($wellKnown, 'openclaiming/') === 0) {
 				return self::wellKnownOpenClaiming($parsed, $wellKnown);
 			}
+			// OpenAI domain verification for ChatGPT plugins
+			if ($wellKnown === 'openai-apps-challenge') {
+				$token = Q_Config::get('Q', 'mcp', 'openai', 'verificationToken', '');
+				return array('status' => 200, 'body' => $token,
+					'headers' => array('Content-Type' => 'text/plain'));
+			}
+		}
+
+		// MCP streamable HTTP transport endpoint
+		if ($path === '/mcp') {
+			require_once __DIR__ . '/WebServer/MCP.php';
+			return Q_WebServer_MCP::handle($parsed);
 		}
 
 		if ($path === '/Q/health') {
@@ -1643,6 +1667,56 @@ class Q_WebServer
 			}
 		}
 
+		// Store hostConfig for sandbox enforcement in child processes
+		self::$currentHostConfig = $hostConfig;
+
+		// ── Branch resolution ─────────────────────────────────
+		// After vhost resolution, check whether this request targets a branch.
+		// If so, swap rootDir to the branch's CoW directory.
+		if (class_exists('Q_WebServer_Branch', false)) {
+			$branchRecord = Q_WebServer_Branch::resolve(
+				$host,
+				$parsed['headers'] ?? array(),
+				$parsed['cookies'] ?? array()
+			);
+			if ($branchRecord && !empty($branchRecord['root'])) {
+				$broot = realpath($branchRecord['root']);
+				if ($broot && is_dir($broot)) {
+					self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $broot), DS) . DS;
+				}
+				// Store branch info in parsed request for downstream use
+				// (sandbox, credential injection, write restrictions)
+				$parsed['_branch'] = Q_WebServer_Branch::$current;
+				$parsed['_branchRecord'] = $branchRecord;
+
+				// ── Branch authentication ──────────────────────
+				// Every branch request must be authenticated.
+				// authenticateForBranch() checks panel session,
+				// Bearer token, Basic auth, and wildcard access.
+				$authResult = Q_WebServer_Branch::authenticateForBranch(
+					$branchRecord,
+					$parsed['headers'] ?? array(),
+					$parsed['cookies'] ?? array()
+				);
+				if (!$authResult) {
+					self::sendResponse($client, 403,
+						'Branch access denied',
+						'text/plain; charset=utf-8',
+						array('WWW-Authenticate' => 'Basic realm="Branch"')
+					);
+					return false;
+				}
+				// Attach auth result to the branch record so workers
+				// can enforce file-level permissions
+				$parsed['_branchRecord']['user'] = $authResult['user'];
+				$parsed['_branchRecord']['branchPerm'] = $authResult['branchPerm'];
+				$parsed['_branchRecord']['fileTier'] = $authResult['fileTier'];
+				$parsed['_branchRecord']['preset'] = $authResult['preset'];
+				$parsed['_branchRecord']['userPaths'] = $authResult['userPaths'];
+				$parsed['_branchRecord']['userConfig'] = $authResult['userConfig'];
+			}
+		}
+
 		$__tp['vhost'] = hrtime(true);
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
 		// 1. Serve built-in assets (JS clients, logo, bundled frontend)
@@ -1705,6 +1779,10 @@ class Q_WebServer
 				$wkResponse = self::wellKnownMCP($parsed);
 			} elseif (strpos($wellKnown, 'openclaiming/') === 0) {
 				$wkResponse = self::wellKnownOpenClaiming($parsed, $wellKnown);
+			} elseif ($wellKnown === 'openai-apps-challenge') {
+				$token = Q_Config::get('Q', 'mcp', 'openai', 'verificationToken', '');
+				$wkResponse = array('status' => 200, 'body' => $token,
+					'headers' => array('Content-Type' => 'text/plain'));
 			}
 
 			if ($wkResponse) {
@@ -1716,6 +1794,65 @@ class Q_WebServer
 			}
 			// Fall through for other .well-known files (apple-app-site-association, acme, etc.)
 		}
+
+		// MCP streamable HTTP transport endpoint
+		if ($path === '/mcp') {
+			require_once __DIR__ . '/WebServer/MCP.php';
+			$response = Q_WebServer_MCP::handle($parsed);
+			self::sendResponse($client, $response['status'] ?? 200,
+				$response['body'] ?? '',
+				$response['headers']['Content-Type'] ?? 'application/json',
+				$response['headers'] ?? array());
+			return false;
+		}
+
+		// Branch collaboration REST API
+		if (strpos($path, '/api/branch/') === 0 && $method === 'POST') {
+			require_once __DIR__ . '/WebServer/Branch.php';
+			require_once __DIR__ . '/WebServer/MCP.php';
+			$endpoint = substr($path, strlen('/api/branch/'));
+			$toolMap = array(
+				'export' => 'branch_export',
+				'push' => 'branch_push',
+				'request-merge' => 'branch_request_merge',
+			);
+			if (isset($toolMap[$endpoint])) {
+				$body = $parsed['body'] ?? '';
+				$arguments = json_decode($body, true) ?: array();
+				$response = Q_WebServer_MCP::handleBranchTool(
+					$toolMap[$endpoint], $arguments, $parsed
+				);
+				$responseBody = json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+				self::sendResponse($client, 200, $responseBody, 'application/json', array(
+					'Access-Control-Allow-Origin' => '*',
+				));
+				return false;
+			}
+			self::sendResponse($client, 404, 'Unknown branch API endpoint', 'text/plain');
+			return false;
+		}
+		// Branch export download (GET)
+		if (strpos($path, '/api/branch/download/') === 0
+			&& ($method === 'GET' || $method === 'POST')
+		) {
+			require_once __DIR__ . '/WebServer/Branch.php';
+			$token = substr($path, strlen('/api/branch/download/'));
+			$download = Q_WebServer_Branch::serveDownload($token);
+			if ($download && file_exists($download['path'])) {
+				$content = file_get_contents($download['path']);
+				$ext = pathinfo($download['name'], PATHINFO_EXTENSION);
+				$mime = $ext === 'zip' ? 'application/zip' : 'application/gzip';
+				self::sendResponse($client, 200, $content, $mime, array(
+					'Content-Disposition' => 'attachment; filename="' . $download['name'] . '"',
+					'Content-Length' => strlen($content),
+				));
+				@unlink($download['path']);
+			} else {
+				self::sendResponse($client, 404, 'Download not found or expired', 'text/plain');
+			}
+			return false;
+		}
+
 		if ($path === '/Q/event' && $method === 'POST') {
 			$response = self::handleRemoteEvent($parsed);
 			self::sendResponse($client, $response['status'] ?? 200, $response['body'] ?? '',
@@ -2162,6 +2299,10 @@ class Q_WebServer
 			$pid = Q_WebServer_Fork::fork();
 			if ($pid === 0) {
 				// ── CHILD: run dispatch pipeline ──
+				// Apply per-app sandbox before any app code runs
+				if (class_exists('Q_WebServer_Sandbox', false) && self::$currentHostConfig) {
+					Q_WebServer_Sandbox::apply(self::$currentHostConfig, rtrim(self::$rootDir, DS));
+				}
 				while (ob_get_level()) ob_end_clean();
 				ob_start();
 				$status = 200;
@@ -2368,6 +2509,10 @@ class Q_WebServer
 				// Fork failed — fall through to in-process execution
 			} elseif ($pid === 0) {
 				// ── CHILD: handle request, write response to client, exit ──
+				// Apply per-app sandbox before any app code runs
+				if (class_exists('Q_WebServer_Sandbox', false) && self::$currentHostConfig) {
+					Q_WebServer_Sandbox::apply(self::$currentHostConfig, rtrim(self::$rootDir, DS));
+				}
 				$parsed['_scriptPath'] = $scriptPath;
 				$parsed['_client'] = $client; // for SSE/streaming in dispatchToQ
 
@@ -2605,7 +2750,14 @@ WORKER;
 		);
 
 		$phpBin = defined('PHP_BINARY') ? PHP_BINARY : 'php';
-		$process = proc_open($phpBin . ' ' . escapeshellarg($workerFile), $descriptors, $pipes);
+		// Apply sandbox restrictions via PHP -d flags for subprocess isolation
+		$sandboxFlags = '';
+		if (class_exists('Q_WebServer_Sandbox', false) && self::$currentHostConfig) {
+			$sandboxFlags = Q_WebServer_Sandbox::subprocessFlags(
+				self::$currentHostConfig, rtrim(self::$rootDir, DS)
+			);
+		}
+		$process = proc_open($phpBin . $sandboxFlags . ' ' . escapeshellarg($workerFile), $descriptors, $pipes);
 
 		if (!is_resource($process)) {
 			// proc_open failed — last resort, run in-process
@@ -3833,6 +3985,11 @@ HTML;
 			if (property_exists('Q_Request', 'input')) Q_Request::$input = $rawBody;
 		}
 
+		// Apply per-app sandbox (open_basedir + shell gate, no setuid in-process)
+		if (class_exists('Q_WebServer_Sandbox', false) && self::$currentHostConfig) {
+			Q_WebServer_Sandbox::apply(self::$currentHostConfig, rtrim(self::$rootDir, DS));
+		}
+
 		// Clear any stale headers and output from previous in-process requests,
 		// then start fresh output buffering. This prevents "headers already sent"
 		// errors when scripts call header() after prior output leaked through.
@@ -4978,6 +5135,10 @@ init();
 		self::$_responseHeaders = array();
 		self::$_responseCode = 200;
 		@header_remove();
+		// Reset branch state so the next request starts clean
+		if (class_exists('Q_WebServer_Branch', false)) {
+			Q_WebServer_Branch::reset();
+		}
 	}
 	/** @internal pid => start_time for request timeout enforcement */
 	static $workerPids = array();
@@ -5532,6 +5693,78 @@ init();
 				array('name' => 'Discovery', 'description' => 'Server identity and API discovery'),
 			),
 		);
+
+		// Branch collaboration API paths
+		$spec['paths']['/api/branch/export'] = array('post' => array(
+			'summary' => 'Export branch or trunk as an archive with credentials scrubbed',
+			'operationId' => 'branch_export',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost'),
+					'properties' => array(
+						'appHost' => array('type' => 'string', 'description' => 'App hostname'),
+						'branchName' => array('type' => 'string', 'description' => 'Branch name (omit for trunk)'),
+						'format' => array('type' => 'string', 'enum' => array('tar.gz', 'zip')),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'Export result with download URL and manifest'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['paths']['/api/branch/push'] = array('post' => array(
+			'summary' => 'Push file changes to a branch',
+			'operationId' => 'branch_push',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost', 'branchName', 'files'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'files' => array('type' => 'array', 'items' => array(
+							'type' => 'object',
+							'required' => array('path', 'content'),
+							'properties' => array(
+								'path' => array('type' => 'string'),
+								'content' => array('type' => 'string', 'description' => 'Base64-encoded content'),
+								'encoding' => array('type' => 'string', 'enum' => array('base64', 'utf8')),
+							),
+						)),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'Push result with accepted/rejected lists'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['paths']['/api/branch/request-merge'] = array('post' => array(
+			'summary' => 'Request a branch be merged back to trunk',
+			'operationId' => 'branch_request_merge',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost', 'branchName'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'title' => array('type' => 'string'),
+						'description' => array('type' => 'string'),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'Merge request ID and status'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['tags'][] = array('name' => 'Branches', 'description' => 'Branch collaboration API for AI agents and REST consumers');
 
 		// Add app-defined routes from handlers/ directory, parsed from PHPDoc
 		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';

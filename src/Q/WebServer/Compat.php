@@ -69,6 +69,14 @@ class Q_WebServer_Compat
 		'ob_end_clean'         => 'Q_WebServer_Compat::_ob_end_clean',
 		'ob_get_clean'         => 'Q_WebServer_Compat::_ob_get_clean',
 		'ob_get_level'         => 'Q_WebServer_Compat::_ob_get_level',
+		// Shell-execution functions — gated by Q_WebServer_Sandbox::$shellAllowed.
+		// When a sandbox is active, these throw instead of executing commands.
+		'exec'                 => 'Q_WebServer_Compat::_exec',
+		'shell_exec'           => 'Q_WebServer_Compat::_shell_exec',
+		'system'               => 'Q_WebServer_Compat::_system',
+		'passthru'             => 'Q_WebServer_Compat::_passthru',
+		'popen'                => 'Q_WebServer_Compat::_popen',
+		'proc_open'            => 'Q_WebServer_Compat::_proc_open',
 	);
 
 	/**
@@ -267,6 +275,16 @@ class Q_WebServer_Compat
 		self::$sessionFile = '';
 		self::$sessionFp = null;
 		self::$requestHeaders = array();
+
+		// Reset branch collaboration context
+		if (class_exists('Q_WebServer_CompatFileWrapper', false)) {
+			Q_WebServer_CompatFileWrapper::clearBranchContext();
+		}
+
+		// Reset sandbox state for the next request (persistent workers)
+		if (class_exists('Q_WebServer_Sandbox', false)) {
+			Q_WebServer_Sandbox::reset();
+		}
 
 		@stream_wrapper_restore('file');
 	}
@@ -1020,6 +1038,80 @@ class Q_WebServer_Compat
 			pcntl_alarm((int) $seconds);
 		}
 		return true;
+	}
+
+	// ── Shell-execution shims ──────────────────────────────
+
+	/**
+	 * Check if shell execution is allowed by the current sandbox.
+	 * @throws \RuntimeException when sandboxed with shell disabled
+	 */
+	private static function _checkShellAllowed($func)
+	{
+		if (class_exists('Q_WebServer_Sandbox', false)
+			&& Q_WebServer_Sandbox::$active
+			&& !Q_WebServer_Sandbox::$shellAllowed
+		) {
+			throw new \RuntimeException(
+				"$func() is disabled by the sandbox for this application"
+			);
+		}
+	}
+
+	/**
+	 * Replacement for exec().
+	 */
+	static function _exec($command, &$output = null, &$result_code = null)
+	{
+		self::_checkShellAllowed('exec');
+		return \exec($command, $output, $result_code);
+	}
+
+	/**
+	 * Replacement for shell_exec().
+	 */
+	static function _shell_exec($command)
+	{
+		self::_checkShellAllowed('shell_exec');
+		return \shell_exec($command);
+	}
+
+	/**
+	 * Replacement for system().
+	 */
+	static function _system($command, &$result_code = null)
+	{
+		self::_checkShellAllowed('system');
+		return \system($command, $result_code);
+	}
+
+	/**
+	 * Replacement for passthru().
+	 */
+	static function _passthru($command, &$result_code = null)
+	{
+		self::_checkShellAllowed('passthru');
+		\passthru($command, $result_code);
+	}
+
+	/**
+	 * Replacement for popen().
+	 */
+	static function _popen($command, $mode)
+	{
+		self::_checkShellAllowed('popen');
+		return \popen($command, $mode);
+	}
+
+	/**
+	 * Replacement for proc_open().
+	 */
+	static function _proc_open(
+		$command, $descriptor_spec, &$pipes,
+		$cwd = null, $env = null, $other_options = null
+	) {
+		self::_checkShellAllowed('proc_open');
+		return \proc_open($command, $descriptor_spec, $pipes, $cwd, $env, $other_options);
 	}
 
 	// ── Request headers ─────────────────────────────────
@@ -1987,6 +2079,12 @@ class Q_WebServer_CompatFileWrapper
 	private $transformed = false;
 	/** @var resource Directory handle */
 	private $dirHandle;
+	/** @var array|null Original parsed config content, for config-key enforcement */
+	private $configOriginal = null;
+	/** @var string|null Absolute path of the config file being written */
+	private $configPath = null;
+	/** @var string|null Config format ('json' or 'yaml') for config-key enforcement */
+	private $configFormat = null;
 
 	/** @var int Number of stream_open calls this request (diagnostic) */
 	public static $__openCount = 0;
@@ -1994,6 +2092,228 @@ class Q_WebServer_CompatFileWrapper
 	public static $__statCount = 0;
 	/** @var int Number of stat-cache hits this request (diagnostic) */
 	public static $__statCacheHits = 0;
+
+	// ── Branch collaboration state ─────────────────────────────
+	// Set per-request by Pool::executeScript() when a branch is active.
+
+	/** @var string|null Branch root directory (absolute), or null for trunk */
+	public static $branchRoot = null;
+	/** @var string|null Trunk root directory (absolute), for CoW write targets */
+	public static $trunkRoot = null;
+	/** @var array Branch record from Q_WebServer_Branch state */
+	public static $branchRecord = array();
+	/** @var array Credential values for placeholder injection: path => value */
+	public static $branchCredentials = array();
+	/** @var string|null The current branch user, for permission checks */
+	public static $branchUser = null;
+	/** @var string|null The user's file tier (styles/markup/frontend/code) */
+	public static $branchFileTier = null;
+	/** @var array Framework preset for file permission checks */
+	public static $branchPreset = array();
+	/** @var array Per-user path overrides (allow/deny) */
+	public static $branchUserPaths = array();
+	/** @var array Per-user config-key overrides (allow/deny) */
+	public static $branchUserConfig = array();
+
+	/**
+	 * Set up branch context for this request. Called from Pool::executeScript()
+	 * when a branch is active.
+	 * @method setBranchContext
+	 * @static
+	 * @param {array} $branchRecord  The full branch record
+	 * @param {array} [$credentials]  Credential values for injection
+	 */
+	public static function setBranchContext($branchRecord, $credentials = array())
+	{
+		self::$branchRoot = rtrim($branchRecord['root'] ?? '', '/');
+		self::$trunkRoot = rtrim($branchRecord['appRoot'] ?? '', '/');
+		self::$branchRecord = $branchRecord;
+		self::$branchCredentials = $credentials;
+	}
+
+	/**
+	 * Clear branch context between requests.
+	 * @method clearBranchContext
+	 * @static
+	 */
+	public static function clearBranchContext()
+	{
+		self::$branchRoot = null;
+		self::$trunkRoot = null;
+		self::$branchRecord = array();
+		self::$branchCredentials = array();
+		self::$branchUser = null;
+		self::$branchFileTier = null;
+		self::$branchPreset = array();
+		self::$branchUserPaths = array();
+		self::$branchUserConfig = array();
+	}
+
+	/**
+	 * Check if a path is inside the branch root.
+	 * @method isInBranch
+	 * @static
+	 * @private
+	 * @param {string} $path
+	 * @return {boolean}
+	 */
+	private static function isInBranch($path)
+	{
+		if (!self::$branchRoot) return false;
+		return strpos($path, self::$branchRoot . '/') === 0
+			|| $path === self::$branchRoot;
+	}
+
+	/**
+	 * Get the relative path within the branch root.
+	 * @method branchRelPath
+	 * @static
+	 * @private
+	 * @param {string} $path
+	 * @return {string}
+	 */
+	private static function branchRelPath($path)
+	{
+		return ltrim(substr($path, strlen(self::$branchRoot)), '/');
+	}
+
+	/**
+	 * Inject credentials into file content by replacing {{path}} placeholders
+	 * with real values from the branch's credential store.
+	 * @method injectCredentials
+	 * @static
+	 * @private
+	 * @param {string} $content
+	 * @return {string}
+	 */
+	private static function injectCredentials($content)
+	{
+		if (empty(self::$branchCredentials)) return $content;
+		return preg_replace_callback(
+			'/\{\{([a-zA-Z0-9_.]+)\}\}/',
+			function ($matches) {
+				$key = $matches[1];
+				return self::$branchCredentials[$key] ?? $matches[0];
+			},
+			$content
+		);
+	}
+
+	/**
+	 * Break a symlink for CoW write: if the file is a symlink pointing to
+	 * trunk, copy the content to a real file before writing.
+	 * @method cowBreakLink
+	 * @static
+	 * @private
+	 * @param {string} $path  Absolute path inside branch root
+	 * @return {boolean} True if the path is now a writable real file
+	 */
+	private static function cowBreakLink($path)
+	{
+		if (!is_link($path)) return true;
+
+		$target = readlink($path);
+		unlink($path);
+
+		$dir = dirname($path);
+		if (!is_dir($dir)) {
+			@mkdir($dir, 0755, true);
+		}
+
+		if (file_exists($target)) {
+			return copy($target, $path);
+		}
+		// Target doesn't exist — create empty file
+		return touch($path);
+	}
+
+	/**
+	 * Check whether a write to a file inside the branch is permitted
+	 * by the user's file tier and path permissions.
+	 * @method checkBranchWrite
+	 * @static
+	 * @private
+	 * @param {string} $path  Absolute path
+	 * @return {boolean|string} True if allowed, error message if denied
+	 */
+	/**
+	 * Determine whether a branch-relative path is a structured config file
+	 * that needs config-key-level permission checks. Returns the config
+	 * format string ('json' or 'yaml') if yes, null if no.
+	 * @method isConfigFile
+	 * @static
+	 * @private
+	 * @param {string} $relPath  Branch-relative file path
+	 * @return {string|null}
+	 */
+	private static function isConfigFile($relPath)
+	{
+		$preset = self::$branchPreset;
+		$format = $preset['configFormat'] ?? null;
+		if (!$format) return null;
+		// Only JSON and YAML support structured diffing
+		if ($format !== 'json' && $format !== 'yaml') return null;
+
+		$configFiles = $preset['configFiles'] ?? array();
+		if (empty($configFiles)) return null;
+
+		foreach ($configFiles as $pattern) {
+			if (class_exists('Q_WebServer_Branch', false)
+				&& Q_WebServer_Branch::globMatch($relPath, $pattern)
+			) {
+				return $format;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Parse config file content by format.
+	 * @method parseConfig
+	 * @static
+	 * @private
+	 * @param {string} $content  Raw file content
+	 * @param {string} $format  'json' or 'yaml'
+	 * @return {array|null}
+	 */
+	private static function parseConfig($content, $format)
+	{
+		if ($format === 'json') {
+			$parsed = json_decode($content, true);
+			return is_array($parsed) ? $parsed : null;
+		}
+		if ($format === 'yaml') {
+			if (!function_exists('yaml_parse')) return null;
+			$parsed = @yaml_parse($content);
+			return is_array($parsed) ? $parsed : null;
+		}
+		return null;
+	}
+
+	private static function checkBranchWrite($path)
+	{
+		if (!self::$branchRoot || !self::isInBranch($path)) return true;
+		if (!self::$branchFileTier) return true; // no permission info set
+
+		$relPath = self::branchRelPath($path);
+		if (!class_exists('Q_WebServer_Branch', false)) return true;
+
+		// Enforce deny paths from default lockdown.
+		// Code-tier users bypass deny checks.
+		if (self::$branchFileTier !== 'code') {
+			$denyPaths = self::$branchRecord['denyPaths'] ?? array();
+			if ($denyPaths && Q_WebServer_Branch::isDeniedByDefault($relPath, $denyPaths)) {
+				return 'Path denied by branch lockdown policy: ' . $relPath;
+			}
+		}
+
+		return Q_WebServer_Branch::checkFilePermission(
+			$relPath,
+			self::$branchFileTier,
+			self::$branchPreset,
+			self::$branchUserPaths
+		);
+	}
 
 	// We need to restore the real file:// wrapper for actual file ops,
 	// then re-register ours. This prevents infinite recursion.
@@ -2013,11 +2333,60 @@ class Q_WebServer_CompatFileWrapper
 		// Strip file:// prefix if present
 		$realPath = preg_replace('/^file:\/\//', '', $path);
 
+		$isReading = ($mode === 'r' || $mode === 'rb');
+
+		// ── Branch write checks (CoW + permission) ─────────────
+		// Any write-mode open inside a branch needs permission checking
+		// and CoW symlink breaking before the write can proceed.
+		if (!$isReading && self::$branchRoot && self::isInBranch($realPath)) {
+			$writeCheck = self::checkBranchWrite($realPath);
+			if ($writeCheck !== true) {
+				trigger_error("Branch write denied: $writeCheck", E_USER_WARNING);
+				return false;
+			}
+
+			// ── Config-key enforcement: capture original before write ──
+			// For structured config files (JSON/YAML), save the original
+			// parsed content so stream_close can diff and enforce key-level
+			// permissions after the write completes.
+			if (self::$branchFileTier && self::$branchFileTier !== 'code') {
+				$relPath = self::branchRelPath($realPath);
+				$cfgFormat = self::isConfigFile($relPath);
+				if ($cfgFormat) {
+					self::unwrap();
+					$origContent = file_exists($realPath)
+						? file_get_contents($realPath) : '';
+					self::rewrap();
+					$origParsed = self::parseConfig($origContent, $cfgFormat);
+					if ($origParsed !== null || $origContent === '' || $origContent === false) {
+						$this->configOriginal = is_array($origParsed) ? $origParsed : array();
+						$this->configPath = $realPath;
+						$this->configFormat = $cfgFormat;
+					}
+				}
+			}
+
+			// Break CoW symlink before opening for write
+			self::unwrap();
+			self::cowBreakLink($realPath);
+			self::rewrap();
+		}
+
 		// Only transform PHP files opened for reading (include/require)
-		$shouldTransform = (
-			$mode === 'r' || $mode === 'rb'
-		) && preg_match('/\.php$/i', $realPath)
-		  && Q_WebServer_Compat::isEnabled();
+		$shouldTransform = $isReading
+			&& preg_match('/\.php$/i', $realPath)
+			&& Q_WebServer_Compat::isEnabled();
+
+		// ── Branch credential injection for config files ────────
+		// When reading a file in branch context, check if it contains
+		// {{placeholder}} patterns and inject credential values.
+		// Applies to config-relevant extensions: .php, .env, .json,
+		// .yaml, .yml, .ini, .xml, .conf
+		$shouldInjectCreds = $isReading
+			&& self::$branchRoot
+			&& !empty(self::$branchCredentials)
+			&& self::isInBranch($realPath)
+			&& preg_match('/\.(php|env|json|ya?ml|ini|xml|conf)$/i', $realPath);
 
 		if ($shouldTransform) {
 			// Check in-memory cache — covers both transforms and sentinels.
@@ -2025,14 +2394,33 @@ class Q_WebServer_CompatFileWrapper
 			if ($cached !== null) {
 				if ($cached === false) {
 					// Sentinel: this file doesn't need transforms.
+					if ($shouldInjectCreds) {
+						// Still need to check for credential placeholders
+						self::unwrap();
+						$source = file_get_contents($realPath);
+						self::rewrap();
+						if ($source !== false
+							&& strpos($source, '{{') !== false
+						) {
+							$this->buffer = self::injectCredentials($source);
+							$this->position = 0;
+							$this->transformed = true;
+							$opened_path = $realPath;
+							return true;
+						}
+					}
 					// Open it normally — no tokenization, no transform.
 					self::unwrap();
 					$this->handle = fopen($realPath, $mode);
 					self::rewrap();
 					return $this->handle !== false;
 				}
-				// Cached transform — serve from memory, no disk I/O
-				$this->buffer = $cached;
+				// Cached transform — serve from memory
+				$content = $cached;
+				if ($shouldInjectCreds && strpos($content, '{{') !== false) {
+					$content = self::injectCredentials($content);
+				}
+				$this->buffer = $content;
 				$this->position = 0;
 				$this->transformed = true;
 				$opened_path = $realPath;
@@ -2057,18 +2445,41 @@ class Q_WebServer_CompatFileWrapper
 			if ($source !== false) {
 				$transformed = Q_WebServer_Compat::transformSource($source, $realPath);
 				if ($transformed !== $source) {
-					$this->buffer = $transformed;
+					$content = $transformed;
+					if ($shouldInjectCreds && strpos($content, '{{') !== false) {
+						$content = self::injectCredentials($content);
+					}
+					$this->buffer = $content;
 					$this->position = 0;
 					$this->transformed = true;
 					self::rewrap();
 					$opened_path = $realPath;
 					return true;
 				}
-				// No changes — open the original normally
+				// No PHP changes — but might still need credential injection
+				if ($shouldInjectCreds && strpos($source, '{{') !== false) {
+					$this->buffer = self::injectCredentials($source);
+					$this->position = 0;
+					$this->transformed = true;
+					self::rewrap();
+					$opened_path = $realPath;
+					return true;
+				}
+			}
+		} elseif ($shouldInjectCreds && is_file($realPath)) {
+			// Non-PHP config file in a branch — check for credential placeholders
+			$source = file_get_contents($realPath);
+			if ($source !== false && strpos($source, '{{') !== false) {
+				$this->buffer = self::injectCredentials($source);
+				$this->position = 0;
+				$this->transformed = true;
+				self::rewrap();
+				$opened_path = $realPath;
+				return true;
 			}
 		}
 
-		// Pass through — non-PHP, write mode, or no transforms needed
+		// Pass through — no transforms needed
 		$this->handle = fopen($realPath, $mode);
 		self::rewrap();
 		return $this->handle !== false;
@@ -2087,6 +2498,39 @@ class Q_WebServer_CompatFileWrapper
 	public function stream_write($data)
 	{
 		if ($this->transformed) return 0;
+
+		// Branch write checks: the stream_open() handler already checked
+		// permissions and broke the CoW symlink for write-mode opens.
+		// This guard handles the edge case where a file was opened in
+		// read-write mode (r+, w+, etc.) and stream_open didn't trigger
+		// the write path, or where the handle was obtained before
+		// branch context was set.
+		if (self::$branchRoot && $this->handle) {
+			$meta = stream_get_meta_data($this->handle);
+			$uri = $meta['uri'] ?? '';
+			if ($uri && self::isInBranch($uri)) {
+				$writeCheck = self::checkBranchWrite($uri);
+				if ($writeCheck !== true) {
+					trigger_error("Branch write denied: $writeCheck", E_USER_WARNING);
+					return 0;
+				}
+				// Break CoW symlink if needed (idempotent for real files)
+				if (is_link($uri)) {
+					// Must close handle, break link, reopen
+					$pos = ftell($this->handle);
+					$mode = $meta['mode'] ?? 'r+';
+					self::unwrap();
+					fclose($this->handle);
+					self::cowBreakLink($uri);
+					$this->handle = fopen($uri, $mode);
+					self::rewrap();
+					if ($this->handle && $pos > 0) {
+						fseek($this->handle, $pos);
+					}
+				}
+			}
+		}
+
 		return fwrite($this->handle, $data);
 	}
 
@@ -2132,6 +2576,60 @@ class Q_WebServer_CompatFileWrapper
 			$this->buffer = '';
 			return;
 		}
+
+		// ── Config-key enforcement: verify after write ──────────
+		// If we were tracking config-key changes for this file, read
+		// the final content, diff it, and check key-level permissions.
+		// If denied, restore the original content.
+		if ($this->configPath !== null && $this->handle) {
+			fflush($this->handle);
+			// Read the new content
+			fseek($this->handle, 0);
+			$newContent = stream_get_contents($this->handle);
+			$newParsed = self::parseConfig($newContent, $this->configFormat);
+
+			if ($newParsed !== null) {
+				$changedKeys = Q_WebServer_Branch::diffConfigKeys(
+					$this->configOriginal,
+					$newParsed
+				);
+				if (!empty($changedKeys)) {
+					$preset = self::$branchPreset;
+					$tierConfig = $preset['tierConfig'] ?? array();
+					$check = Q_WebServer_Branch::checkConfigPermission(
+						$changedKeys,
+						self::$branchFileTier,
+						$tierConfig,
+						self::$branchUserConfig
+					);
+					if ($check !== true) {
+						// Denied — restore the original content
+						$origJson = ($this->configFormat === 'json')
+							? json_encode($this->configOriginal,
+								JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+							: '';
+						if ($this->configFormat === 'yaml'
+							&& function_exists('yaml_emit')
+						) {
+							$origJson = yaml_emit($this->configOriginal);
+						}
+						ftruncate($this->handle, 0);
+						fseek($this->handle, 0);
+						if ($origJson !== '') {
+							fwrite($this->handle, $origJson);
+						}
+						trigger_error(
+							"Branch config write denied: $check",
+							E_USER_WARNING
+						);
+					}
+				}
+			}
+			$this->configOriginal = null;
+			$this->configPath = null;
+			$this->configFormat = null;
+		}
+
 		if ($this->handle) fclose($this->handle);
 	}
 
@@ -2240,17 +2738,57 @@ class Q_WebServer_CompatFileWrapper
 
 	public function rename($from, $to)
 	{
+		$realFrom = preg_replace('/^file:\/\//', '', $from);
+		$realTo = preg_replace('/^file:\/\//', '', $to);
+
+		// Branch permission checks on both source and destination
+		if (self::$branchRoot) {
+			if (self::isInBranch($realFrom)) {
+				$check = self::checkBranchWrite($realFrom);
+				if ($check !== true) {
+					trigger_error("Branch rename denied (source): $check", E_USER_WARNING);
+					return false;
+				}
+			}
+			if (self::isInBranch($realTo)) {
+				$check = self::checkBranchWrite($realTo);
+				if ($check !== true) {
+					trigger_error("Branch rename denied (dest): $check", E_USER_WARNING);
+					return false;
+				}
+			}
+			// Break CoW symlinks before rename
+			if (self::isInBranch($realFrom) && is_link($realFrom)) {
+				self::unwrap();
+				self::cowBreakLink($realFrom);
+				self::rewrap();
+			}
+		}
+
 		self::unwrap();
-		$result = rename(preg_replace('/^file:\/\//', '', $from),
-		                 preg_replace('/^file:\/\//', '', $to));
+		$result = rename($realFrom, $realTo);
 		self::rewrap();
 		return $result;
 	}
 
 	public function unlink($path)
 	{
+		$realPath = preg_replace('/^file:\/\//', '', $path);
+
+		// Branch permission check
+		if (self::$branchRoot && self::isInBranch($realPath)) {
+			$check = self::checkBranchWrite($realPath);
+			if ($check !== true) {
+				trigger_error("Branch unlink denied: $check", E_USER_WARNING);
+				return false;
+			}
+			// For symlinks, unlinking just removes the link (not the trunk file),
+			// which is the intended CoW behavior — the branch "deletes" the file
+			// from its view without affecting trunk.
+		}
+
 		self::unwrap();
-		$result = unlink(preg_replace('/^file:\/\//', '', $path));
+		$result = unlink($realPath);
 		self::rewrap();
 		return $result;
 	}

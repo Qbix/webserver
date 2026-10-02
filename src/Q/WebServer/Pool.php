@@ -36,12 +36,17 @@
 class Q_WebServer_Pool
 {
 	public $targetSize;
-	protected $workers = array();       // index => [pid, socket, busy]
+	protected $octane = false;          // persistent workers (true) or fork-per-request (false)
+	protected $maxRequests = 1000;      // voluntary recycle after N requests (octane mode)
+	protected $workers = array();       // index => [pid, socket, busy, branch]
 	protected $workerClients = array(); // index => HTTP client socket
 	protected $workerBuffers = array(); // index => partial response data
 	protected $watchers = array();      // index => Q_Evented watcher id
 	protected $pending = array();       // queued [client, parsed, scriptPath]
+	protected $branchPending = array(); // branch => queued [client, parsed, scriptPath]
 	protected $nextIndex = 0;
+	protected $branchWorkerCounts = array(); // branch => count of workers
+	protected $maxBranchWorkers = 2;    // max persistent workers per branch
 	protected static $inputWrapperRegistered = false;
 
 	/**
@@ -116,7 +121,7 @@ class Q_WebServer_Pool
 	 */
 	static function encodeRequest($parsed, $scriptPath)
 	{
-		$msg = json_encode(array(
+		$payload = array(
 			'method'         => $parsed['method'],
 			'uri'            => $parsed['uri'],
 			'path'           => $parsed['path'],
@@ -129,7 +134,20 @@ class Q_WebServer_Pool
 			'documentRoot'   => Q_WebServer::$rootDir ?? '',
 			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
 			'remoteAddr'     => '127.0.0.1'
-		));
+		);
+		// Pass sandbox config to the worker so it can apply per-app jailing
+		if (Q_WebServer::$currentHostConfig
+			&& !empty(Q_WebServer::$currentHostConfig['sandbox'])
+		) {
+			$payload['_hostConfig'] = Q_WebServer::$currentHostConfig;
+		}
+		// Pass branch metadata so workers can apply credential injection
+		// and write restrictions
+		if (!empty($parsed['_branch'])) {
+			$payload['_branch'] = $parsed['_branch'];
+			$payload['_branchRecord'] = $parsed['_branchRecord'];
+		}
+		$msg = json_encode($payload);
 		return pack('N', strlen($msg)) . $msg;
 	}
 
@@ -159,6 +177,9 @@ class Q_WebServer_Pool
 		);
 		$this->maxRequests = (int) Q_Config::get(
 			'Q', 'webserver', 'maxRequests', 1000
+		);
+		$this->maxBranchWorkers = (int) Q_Config::get(
+			'Q', 'webserver', 'maxBranchWorkers', 2
 		);
 
 		// Source rewriting on in both modes (unless explicitly disabled).
@@ -197,9 +218,10 @@ class Q_WebServer_Pool
 	 * Fork one worker. Child inherits parent's loaded state
 	 * via copy-on-write.
 	 * @method forkWorker
+	 * @param {string|null} $branch  Branch tag (null = trunk worker)
 	 * @return {integer} Worker index
 	 */
-	protected function forkWorker()
+	protected function forkWorker($branch = null)
 	{
 		// STREAM_PF_UNIX doesn't exist on Windows — use INET loopback
 		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
@@ -227,8 +249,13 @@ class Q_WebServer_Pool
 
 		$index = $this->nextIndex++;
 		$this->workers[$index] = array(
-			'pid' => $pid, 'socket' => $sock, 'busy' => false
+			'pid' => $pid, 'socket' => $sock, 'busy' => false,
+			'branch' => $branch
 		);
+		if ($branch !== null) {
+			$this->branchWorkerCounts[$branch]
+				= ($this->branchWorkerCounts[$branch] ?? 0) + 1;
+		}
 
 		$pool = $this;
 		$this->watchers[$index] = Q_Evented::onReadable(
@@ -325,6 +352,35 @@ class Q_WebServer_Pool
 		self::$req = $req;
 		self::$failedRequest = false;
 		self::prepareRequest($req);
+
+		// Apply per-app sandbox (same as executeScript does for the
+		// fork-per-request path).  Must happen after prepareRequest
+		// sets up superglobals but before the script runs.
+		if (class_exists('Q_WebServer_Sandbox', false)
+			&& (!empty($req['_hostConfig']) || !empty($req['_branchRecord']))
+		) {
+			$hostConfig = $req['_hostConfig'] ?? array();
+			$branchRecord = $req['_branchRecord'] ?? null;
+			Q_WebServer_Sandbox::apply(
+				$hostConfig,
+				rtrim($req['documentRoot'] ?? '', DIRECTORY_SEPARATOR),
+				$branchRecord
+			);
+
+			// If sandbox detected a uid mismatch (persistent worker was
+			// already at a different uid), send 503 and signal the loop
+			// to exit so the parent can re-fork a fresh worker.
+			if (Q_WebServer_Sandbox::$uidMismatch) {
+				Q_WebServer_Sandbox::$uidMismatch = false;
+				self::writeMsg(
+					self::$roleSocket, 503,
+					'Worker uid mismatch — retry',
+					array('Retry-After' => '0')
+				);
+				return false; // exit the worker loop
+			}
+		}
+
 		if (is_string(self::$scriptRunner)) {
 			self::$scriptFile = self::$scriptRunner;     // adapter's global-scope handler
 		} elseif (self::$scriptRunner) {
@@ -663,6 +719,30 @@ class Q_WebServer_Pool
 			self::$inputWrapperRegistered = true;
 		}
 
+		// ── Branch context for credential injection and write restrictions ──
+		if (!empty($req['_branch'])
+			&& class_exists('Q_WebServer_CompatFileWrapper', false)
+		) {
+			$branchRecord = $req['_branchRecord'] ?? array();
+			$credentials = $branchRecord['credentials'] ?? array();
+			Q_WebServer_CompatFileWrapper::setBranchContext($branchRecord, $credentials);
+			if (!empty($branchRecord['user'])) {
+				Q_WebServer_CompatFileWrapper::$branchUser = $branchRecord['user'];
+			}
+			if (!empty($branchRecord['fileTier'])) {
+				Q_WebServer_CompatFileWrapper::$branchFileTier = $branchRecord['fileTier'];
+			}
+			if (!empty($branchRecord['preset'])) {
+				Q_WebServer_CompatFileWrapper::$branchPreset = $branchRecord['preset'];
+			}
+			if (!empty($branchRecord['userPaths'])) {
+				Q_WebServer_CompatFileWrapper::$branchUserPaths = $branchRecord['userPaths'];
+			}
+			if (!empty($branchRecord['userConfig'])) {
+				Q_WebServer_CompatFileWrapper::$branchUserConfig = $branchRecord['userConfig'];
+			}
+		}
+
 		// Non-removable buffer: Q_Dispatcher::dispatch() calls ob_end_flush()
 		// which would destroy a normal buffer. Passing flags=0 makes
 		// ob_end_flush()/ob_end_clean() fail on this buffer, so it survives.
@@ -685,6 +765,35 @@ class Q_WebServer_Pool
 	protected static function executeScript($req)
 	{
 		self::prepareRequest($req);
+
+		// Apply per-app sandbox before running application code.
+		// For branch requests, pass the branch record so Sandbox can
+		// use the branch uid for posix_setuid and the branch root for
+		// open_basedir.
+		if (class_exists('Q_WebServer_Sandbox', false)
+			&& (!empty($req['_hostConfig']) || !empty($req['_branchRecord']))
+		) {
+			$hostConfig = $req['_hostConfig'] ?? array();
+			$branchRecord = $req['_branchRecord'] ?? null;
+			Q_WebServer_Sandbox::apply(
+				$hostConfig,
+				rtrim($req['documentRoot'] ?? '', DIRECTORY_SEPARATOR),
+				$branchRecord
+			);
+
+			// If sandbox detected a uid mismatch (persistent worker was
+			// already at a different uid), return 503 so the parent
+			// re-forks a fresh worker for this request.
+			if (Q_WebServer_Sandbox::$uidMismatch) {
+				Q_WebServer_Sandbox::$uidMismatch = false;
+				return array(
+					'status' => 503,
+					'body' => 'Worker uid mismatch — retry',
+					'headers' => array('Retry-After' => '0'),
+				);
+			}
+		}
+
 		$failed = false;
 		try {
 			if (self::$scriptRunner) {
@@ -823,15 +932,50 @@ class Q_WebServer_Pool
 
 	/**
 	 * Send a request to an idle worker. Queues if all busy.
+	 *
+	 * Branch routing (octane mode only):
+	 *   - Trunk requests (no _branch) go to trunk workers (branch tag = null).
+	 *   - Branch requests go to a worker tagged with the same branch.
+	 *   - If no matching idle worker exists and we haven't hit
+	 *     $maxBranchWorkers for that branch, fork a new tagged worker.
+	 *   - Otherwise queue in per-branch pending queue.
+	 *   - In fork-per-request mode, workers are disposable so any idle one works.
 	 */
 	function dispatch($client, $parsed, $scriptPath)
 	{
-		$idle = $this->findIdle();
-		if ($idle === null) {
-			$this->pending[] = array($client, $parsed, $scriptPath);
+		$branch = $parsed['_branch'] ?? null;
+
+		if (!$this->octane || $branch === null) {
+			// Trunk request or fork-per-request mode: use any idle trunk worker
+			$idle = $this->findIdle(null);
+			if ($idle === null) {
+				$this->pending[] = array($client, $parsed, $scriptPath);
+				return;
+			}
+			$this->sendTo($idle, $client, $parsed, $scriptPath);
 			return;
 		}
-		$this->sendTo($idle, $client, $parsed, $scriptPath);
+
+		// Branch request in octane mode: find idle worker tagged to this branch
+		$idle = $this->findIdle($branch);
+		if ($idle !== null) {
+			$this->sendTo($idle, $client, $parsed, $scriptPath);
+			return;
+		}
+
+		// No idle branch worker — can we fork a new one?
+		$count = $this->branchWorkerCounts[$branch] ?? 0;
+		if ($count < $this->maxBranchWorkers) {
+			$newIdx = $this->forkWorker($branch);
+			$this->sendTo($newIdx, $client, $parsed, $scriptPath);
+			return;
+		}
+
+		// At capacity for this branch — queue
+		if (!isset($this->branchPending[$branch])) {
+			$this->branchPending[$branch] = array();
+		}
+		$this->branchPending[$branch][] = array($client, $parsed, $scriptPath);
 	}
 
 	protected function sendTo($index, $client, $parsed, $scriptPath)
@@ -937,9 +1081,26 @@ class Q_WebServer_Pool
 				Q_Evented::cancel($this->watchers[$index]);
 				unset($this->watchers[$index]);
 			}
-			if (!empty($this->pending)) {
-				$next = array_shift($this->pending);
-				$this->dispatch($next[0], $next[1], $next[2]);
+			// Drain the correct pending queue: branch workers serve their
+			// branch queue first, trunk workers serve the trunk queue.
+			$workerBranch = $this->workers[$index]['branch'] ?? null;
+			$drained = false;
+			if ($workerBranch !== null
+				&& !empty($this->branchPending[$workerBranch])
+			) {
+				$next = array_shift($this->branchPending[$workerBranch]);
+				if (empty($this->branchPending[$workerBranch])) {
+					unset($this->branchPending[$workerBranch]);
+				}
+				$this->sendTo($index, $next[0], $next[1], $next[2]);
+				$drained = true;
+			}
+			if (!$drained && !empty($this->pending)) {
+				// Only trunk workers should pick up trunk pending
+				if ($workerBranch === null) {
+					$next = array_shift($this->pending);
+					$this->sendTo($index, $next[0], $next[1], $next[2]);
+				}
 			}
 		} else {
 			$this->recycle($index, false);
@@ -971,7 +1132,9 @@ class Q_WebServer_Pool
 			if (is_resource($c)) @fclose($c);
 		}
 
+		$workerBranch = null;
 		if (isset($this->workers[$index])) {
+			$workerBranch = $this->workers[$index]['branch'] ?? null;
 			$sock = $this->workers[$index]['socket'];
 			if (is_resource($sock)) @fclose($sock);
 			Q_WebServer_Fork::waitpid($this->workers[$index]["pid"], $st, 1);
@@ -979,13 +1142,37 @@ class Q_WebServer_Pool
 		unset($this->workers[$index], $this->workerClients[$index],
 			$this->workerBuffers[$index], $this->workerRequestHeaders[$index]);
 
-		// Immediately fork replacement
-		$newIdx = $this->forkWorker();
+		// Track branch worker count
+		if ($workerBranch !== null) {
+			if (isset($this->branchWorkerCounts[$workerBranch])) {
+				$this->branchWorkerCounts[$workerBranch]--;
+				if ($this->branchWorkerCounts[$workerBranch] <= 0) {
+					unset($this->branchWorkerCounts[$workerBranch]);
+				}
+			}
+		}
 
-		// Drain pending queue
-		if (!empty($this->pending)) {
-			$next = array_shift($this->pending);
-			$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+		if ($workerBranch !== null) {
+			// Branch worker died — check if there are pending branch requests
+			if (!empty($this->branchPending[$workerBranch])) {
+				$newIdx = $this->forkWorker($workerBranch);
+				$next = array_shift($this->branchPending[$workerBranch]);
+				if (empty($this->branchPending[$workerBranch])) {
+					unset($this->branchPending[$workerBranch]);
+				}
+				$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+			}
+			// Don't fork a replacement branch worker if no pending —
+			// branch workers are on-demand, not maintained at a target size
+		} else {
+			// Trunk worker — always maintain the target pool size
+			$newIdx = $this->forkWorker(null);
+
+			// Drain trunk pending queue
+			if (!empty($this->pending)) {
+				$next = array_shift($this->pending);
+				$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+			}
 		}
 	}
 
@@ -1002,10 +1189,15 @@ class Q_WebServer_Pool
 		Q_WebServer_Headers::processResponse($client, $resp, $reqHeaders);
 	}
 
-	protected function findIdle()
+	/**
+	 * Find an idle worker matching the given branch tag.
+	 * @param {string|null} $branch  null = trunk workers only
+	 * @return {integer|null} Worker index, or null if none idle
+	 */
+	protected function findIdle($branch = null)
 	{
 		foreach ($this->workers as $i => $w) {
-			if (!$w['busy']) return $i;
+			if (!$w['busy'] && ($w['branch'] ?? null) === $branch) return $i;
 		}
 		return null;
 	}
@@ -1037,8 +1229,11 @@ class Q_WebServer_Pool
 	{
 		$immediate = 0;
 		$pending = 0;
-		foreach ($this->workers as $i => $w) {
-			if ($w['busy']) {
+		// Collect indices first — recycle() modifies $this->workers
+		$indices = array_keys($this->workers);
+		foreach ($indices as $i) {
+			if (!isset($this->workers[$i])) continue;
+			if ($this->workers[$i]['busy']) {
 				$this->workers[$i]['recycleAfter'] = true;
 				$pending++;
 			} else {
@@ -1060,18 +1255,27 @@ class Q_WebServer_Pool
 				'index' => $i,
 				'pid' => $w['pid'],
 				'busy' => $w['busy'],
+				'branch' => $w['branch'] ?? null,
 				'requests' => $w['requests'] ?? 0,
 				'recycleAfter' => !empty($w['recycleAfter']),
 			];
+		}
+		$branchPendingTotal = 0;
+		foreach ($this->branchPending as $q) {
+			$branchPendingTotal += count($q);
 		}
 		return [
 			'workers' => $stats,
 			'total' => count($this->workers),
 			'busy' => count(array_filter($this->workers, function($w) { return $w['busy']; })),
 			'idle' => count(array_filter($this->workers, function($w) { return !$w['busy']; })),
+			'trunkWorkers' => count(array_filter($this->workers, function($w) { return ($w['branch'] ?? null) === null; })),
+			'branchWorkers' => $this->branchWorkerCounts,
+			'maxBranchWorkers' => $this->maxBranchWorkers,
 			'maxRequests' => $this->maxRequests,
 			'mode' => $this->octane ? 'persistent' : 'fork-per-request',
 			'pending' => count($this->pending),
+			'branchPending' => $branchPendingTotal,
 		];
 	}
 
@@ -1149,6 +1353,7 @@ class Q_WebServer_Pool
 			$stats[] = array(
 				'pid' => $pid,
 				'busy' => $w['busy'],
+				'branch' => $w['branch'] ?? null,
 				'rssKb' => $rssKb,
 			);
 		}

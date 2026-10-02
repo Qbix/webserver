@@ -1,0 +1,3136 @@
+<?php
+/**
+ * Q_WebServer_Branch — branch management for collaborative development.
+ *
+ * A branch is a copy-on-write clone of a running app: its own filesystem
+ * tree (symlinks to trunk, real copies for changes), its own database,
+ * and its own injected credentials. Multiple people can work on a branch
+ * independently, with changes merged back to the original when ready.
+ *
+ * State is stored in a JSON file (default: data/branches.json) that the
+ * parent process reads and updates. Branch workers never write to it.
+ *
+ * When the Qbix Platform is loaded, delegates to Q_Utils::symlink() and
+ * Q_Utils::rmdir() for cross-platform filesystem operations. Falls back
+ * to native PHP calls when running standalone.
+ *
+ * NOTE: This is app-level branching (the entire document root). The
+ * Platform's Q_Branch class handles content-level branching (stream
+ * uploads, file stores) and uses a ~store sibling pattern. The two are
+ * complementary: Q_Branch forks content within a branch, while this class
+ * forks the app around it.
+ *
+ * @class Q_WebServer_Branch
+ * @static
+ */
+class Q_WebServer_Branch
+{
+	/**
+	 * The currently active branch name for this request, or null for trunk.
+	 * Set during resolve() in handleRequest().
+	 * @property $current
+	 * @type string|null
+	 * @static
+	 */
+	static $current = null;
+
+	/**
+	 * The full branch record for the current request, or null.
+	 * @property $currentRecord
+	 * @type array|null
+	 * @static
+	 */
+	static $currentRecord = null;
+
+	/**
+	 * The authenticated user's identity for the current request.
+	 * Set during auth check. Used for permission lookups.
+	 * @property $currentUser
+	 * @type string|null
+	 * @static
+	 */
+	static $currentUser = null;
+
+	/**
+	 * Loaded branch state. Cached after first read.
+	 * @property $state
+	 * @type array|null
+	 * @static
+	 */
+	static $state = null;
+
+	/**
+	 * Path to the state file.
+	 * @property $stateFile
+	 * @type string|null
+	 * @static
+	 */
+	private static $stateFile = null;
+
+	/**
+	 * File permission tiers — each is a superset of the previous.
+	 * Maps tier name to the set of extensions allowed at that tier.
+	 * @property $tiers
+	 * @type array
+	 * @static
+	 */
+	static $tiers = array(
+		'styles' => array(
+			'css', 'scss', 'less', 'sass',
+		),
+		'markup' => array(
+			'css', 'scss', 'less', 'sass',
+			'html', 'htm', 'svg', 'md', 'txt',
+			'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'bmp',
+			'woff', 'woff2', 'ttf', 'otf', 'eot',
+			'json', 'xml', 'yaml', 'yml', 'toml',
+		),
+		'frontend' => array(
+			'css', 'scss', 'less', 'sass',
+			'html', 'htm', 'svg', 'md', 'txt',
+			'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'bmp',
+			'woff', 'woff2', 'ttf', 'otf', 'eot',
+			'json', 'xml', 'yaml', 'yml', 'toml',
+			'js', 'ts', 'jsx', 'tsx', 'vue', 'svelte', 'mjs', 'cjs',
+		),
+		'code' => null, // null means all extensions allowed
+	);
+
+	/**
+	 * Tier hierarchy for comparison: higher number = more permissive.
+	 * @property $tierLevel
+	 * @type array
+	 * @static
+	 */
+	static $tierLevel = array(
+		'styles' => 0,
+		'markup' => 1,
+		'frontend' => 2,
+		'code' => 3,
+	);
+
+	/**
+	 * Known API key prefixes that definitively identify a secret value.
+	 * @property $secretPrefixes
+	 * @type array
+	 * @static
+	 */
+	static $secretPrefixes = array(
+		'sk_live_', 'sk_test_', 'pk_live_', 'pk_test_',  // Stripe
+		'rk_live_', 'rk_test_',                           // Stripe restricted
+		'whsec_',                                          // Stripe webhook
+		'AKIA',                                            // AWS
+		'ghp_', 'gho_', 'ghs_', 'github_pat_',           // GitHub
+		'xoxb-', 'xoxp-', 'xapp-',                       // Slack
+		'SG.',                                             // SendGrid
+		'sk-',                                             // OpenAI
+		'glpat-',                                          // GitLab
+	);
+
+	/**
+	 * Key name substrings that indicate the value is likely a credential.
+	 * @property $secretKeywords
+	 * @type array
+	 * @static
+	 */
+	static $secretKeywords = array(
+		'password', 'secret', 'token', 'auth',
+		'credential', 'apikey', 'api_key', 'passphrase',
+		'private_key', 'privatekey', 'access_key', 'accesskey',
+	);
+
+	// ─── Default lockdown ──────────────────────────────────────────
+
+	/**
+	 * Get the default lockdown configuration for new branches.
+	 *
+	 * Reads Q.webserver.branches.defaults from config and merges it
+	 * over built-in safe defaults. The result controls:
+	 *
+	 *   fileTier    — default file permission tier for regular users
+	 *   sandbox     — sandbox config applied to all branch workers
+	 *   denyPaths   — glob patterns always denied even if tier allows
+	 *   preset      — framework preset name (auto-detected from app if null)
+	 *
+	 * Admins can relax these per-branch via the access list, the
+	 * branch sandbox config, or per-user path/config overrides.
+	 *
+	 * @method getDefaults
+	 * @static
+	 * @param {string|null} $appHost  If given, merge app-specific defaults
+	 * @return {array}
+	 */
+	static function getDefaults($appHost = null)
+	{
+		// Built-in safe defaults — locked down
+		$defaults = array(
+			'fileTier' => 'markup',      // no JS/PHP by default
+			'sandbox' => array(
+				'allowShell' => false,   // no shell access
+				'allowPaths' => array(), // no extra filesystem access
+			),
+			'denyPaths' => array(
+				'.env', '.env.*',          // environment files
+				'**/.git/**',              // git internals
+				'**/node_modules/**',      // vendor code
+				'**/vendor/**',
+				'**/.ssh/**',
+				'**/.gnupg/**',
+			),
+		);
+
+		// Merge config overrides: Q.webserver.branches.defaults
+		$configDefaults = Q_Config::get(
+			'Q', 'webserver', 'branches', 'defaults', array()
+		);
+		if ($configDefaults) {
+			if (isset($configDefaults['fileTier'])
+				&& isset(self::$tierLevel[$configDefaults['fileTier']])
+			) {
+				$defaults['fileTier'] = $configDefaults['fileTier'];
+			}
+			if (isset($configDefaults['sandbox'])) {
+				$defaults['sandbox'] = array_merge(
+					$defaults['sandbox'], $configDefaults['sandbox']
+				);
+			}
+			if (isset($configDefaults['denyPaths'])) {
+				$defaults['denyPaths'] = array_merge(
+					$defaults['denyPaths'], $configDefaults['denyPaths']
+				);
+			}
+			if (isset($configDefaults['preset'])) {
+				$defaults['preset'] = $configDefaults['preset'];
+			}
+		}
+
+		// Merge per-app overrides from config
+		if ($appHost) {
+			$appDefaults = Q_Config::get(
+				'Q', 'webserver', 'hosts', $appHost, 'branches', 'defaults',
+				null
+			);
+			if (!$appDefaults) {
+				$appDefaults = Q_Config::get(
+					'Q', 'webserver', 'domains', $appHost, 'branches', 'defaults',
+					null
+				);
+			}
+			if (is_array($appDefaults)) {
+				$defaults = self::mergeDefaults($defaults, $appDefaults);
+			}
+
+			// Also check state file for admin-set per-app defaults
+			if (!self::$state) self::loadState();
+			$stateDefaults = self::$state['_defaults/' . $appHost] ?? null;
+			if (is_array($stateDefaults)) {
+				$defaults = self::mergeDefaults($defaults, $stateDefaults);
+			}
+		}
+
+		return $defaults;
+	}
+
+	/**
+	 * Merge override defaults over base defaults.
+	 * @method mergeDefaults
+	 * @static
+	 * @private
+	 */
+	private static function mergeDefaults($base, $overrides)
+	{
+		if (isset($overrides['fileTier'])
+			&& isset(self::$tierLevel[$overrides['fileTier']])
+		) {
+			$base['fileTier'] = $overrides['fileTier'];
+		}
+		if (isset($overrides['sandbox'])) {
+			$base['sandbox'] = array_merge(
+				$base['sandbox'], $overrides['sandbox']
+			);
+		}
+		if (isset($overrides['denyPaths'])) {
+			$base['denyPaths'] = array_merge(
+				$base['denyPaths'], $overrides['denyPaths']
+			);
+		}
+		if (isset($overrides['preset'])) {
+			$base['preset'] = $overrides['preset'];
+		}
+		return $base;
+	}
+
+	/**
+	 * Check whether a path matches any of the default deny patterns.
+	 * Used by apiPush and the stream wrapper to enforce lockdown even
+	 * when the file extension tier would allow the file.
+	 *
+	 * @method isDeniedByDefault
+	 * @static
+	 * @param {string} $relPath  Relative file path
+	 * @param {array} $denyPaths  Glob patterns from getDefaults()
+	 * @return {boolean}
+	 */
+	static function isDeniedByDefault($relPath, $denyPaths = null)
+	{
+		if ($denyPaths === null) {
+			$defaults = self::getDefaults();
+			$denyPaths = $defaults['denyPaths'];
+		}
+		foreach ($denyPaths as $pattern) {
+			if (self::globMatch($relPath, $pattern)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// ─── State file management ──────────────────────────────────────
+
+	/**
+	 * Initialize the branch system. Call once at server startup.
+	 * @method init
+	 * @static
+	 */
+	static function init()
+	{
+		self::$stateFile = Q_Config::get(
+			'Q', 'webserver', 'branches', 'stateFile',
+			'data/branches.json'
+		);
+		// Resolve relative to the server's working directory
+		if (self::$stateFile[0] !== '/') {
+			self::$stateFile = getcwd() . '/' . self::$stateFile;
+		}
+		self::loadState();
+	}
+
+	/**
+	 * Load branch state from the state file.
+	 * @method loadState
+	 * @static
+	 */
+	static function loadState()
+	{
+		if (!self::$stateFile) {
+			self::$state = self::emptyState();
+			return;
+		}
+		if (is_file(self::$stateFile)) {
+			$json = file_get_contents(self::$stateFile);
+			$data = json_decode($json, true);
+			if (is_array($data)) {
+				self::$state = $data;
+				return;
+			}
+		}
+		self::$state = self::emptyState();
+	}
+
+	/**
+	 * Save the current state to the state file.
+	 * @method saveState
+	 * @static
+	 * @return {boolean}
+	 */
+	static function saveState()
+	{
+		if (!self::$stateFile) return false;
+		$dir = dirname(self::$stateFile);
+		if (!is_dir($dir)) {
+			@mkdir($dir, 0755, true);
+		}
+		$json = json_encode(self::$state,
+			JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+		);
+		$tmp = self::$stateFile . '.tmp.' . getmypid();
+		if (file_put_contents($tmp, $json . "\n") === false) {
+			return false;
+		}
+		return rename($tmp, self::$stateFile);
+	}
+
+	/**
+	 * @method emptyState
+	 * @static
+	 * @private
+	 */
+	private static function emptyState()
+	{
+		$uidBase = (int) Q_Config::get(
+			'Q', 'webserver', 'sandbox', 'uidBase', 60000
+		);
+		return array(
+			'uidNext' => $uidBase,
+			'uidMap' => array(),
+			'branches' => array(),
+		);
+	}
+
+	// ─── Branch CRUD ────────────────────────────────────────────────
+
+	/**
+	 * Create a new branch of an app.
+	 *
+	 * @method create
+	 * @static
+	 * @param {string} $appHost  The app's virtual host (e.g. "myapp.example.com")
+	 * @param {string} $branchName  Branch name (alphanumeric + hyphens)
+	 * @param {array} $options  Optional settings:
+	 *   - createdBy: username of the creator
+	 *   - access: initial access list
+	 *   - sandbox: per-branch sandbox overrides
+	 * @return {array|string} Branch record on success, error string on failure
+	 */
+	static function create($appHost, $branchName, $options = array())
+	{
+		if (!self::$state) self::loadState();
+
+		// Validate branch name
+		if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$/', $branchName)
+			&& !preg_match('/^[a-zA-Z0-9]$/', $branchName)
+		) {
+			return 'Invalid branch name: must be 1-64 alphanumeric characters, hyphens, or underscores';
+		}
+
+		$branchKey = $appHost . '/' . $branchName;
+		if (isset(self::$state['branches'][$branchKey])) {
+			return 'Branch already exists: ' . $branchKey;
+		}
+
+		// Find the app's host config and document root
+		$hostConfig = Q_Config::get('Q', 'webserver', 'hosts', $appHost, null);
+		if (!$hostConfig) {
+			$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $appHost, null);
+		}
+		if (!$hostConfig || empty($hostConfig['root'])) {
+			return 'App host not found or has no root: ' . $appHost;
+		}
+		$appRoot = realpath($hostConfig['root']);
+		if (!$appRoot || !is_dir($appRoot)) {
+			return 'App root directory not found: ' . $hostConfig['root'];
+		}
+
+		// Determine branch storage directory
+		$branchesDir = Q_Config::get(
+			'Q', 'webserver', 'branches', 'dir',
+			'data/branches'
+		);
+		if ($branchesDir[0] !== '/') {
+			$branchesDir = getcwd() . '/' . $branchesDir;
+		}
+
+		$safeHost = preg_replace('/[^a-zA-Z0-9._-]/', '_', $appHost);
+		$branchRoot = $branchesDir . '/' . $safeHost . '/' . $branchName;
+
+		if (is_dir($branchRoot)) {
+			return 'Branch directory already exists: ' . $branchRoot;
+		}
+
+		// Create the CoW directory tree
+		$cowResult = self::createCoW($appRoot, $branchRoot);
+		if (is_string($cowResult)) {
+			return $cowResult; // error message
+		}
+
+		// Assign a UID for OS-level isolation
+		$uid = self::assignUid($branchKey);
+
+		// Set file ownership so the branch worker (running as $uid) owns
+		// its CoW root but cannot modify trunk files.  Trunk files keep
+		// their existing ownership (typically root or the app uid); the
+		// branch worker reads them through symlinks.
+		if (Q_WebServer_Sandbox::$canSetuid && $uid > 0) {
+			self::chownBranchRoot($branchRoot, $uid);
+
+			// Also assign a trunk uid for this app if it doesn't have one.
+			// The trunk uid is used for chown on trunk files to prevent
+			// branch workers from modifying them.
+			$trunkKey = $appHost . '/_trunk';
+			$trunkUid = self::assignUid($trunkKey);
+			$sandbox = $hostConfig['sandbox'] ?? array();
+			// Explicit sandbox.uid overrides the auto-assigned trunk uid
+			if (!empty($sandbox['uid'])) {
+				$trunkUid = (int) $sandbox['uid'];
+				self::$state['uidMap'][$trunkKey] = $trunkUid;
+			}
+			self::chownTrunkFiles($appRoot, $trunkUid);
+		}
+
+		// Clone the database (if configured)
+		$dbInfo = self::cloneDatabase($appHost, $hostConfig, $branchName);
+
+		// Apply default lockdown. The defaults set the floor —
+		// explicit options can only RELAX restrictions for specific
+		// users, never weaken the base sandbox.
+		$defaults = self::getDefaults($appHost);
+
+		// Merge sandbox: explicit options override defaults per-key,
+		// but the base deny/sandbox is always present
+		$sandbox = array_merge(
+			$defaults['sandbox'],
+			$options['sandbox'] ?? array()
+		);
+
+		// Build access: start with defaults, overlay explicit entries
+		$access = $options['access'] ?? array();
+
+		// Store the default deny paths in the branch record so they
+		// can be enforced at push/write time
+		$denyPaths = $defaults['denyPaths'];
+		if (!empty($options['denyPaths'])) {
+			$denyPaths = array_unique(array_merge(
+				$denyPaths, $options['denyPaths']
+			));
+		}
+
+		// Build the branch record
+		$record = array(
+			'uid' => $uid,
+			'root' => $branchRoot,
+			'appRoot' => $appRoot,
+			'appHost' => $appHost,
+			'db' => $dbInfo,
+			'created' => gmdate('Y-m-d\TH:i:s\Z'),
+			'createdBy' => $options['createdBy'] ?? null,
+			'access' => $access,
+			'sandbox' => $sandbox,
+			'denyPaths' => $denyPaths,
+			'defaultFileTier' => $defaults['fileTier'],
+		);
+
+		self::$state['branches'][$branchKey] = $record;
+		self::saveState();
+		clearstatcache();
+
+		return $record;
+	}
+
+	/**
+	 * Delete a branch and clean up its resources.
+	 *
+	 * @method delete
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @return {boolean|string} True on success, error string on failure
+	 */
+	static function delete($appHost, $branchName)
+	{
+		if (!self::$state) self::loadState();
+
+		$branchKey = $appHost . '/' . $branchName;
+		if (!isset(self::$state['branches'][$branchKey])) {
+			return 'Branch not found: ' . $branchKey;
+		}
+
+		$record = self::$state['branches'][$branchKey];
+
+		// Remove the CoW directory
+		if (!empty($record['root']) && is_dir($record['root'])) {
+			self::removeDir($record['root']);
+		}
+
+		// Drop the cloned database
+		if (!empty($record['db']) && !empty($record['db']['name'])) {
+			self::dropDatabase($record['db']);
+		}
+
+		// Release the UID
+		if (isset(self::$state['uidMap'][$branchKey])) {
+			unset(self::$state['uidMap'][$branchKey]);
+		}
+
+		unset(self::$state['branches'][$branchKey]);
+		self::saveState();
+
+		return true;
+	}
+
+	/**
+	 * List all branches of an app, or all branches if no app specified.
+	 *
+	 * @method listBranches
+	 * @static
+	 * @param {string|null} $appHost  Filter by app host, or null for all
+	 * @return {array} Map of branchKey => branch record
+	 */
+	static function listBranches($appHost = null)
+	{
+		if (!self::$state) self::loadState();
+
+		if ($appHost === null) {
+			return self::$state['branches'] ?? array();
+		}
+
+		$prefix = $appHost . '/';
+		$result = array();
+		foreach (self::$state['branches'] as $key => $record) {
+			if (strpos($key, $prefix) === 0) {
+				$result[$key] = $record;
+			}
+		}
+		return $result;
+	}
+
+	/**
+	 * Get a single branch record.
+	 *
+	 * @method get
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @return {array|null}
+	 */
+	static function get($appHost, $branchName)
+	{
+		if (!self::$state) self::loadState();
+		$branchKey = $appHost . '/' . $branchName;
+		return self::$state['branches'][$branchKey] ?? null;
+	}
+
+	/**
+	 * Update a branch record (access list, sandbox overrides, etc.).
+	 *
+	 * @method update
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @param {array} $updates  Fields to merge into the branch record
+	 * @return {boolean|string}
+	 */
+	static function update($appHost, $branchName, $updates)
+	{
+		if (!self::$state) self::loadState();
+		$branchKey = $appHost . '/' . $branchName;
+		if (!isset(self::$state['branches'][$branchKey])) {
+			return 'Branch not found: ' . $branchKey;
+		}
+		foreach ($updates as $k => $v) {
+			// Don't allow overwriting structural fields
+			if (in_array($k, array('uid', 'root', 'appRoot', 'appHost', 'created'), true)) {
+				continue;
+			}
+			self::$state['branches'][$branchKey][$k] = $v;
+		}
+		self::saveState();
+		return true;
+	}
+
+	/**
+	 * Merge a branch's changes into trunk by copying modified files
+	 * from the branch CoW directory back to the app root, and removing
+	 * files from trunk that were deleted in the branch.
+	 *
+	 * @method merge
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @return {array|string} Merge result with counts, or error string
+	 */
+	static function merge($appHost, $branchName)
+	{
+		if (!self::$state) self::loadState();
+
+		$branchKey = $appHost . '/' . $branchName;
+		if (!isset(self::$state['branches'][$branchKey])) {
+			return 'Branch not found: ' . $branchKey;
+		}
+
+		$record = self::$state['branches'][$branchKey];
+		$branchRoot = $record['root'];
+		$trunkRoot = $record['appRoot'];
+
+		if (!is_dir($branchRoot) || !is_dir($trunkRoot)) {
+			return 'Branch or trunk directory missing';
+		}
+
+		$changes = self::diff($branchRoot, $trunkRoot);
+		$copied = 0;
+		$removed = 0;
+		$errors = array();
+
+		// Copy added and changed files from branch to trunk
+		foreach (array_merge($changes['added'], $changes['changed']) as $rel) {
+			$src = $branchRoot . '/' . $rel;
+			$dst = $trunkRoot . '/' . $rel;
+			$dstDir = dirname($dst);
+			if (!is_dir($dstDir)) {
+				@mkdir($dstDir, 0755, true);
+			}
+			if (copy($src, $dst)) {
+				$copied++;
+			} else {
+				$errors[] = 'Failed to copy: ' . $rel;
+			}
+		}
+
+		// Remove files from trunk that were deleted in branch
+		foreach ($changes['removed'] as $rel) {
+			$dst = $trunkRoot . '/' . $rel;
+			if (file_exists($dst)) {
+				if (unlink($dst)) {
+					$removed++;
+				} else {
+					$errors[] = 'Failed to remove: ' . $rel;
+				}
+			}
+		}
+
+		// Clear merge requests for this branch
+		if (!empty(self::$state['branches'][$branchKey]['mergeRequests'])) {
+			self::$state['branches'][$branchKey]['mergeRequests'] = array();
+			self::saveState();
+		}
+
+		return array(
+			'added' => count($changes['added']),
+			'changed' => count($changes['changed']),
+			'removed' => count($changes['removed']),
+			'copied' => $copied,
+			'deleted' => $removed,
+			'errors' => $errors,
+		);
+	}
+
+	/**
+	 * Switch production to a branch by swapping symlinks.
+	 *
+	 * Creates a backup of the current trunk, then copies the branch
+	 * files into trunk. This is a code-level switch; databases are
+	 * separate.
+	 *
+	 * @method switchProduction
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @return {array|string} Result or error string
+	 */
+	static function switchProduction($appHost, $branchName)
+	{
+		if (!self::$state) self::loadState();
+
+		$branchKey = $appHost . '/' . $branchName;
+		if (!isset(self::$state['branches'][$branchKey])) {
+			return 'Branch not found: ' . $branchKey;
+		}
+
+		$record = self::$state['branches'][$branchKey];
+		$branchRoot = $record['root'];
+		$trunkRoot = $record['appRoot'];
+
+		if (!is_dir($branchRoot) || !is_dir($trunkRoot)) {
+			return 'Branch or trunk directory missing';
+		}
+
+		// First merge the branch into trunk
+		$mergeResult = self::merge($appHost, $branchName);
+		if (is_string($mergeResult)) {
+			return $mergeResult;
+		}
+
+		return array(
+			'merged' => $mergeResult,
+			'production' => $branchName,
+			'switchedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+		);
+	}
+
+	/**
+	 * Get the database clone configuration for an app.
+	 *
+	 * @method getDbConfig
+	 * @static
+	 * @param {string} $appHost
+	 * @return {array} Configuration with cloneDb, defaultCloneDb
+	 */
+	static function getDbConfig($appHost)
+	{
+		if (!self::$state) self::loadState();
+
+		$stateConfig = self::$state['dbConfig'][$appHost] ?? null;
+		$defaultDb = Q_Config::get(
+			'Q', 'webserver', 'branches', 'cloneDb', 'default', null
+		);
+
+		return array(
+			'appHost' => $appHost,
+			'cloneDb' => $stateConfig ? ($stateConfig['cloneDb'] ?? null) : null,
+			'defaultCloneDb' => $defaultDb,
+		);
+	}
+
+	/**
+	 * Set the database clone configuration for an app.
+	 *
+	 * @method setDbConfig
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $cloneDb  Database name to clone for new branches
+	 * @param {string|null} $updatedBy  Username of who made the change
+	 * @return {boolean}
+	 */
+	static function setDbConfig($appHost, $cloneDb, $updatedBy = null)
+	{
+		if (!self::$state) self::loadState();
+
+		if (!isset(self::$state['dbConfig'])) {
+			self::$state['dbConfig'] = array();
+		}
+		self::$state['dbConfig'][$appHost] = array(
+			'cloneDb' => $cloneDb,
+			'updatedBy' => $updatedBy,
+			'updatedAt' => time(),
+		);
+		self::saveState();
+		return true;
+	}
+
+	// ─── Branch resolution (routing) ────────────────────────────────
+
+	/**
+	 * Resolve a request to a branch.
+	 *
+	 * Checks subdomain first, then X-Q-Branch header, then _q_branch cookie.
+	 * If a branch is found, sets self::$current and self::$currentRecord.
+	 *
+	 * @method resolve
+	 * @static
+	 * @param {string} $host  The Host header value (lowercase, port stripped)
+	 * @param {array} $headers  All request headers
+	 * @param {array} $cookies  Parsed cookies
+	 * @return {array|null} Branch record if resolved, null for trunk
+	 */
+	static function resolve($host, $headers = array(), $cookies = array())
+	{
+		if (!self::$state) self::loadState();
+
+		self::$current = null;
+		self::$currentRecord = null;
+
+		// 1. Check if this host IS a known app host — serve trunk
+		$directConfig = Q_Config::get('Q', 'webserver', 'hosts', $host, null);
+		if (!$directConfig) {
+			$directConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+		}
+
+		// 2. Check subdomain routing: branch-name.app-host
+		if (!$directConfig) {
+			$dot = strpos($host, '.');
+			if ($dot !== false) {
+				$subdomain = substr($host, 0, $dot);
+				$parentHost = substr($host, $dot + 1);
+
+				// Check if parentHost is a known app
+				$parentConfig = Q_Config::get('Q', 'webserver', 'hosts', $parentHost, null);
+				if (!$parentConfig) {
+					$parentConfig = Q_Config::get('Q', 'webserver', 'domains', $parentHost, null);
+				}
+
+				if ($parentConfig) {
+					$branchKey = $parentHost . '/' . $subdomain;
+					if (isset(self::$state['branches'][$branchKey])) {
+						self::$current = $subdomain;
+						self::$currentRecord = self::$state['branches'][$branchKey];
+						return self::$currentRecord;
+					}
+				}
+			}
+		}
+
+		// 3. Check X-Q-Branch header
+		$branchHeader = $headers['x-q-branch'] ?? null;
+		if ($branchHeader) {
+			$appHost = $directConfig ? $host : null;
+			if ($appHost) {
+				$branchKey = $appHost . '/' . $branchHeader;
+				if (isset(self::$state['branches'][$branchKey])) {
+					self::$current = $branchHeader;
+					self::$currentRecord = self::$state['branches'][$branchKey];
+					return self::$currentRecord;
+				}
+			}
+		}
+
+		// 4. Check _q_branch cookie
+		$branchCookie = $cookies['_q_branch'] ?? null;
+		if ($branchCookie) {
+			$appHost = $directConfig ? $host : null;
+			if ($appHost) {
+				$branchKey = $appHost . '/' . $branchCookie;
+				if (isset(self::$state['branches'][$branchKey])) {
+					self::$current = $branchCookie;
+					self::$currentRecord = self::$state['branches'][$branchKey];
+					return self::$currentRecord;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Reset branch state between requests (for persistent workers).
+	 * @method reset
+	 * @static
+	 */
+	static function reset()
+	{
+		self::$current = null;
+		self::$currentRecord = null;
+		self::$currentUser = null;
+	}
+
+	// ─── Access control ─────────────────────────────────────────────
+
+	/**
+	 * Check a user's branch permission (view/edit/admin).
+	 *
+	 * @method getBranchPermission
+	 * @static
+	 * @param {array} $branchRecord  The branch record
+	 * @param {string} $user  Username
+	 * @return {string|null} "view", "edit", "admin", or null (no access)
+	 */
+	static function getBranchPermission($branchRecord, $user)
+	{
+		$access = $branchRecord['access'] ?? array();
+
+		// Check user-specific entry first
+		$entry = $access[$user] ?? ($access['*'] ?? null);
+
+		if ($entry === null) return null;
+
+		if (is_string($entry)) {
+			// Short form: "view", "admin", "edit", "edit:markup", etc.
+			if ($entry === 'view' || $entry === 'admin') return $entry;
+			if ($entry === 'edit') return 'edit';
+			if (strpos($entry, 'edit:') === 0) return 'edit';
+			return null;
+		}
+
+		if (is_array($entry)) {
+			return $entry['branch'] ?? null;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Check a user's file permission tier.
+	 *
+	 * @method getFileTier
+	 * @static
+	 * @param {array} $branchRecord  The branch record
+	 * @param {string} $user  Username
+	 * @return {string} "styles", "markup", "frontend", "code"
+	 */
+	static function getFileTier($branchRecord, $user)
+	{
+		$access = $branchRecord['access'] ?? array();
+		$entry = $access[$user] ?? ($access['*'] ?? null);
+
+		// Default tier from branch defaults (safe floor)
+		$defaultTier = $branchRecord['defaultFileTier'] ?? 'styles';
+
+		if ($entry === null) return $defaultTier;
+
+		if (is_string($entry)) {
+			if ($entry === 'admin') return 'code';
+			if ($entry === 'view') return 'styles';
+			if (strpos($entry, 'edit:') === 0) {
+				$tier = substr($entry, 5);
+				return isset(self::$tierLevel[$tier]) ? $tier : $defaultTier;
+			}
+			return $defaultTier; // "edit" without tier defaults to branch default
+		}
+
+		if (is_array($entry)) {
+			$tier = $entry['files'] ?? $defaultTier;
+			if (($entry['branch'] ?? null) === 'admin') return 'code';
+			return isset(self::$tierLevel[$tier]) ? $tier : $defaultTier;
+		}
+
+		return $defaultTier;
+	}
+
+	/**
+	 * Get per-user path overrides from the access entry.
+	 *
+	 * @method getUserPathOverrides
+	 * @static
+	 * @param {array} $branchRecord
+	 * @param {string} $user
+	 * @return {array} Array with 'allow' and 'deny' glob arrays
+	 */
+	static function getUserPathOverrides($branchRecord, $user)
+	{
+		$access = $branchRecord['access'] ?? array();
+		$entry = $access[$user] ?? ($access['*'] ?? null);
+
+		if (!is_array($entry)) return array('allow' => array(), 'deny' => array());
+
+		$paths = $entry['paths'] ?? array();
+		return array(
+			'allow' => $paths['allow'] ?? array(),
+			'deny' => $paths['deny'] ?? array(),
+		);
+	}
+
+	/**
+	 * Get per-user config key overrides from the access entry.
+	 *
+	 * @method getUserConfigOverrides
+	 * @static
+	 * @param {array} $branchRecord
+	 * @param {string} $user
+	 * @return {array} Array with 'allow' and 'deny' config path arrays
+	 */
+	static function getUserConfigOverrides($branchRecord, $user)
+	{
+		$access = $branchRecord['access'] ?? array();
+		$entry = $access[$user] ?? ($access['*'] ?? null);
+
+		if (!is_array($entry)) return array('allow' => array(), 'deny' => array());
+
+		$config = $entry['config'] ?? array();
+		return array(
+			'allow' => $config['allow'] ?? array(),
+			'deny' => $config['deny'] ?? array(),
+		);
+	}
+
+	/**
+	 * Check whether a file write is permitted for the current user.
+	 *
+	 * Evaluates: extension tier → preset tierPaths → user overrides → default.
+	 *
+	 * @method checkFilePermission
+	 * @static
+	 * @param {string} $filePath  Path relative to branch root
+	 * @param {string} $userTier  The user's file permission tier
+	 * @param {array} $preset  The framework preset (with tierPaths, templatePaths)
+	 * @param {array} $userPaths  Per-user path overrides (allow/deny arrays)
+	 * @return {boolean|string} True if allowed, error message string if denied
+	 */
+	static function checkFilePermission($filePath, $userTier, $preset = array(), $userPaths = array())
+	{
+		// Admin (code tier) bypasses all file checks
+		if ($userTier === 'code') {
+			// Even code tier respects explicit denials from preset
+			$presetDeny = $preset['tierPaths']['code']['deny'] ?? array();
+			foreach ($presetDeny as $pattern) {
+				if (self::globMatch($filePath, $pattern)) {
+					return "Path denied by preset: $pattern";
+				}
+			}
+			return true;
+		}
+
+		$ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+
+		// Check if the extension requires a higher tier
+		$requiredTier = self::extensionTier($ext, $filePath, $preset);
+		if ($requiredTier !== null) {
+			$required = self::$tierLevel[$requiredTier] ?? 0;
+			$has = self::$tierLevel[$userTier] ?? 0;
+			if ($required > $has) {
+				return "File type .$ext requires '$requiredTier' permission (you have '$userTier')";
+			}
+		}
+
+		// Check preset tierPaths deny
+		$presetDeny = $preset['tierPaths'][$userTier]['deny'] ?? array();
+		$presetAllow = $preset['tierPaths'][$userTier]['allow'] ?? array();
+		$userDeny = $userPaths['deny'] ?? array();
+		$userAllow = $userPaths['allow'] ?? array();
+
+		// Evaluation order:
+		// 1. Preset deny
+		$presetDenied = false;
+		foreach ($presetDeny as $pattern) {
+			if (self::globMatch($filePath, $pattern)) {
+				$presetDenied = true;
+				break;
+			}
+		}
+
+		// 2. User deny (always wins)
+		foreach ($userDeny as $pattern) {
+			if (self::globMatch($filePath, $pattern)) {
+				return "Path denied by user override: $pattern";
+			}
+		}
+
+		// 3. User allow (can override preset deny)
+		if ($presetDenied) {
+			$userAllowed = false;
+			foreach ($userAllow as $pattern) {
+				if (self::globMatch($filePath, $pattern)) {
+					$userAllowed = true;
+					break;
+				}
+			}
+			if (!$userAllowed) {
+				// 4. Check preset allow
+				foreach ($presetAllow as $pattern) {
+					if (self::globMatch($filePath, $pattern)) {
+						$presetDenied = false;
+						break;
+					}
+				}
+			} else {
+				$presetDenied = false;
+			}
+		}
+
+		if ($presetDenied) {
+			return "Path denied by preset for tier '$userTier'";
+		}
+
+		return true;
+	}
+
+	/**
+	 * Check whether config key changes are permitted.
+	 *
+	 * @method checkConfigPermission
+	 * @static
+	 * @param {array} $changedKeys  List of dot-notation config paths that changed
+	 * @param {string} $userTier
+	 * @param {array} $tierConfig  Preset's tierConfig for this tier
+	 * @param {array} $userConfig  Per-user config overrides (allow/deny)
+	 * @return {boolean|string} True if all changes allowed, error message if denied
+	 */
+	static function checkConfigPermission($changedKeys, $userTier, $tierConfig = array(), $userConfig = array())
+	{
+		if ($userTier === 'code') return true;
+
+		$tierAllow = $tierConfig[$userTier]['allow'] ?? array();
+		$tierDeny = $tierConfig[$userTier]['deny'] ?? array();
+		$userAllow = $userConfig['allow'] ?? array();
+		$userDeny = $userConfig['deny'] ?? array();
+
+		$denied = array();
+		foreach ($changedKeys as $key) {
+			// User deny always wins
+			if (self::configPathMatches($key, $userDeny)) {
+				$denied[] = $key;
+				continue;
+			}
+			// User allow overrides tier deny
+			if (self::configPathMatches($key, $userAllow)) {
+				continue;
+			}
+			// Tier deny
+			if (self::configPathMatches($key, $tierDeny)) {
+				$denied[] = $key;
+				continue;
+			}
+			// Tier allow
+			if (!empty($tierAllow) && !self::configPathMatches($key, $tierAllow)) {
+				// If tierAllow is specified, anything NOT in it is denied
+				$denied[] = $key;
+				continue;
+			}
+		}
+
+		if (!empty($denied)) {
+			return "Config keys denied for tier '$userTier': " . implode(', ', $denied);
+		}
+		return true;
+	}
+
+	/**
+	 * Diff two parsed config trees and return the list of changed dot-notation paths.
+	 *
+	 * @method diffConfigKeys
+	 * @static
+	 * @param {array} $original
+	 * @param {array} $modified
+	 * @param {string} $prefix  Internal recursion prefix
+	 * @return {array} List of dot-notation paths that changed
+	 */
+	static function diffConfigKeys($original, $modified, $prefix = '')
+	{
+		$changed = array();
+		$allKeys = array_unique(array_merge(
+			array_keys($original),
+			array_keys($modified)
+		));
+		foreach ($allKeys as $key) {
+			$path = $prefix === '' ? $key : $prefix . '.' . $key;
+			$oldVal = $original[$key] ?? null;
+			$newVal = $modified[$key] ?? null;
+
+			if ($oldVal === $newVal) continue;
+
+			if (is_array($oldVal) && is_array($newVal)) {
+				// Recurse into sub-trees
+				$changed = array_merge($changed, self::diffConfigKeys($oldVal, $newVal, $path));
+			} else {
+				$changed[] = $path;
+			}
+		}
+		return $changed;
+	}
+
+	// ─── Credential detection ───────────────────────────────────────
+
+	/**
+	 * Check whether a config key name and/or value looks like a credential.
+	 *
+	 * Returns one of: "key-listed", "key-name", "value-prefix", "entropy", or false.
+	 *
+	 * @method looksLikeCredential
+	 * @static
+	 * @param {string} $keyName  The config key name (last segment or full path)
+	 * @param {string} $value  The string value
+	 * @param {array} $sensitiveKeys  Preset's list of known-sensitive key paths
+	 * @return {string|false} Detection layer name, or false
+	 */
+	static function looksLikeCredential($keyName, $value, $sensitiveKeys = array())
+	{
+		if (!is_string($value) || $value === '') return false;
+
+		// Layer 1: config-key matching (preset sensitive paths)
+		foreach ($sensitiveKeys as $pattern) {
+			if (self::configPathMatches($keyName, array($pattern))) {
+				return 'key-listed';
+			}
+		}
+
+		// Layer 2: key-name heuristic
+		$lowerKey = strtolower($keyName);
+		// Get just the last segment for nested keys
+		$parts = explode('.', $lowerKey);
+		$lastSegment = end($parts);
+		// Also check the full flattened key
+		$flatKey = str_replace(array('.', '_', '-'), '', $lowerKey);
+		$flatLast = str_replace(array('.', '_', '-'), '', $lastSegment);
+
+		foreach (self::$secretKeywords as $keyword) {
+			$flatKeyword = str_replace('_', '', $keyword);
+			if (strpos($flatKey, $flatKeyword) !== false
+				|| strpos($flatLast, $flatKeyword) !== false
+			) {
+				return 'key-name';
+			}
+		}
+
+		// Layer 3: value prefix matching
+		foreach (self::$secretPrefixes as $prefix) {
+			if (strpos($value, $prefix) === 0) {
+				return 'value-prefix';
+			}
+		}
+
+		// Layer 4: entropy heuristic (flagging only)
+		if (strlen($value) >= 20 && strpos($value, ' ') === false) {
+			$entropy = self::shannonEntropy($value);
+			if ($entropy > 4.0) {
+				// Additional check: looks like base64/hex/url-safe
+				if (preg_match('/^[A-Za-z0-9+\/=_\-.:]+$/', $value)) {
+					return 'entropy';
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Calculate Shannon entropy of a string in bits per character.
+	 *
+	 * @method shannonEntropy
+	 * @static
+	 * @param {string} $str
+	 * @return {float}
+	 */
+	static function shannonEntropy($str)
+	{
+		$len = strlen($str);
+		if ($len === 0) return 0.0;
+
+		$freq = array();
+		for ($i = 0; $i < $len; $i++) {
+			$c = $str[$i];
+			$freq[$c] = ($freq[$c] ?? 0) + 1;
+		}
+
+		$entropy = 0.0;
+		foreach ($freq as $count) {
+			$p = $count / $len;
+			$entropy -= $p * log($p, 2);
+		}
+		return $entropy;
+	}
+
+	/**
+	 * Scrub credentials from a parsed config array.
+	 * Returns the scrubbed array and a manifest of what was replaced.
+	 *
+	 * @method scrubCredentials
+	 * @static
+	 * @param {array} $config  Parsed config tree
+	 * @param {array} $sensitiveKeys  Preset's sensitive key paths
+	 * @param {string} $prefix  Internal recursion prefix
+	 * @return {array} ['config' => scrubbed array, 'placeholders' => [...], 'flagged' => [...]]
+	 */
+	static function scrubCredentials($config, $sensitiveKeys = array(), $prefix = '')
+	{
+		$placeholders = array();
+		$flagged = array();
+		$result = array();
+
+		foreach ($config as $key => $value) {
+			$path = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+
+			if (is_array($value)) {
+				$sub = self::scrubCredentials($value, $sensitiveKeys, $path);
+				$result[$key] = $sub['config'];
+				$placeholders = array_merge($placeholders, $sub['placeholders']);
+				$flagged = array_merge($flagged, $sub['flagged']);
+			} elseif (is_string($value)) {
+				$detection = self::looksLikeCredential($path, $value, $sensitiveKeys);
+				if ($detection && $detection !== 'entropy') {
+					$placeholder = '{{' . $path . '}}';
+					$result[$key] = $placeholder;
+					$placeholders[] = array(
+						'key' => $path,
+						'placeholder' => $placeholder,
+						'detection' => $detection,
+					);
+				} elseif ($detection === 'entropy') {
+					$result[$key] = $value; // keep original
+					$flagged[] = array(
+						'key' => $path,
+						'reason' => 'High entropy value — possible credential',
+					);
+				} else {
+					$result[$key] = $value;
+				}
+			} else {
+				$result[$key] = $value;
+			}
+		}
+
+		return array(
+			'config' => $result,
+			'placeholders' => $placeholders,
+			'flagged' => $flagged,
+		);
+	}
+
+	// ─── Copy-on-Write directory ────────────────────────────────────
+
+	/**
+	 * Directories to symlink wholesale at the top level rather than recursing.
+	 * These are large, don't need per-file branching, and contain nothing
+	 * a branch collaborator would edit.
+	 * @property $skipDirs
+	 * @type array
+	 * @static
+	 */
+	static $skipDirs = array('.git', 'node_modules', 'vendor');
+
+	/**
+	 * Create a CoW directory tree: symlinks to all trunk files,
+	 * real directories for the structure.
+	 *
+	 * This is app-level branching — the trunk stays in place and the branch
+	 * gets symlinks pointing directly at trunk files. Editing a file in the
+	 * branch breaks its symlink and creates a real copy (done by the stream
+	 * wrapper in Compat.php). Trunk is never modified.
+	 *
+	 * Compare with Q_Branch::fork(), which moves real files into a ~store
+	 * and replaces both source and fork with symlinks. That pattern is
+	 * correct for content-level branching but would break a live app root.
+	 *
+	 * @method createCoW
+	 * @static
+	 * @param {string} $source  Trunk directory (absolute path)
+	 * @param {string} $dest  Branch directory to create (absolute path)
+	 * @return {boolean|string} True on success, error string on failure
+	 */
+	static function createCoW($source, $dest)
+	{
+		$source = rtrim($source, '/');
+		$dest = rtrim($dest, '/');
+
+		if (!is_dir($source)) {
+			return "Source directory not found: $source";
+		}
+
+		if (!@mkdir($dest, 0755, true)) {
+			return "Cannot create branch directory: $dest";
+		}
+
+		return self::cowRecursive($source, $dest, $source);
+	}
+
+	/**
+	 * Recursively create CoW symlinks.
+	 * @method cowRecursive
+	 * @static
+	 * @private
+	 */
+	private static function cowRecursive($sourceDir, $destDir, $sourceRoot)
+	{
+		$entries = @scandir($sourceDir);
+		if ($entries === false) {
+			return "Cannot read directory: $sourceDir";
+		}
+
+		foreach ($entries as $entry) {
+			if ($entry === '.' || $entry === '..') continue;
+
+			$sourcePath = $sourceDir . '/' . $entry;
+			$destPath = $destDir . '/' . $entry;
+
+			if (is_dir($sourcePath) && !is_link($sourcePath)) {
+				if (in_array($entry, self::$skipDirs, true)
+					&& $sourceDir === $sourceRoot
+				) {
+					self::makeSymlink($sourcePath, $destPath);
+					continue;
+				}
+				@mkdir($destPath, 0755, true);
+				$result = self::cowRecursive($sourcePath, $destPath, $sourceRoot);
+				if (is_string($result)) return $result;
+			} else {
+				self::makeSymlink($sourcePath, $destPath);
+			}
+		}
+
+		return true;
+	}
+
+	// ─── Database cloning ───────────────────────────────────────────
+
+	/**
+	 * Clone the app's database for a branch.
+	 *
+	 * @method cloneDatabase
+	 * @static
+	 * @param {string} $appHost
+	 * @param {array} $hostConfig
+	 * @param {string} $branchName
+	 * @return {array|null} Database info array, or null if no cloning configured
+	 */
+	static function cloneDatabase($appHost, $hostConfig, $branchName)
+	{
+		$branchDbConfig = Q_Config::get('Q', 'webserver', 'branches', 'db', null);
+		if (!$branchDbConfig) {
+			return null;
+		}
+
+		$adapter = $branchDbConfig['adapter'] ?? 'sqlite';
+		$preset = Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'preset', null);
+
+		// Try to detect the source database name from the app's config
+		$sourceDb = self::detectSourceDatabase($hostConfig, $preset);
+		if (!$sourceDb) return null;
+
+		$safeHost = preg_replace('/[^a-zA-Z0-9]/', '_', $appHost);
+		$safeBranch = preg_replace('/[^a-zA-Z0-9]/', '_', $branchName);
+		$targetDb = $safeHost . '_' . $safeBranch;
+
+		switch ($adapter) {
+			case 'sqlite':
+				return self::cloneSqlite($sourceDb, $targetDb, $branchName);
+
+			case 'mysql':
+				return self::cloneMysql($sourceDb, $targetDb, $branchDbConfig);
+
+			case 'postgres':
+			case 'pgsql':
+				return self::clonePostgres($sourceDb, $targetDb, $branchDbConfig);
+
+			default:
+				error_log("Q_WebServer_Branch: unsupported db adapter: $adapter");
+				return null;
+		}
+	}
+
+	/**
+	 * Detect the source database name from the app's config files.
+	 * @method detectSourceDatabase
+	 * @static
+	 * @private
+	 */
+	private static function detectSourceDatabase($hostConfig, $preset)
+	{
+		// Check if the host config specifies a database name explicitly
+		$configuredDb = $hostConfig['db']['name'] ?? null;
+		if ($configuredDb) return $configuredDb;
+
+		$root = $hostConfig['root'] ?? '';
+		if (!$root) {
+			return null;
+		}
+		$root = rtrim($root, '/');
+
+		// For SQLite, find the database file
+		if (class_exists('Q_WebServer_Database', false)) {
+			$sqliteFile = Q_WebServer_Database::findSeed($root);
+			if ($sqliteFile) return $sqliteFile;
+		} else {
+			// Fallback: look for common SQLite file patterns
+			$sqliteGlob = glob("$root/*.sqlite");
+			foreach ($sqliteGlob ?: array() as $f) {
+				clearstatcache(true, $f);
+				$ft = @filetype($f);
+				if ($ft === 'file' || $ft === 'link') return $f;
+			}
+			foreach (glob("$root/database/*.sqlite") ?: array() as $f) {
+				clearstatcache(true, $f);
+				$ft = @filetype($f);
+				if ($ft === 'file' || $ft === 'link') return $f;
+			}
+		}
+
+		// For MySQL/Postgres, try to read the config
+		// This is framework-dependent and handled by presets
+		// For now, return null and let the admin configure it
+		return null;
+	}
+
+	/**
+	 * Clone an SQLite database file.
+	 * @method cloneSqlite
+	 * @static
+	 * @private
+	 */
+	private static function cloneSqlite($sourceFile, $targetName, $branchName)
+	{
+		// Use lstat instead of is_file — stat() returns stale results
+		// on overlay/container filesystems even after clearstatcache()
+		$st = @lstat($sourceFile);
+		if (!$st || ($st['mode'] & 0100000) === 0) {
+			error_log("Q_WebServer_Branch: SQLite source not found: $sourceFile");
+			return null;
+		}
+
+		$targetDir = dirname($sourceFile);
+		$targetFile = $targetDir . '/branch_' . $branchName . '.sqlite';
+
+		if (!copy($sourceFile, $targetFile)) {
+			error_log("Q_WebServer_Branch: failed to copy SQLite: $sourceFile → $targetFile");
+			return null;
+		}
+
+		return array(
+			'adapter' => 'sqlite',
+			'name' => $targetFile,
+			'sourceFile' => $sourceFile,
+		);
+	}
+
+	/**
+	 * Clone a MySQL database using mysqldump.
+	 * @method cloneMysql
+	 * @static
+	 * @private
+	 */
+	private static function cloneMysql($sourceDb, $targetDb, $dbConfig)
+	{
+		$host = $dbConfig['host'] ?? 'localhost';
+		$user = $dbConfig['user'] ?? 'root';
+		$pass = $dbConfig['password'] ?? '';
+
+		$passArg = $pass !== '' ? '-p' . escapeshellarg($pass) : '';
+		$hostArg = escapeshellarg($host);
+		$userArg = escapeshellarg($user);
+		$sourceArg = escapeshellarg($sourceDb);
+		$targetArg = escapeshellarg($targetDb);
+
+		// Create target database
+		$cmd = "mysql -h $hostArg -u $userArg $passArg -e "
+			. escapeshellarg("CREATE DATABASE IF NOT EXISTS $targetDb");
+		exec($cmd, $output, $exitCode);
+		if ($exitCode !== 0) {
+			error_log("Q_WebServer_Branch: failed to create MySQL database: $targetDb");
+			return null;
+		}
+
+		// Dump and restore
+		$cmd = "mysqldump --single-transaction -h $hostArg -u $userArg $passArg $sourceArg"
+			. " | mysql -h $hostArg -u $userArg $passArg $targetArg";
+		exec($cmd, $output, $exitCode);
+		if ($exitCode !== 0) {
+			error_log("Q_WebServer_Branch: mysqldump failed for $sourceDb → $targetDb");
+			return null;
+		}
+
+		return array(
+			'adapter' => 'mysql',
+			'name' => $targetDb,
+			'host' => $host,
+			'sourceDb' => $sourceDb,
+		);
+	}
+
+	/**
+	 * Clone a PostgreSQL database using CREATE DATABASE ... TEMPLATE.
+	 * @method clonePostgres
+	 * @static
+	 * @private
+	 */
+	private static function clonePostgres($sourceDb, $targetDb, $dbConfig)
+	{
+		$host = $dbConfig['host'] ?? 'localhost';
+		$user = $dbConfig['user'] ?? 'postgres';
+		$pass = $dbConfig['password'] ?? '';
+		$port = $dbConfig['port'] ?? '5432';
+
+		$env = $pass !== '' ? "PGPASSWORD=" . escapeshellarg($pass) . " " : "";
+		$cmd = "{$env}psql -h " . escapeshellarg($host)
+			. " -p " . escapeshellarg($port)
+			. " -U " . escapeshellarg($user)
+			. " -c " . escapeshellarg(
+				"CREATE DATABASE \"$targetDb\" TEMPLATE \"$sourceDb\""
+			);
+		exec($cmd, $output, $exitCode);
+		if ($exitCode !== 0) {
+			error_log("Q_WebServer_Branch: failed to clone Postgres: $sourceDb → $targetDb");
+			return null;
+		}
+
+		return array(
+			'adapter' => 'postgres',
+			'name' => $targetDb,
+			'host' => $host,
+			'port' => $port,
+			'sourceDb' => $sourceDb,
+		);
+	}
+
+	/**
+	 * Drop a cloned database.
+	 * @method dropDatabase
+	 * @static
+	 * @private
+	 */
+	private static function dropDatabase($dbInfo)
+	{
+		$adapter = $dbInfo['adapter'] ?? '';
+		switch ($adapter) {
+			case 'sqlite':
+				if (!empty($dbInfo['name']) && is_file($dbInfo['name'])) {
+					@unlink($dbInfo['name']);
+				}
+				break;
+
+			case 'mysql':
+				$cfg = Q_Config::get('Q', 'webserver', 'branches', 'db', array());
+				$host = $cfg['host'] ?? 'localhost';
+				$user = $cfg['user'] ?? 'root';
+				$pass = $cfg['password'] ?? '';
+				$passArg = $pass !== '' ? '-p' . escapeshellarg($pass) : '';
+				$cmd = "mysql -h " . escapeshellarg($host)
+					. " -u " . escapeshellarg($user) . " $passArg"
+					. " -e " . escapeshellarg("DROP DATABASE IF EXISTS " . $dbInfo['name']);
+				exec($cmd);
+				break;
+
+			case 'postgres':
+				$cfg = Q_Config::get('Q', 'webserver', 'branches', 'db', array());
+				$host = $cfg['host'] ?? 'localhost';
+				$user = $cfg['user'] ?? 'postgres';
+				$pass = $cfg['password'] ?? '';
+				$port = $cfg['port'] ?? '5432';
+				$env = $pass !== '' ? "PGPASSWORD=" . escapeshellarg($pass) . " " : "";
+				$cmd = "{$env}psql -h " . escapeshellarg($host)
+					. " -p " . escapeshellarg($port)
+					. " -U " . escapeshellarg($user)
+					. " -c " . escapeshellarg("DROP DATABASE IF EXISTS \"" . $dbInfo['name'] . "\"");
+				exec($cmd);
+				break;
+		}
+	}
+
+	// ─── UID management ─────────────────────────────────────────────
+
+	/**
+	 * Assign or retrieve a UID for a branch.
+	 * @method assignUid
+	 * @static
+	 * @private
+	 */
+	private static function assignUid($branchKey)
+	{
+		if (isset(self::$state['uidMap'][$branchKey])) {
+			return self::$state['uidMap'][$branchKey];
+		}
+
+		$uidBase = (int) Q_Config::get(
+			'Q', 'webserver', 'sandbox', 'uidBase', 60000
+		);
+		$uidRange = (int) Q_Config::get(
+			'Q', 'webserver', 'sandbox', 'uidRange', 5000
+		);
+		$uid = self::$state['uidNext'] ?? $uidBase;
+
+		// Check that we haven't exhausted the range
+		if ($uid >= $uidBase + $uidRange) {
+			error_log("Q_WebServer_Branch: UID range exhausted "
+				. "(base=$uidBase, range=$uidRange, next=$uid). "
+				. "Increase Q.webserver.sandbox.uidRange.");
+			// Return the uid anyway — better to overlap than to fail
+			// to create a branch entirely.  Admin should expand range.
+		}
+
+		self::$state['uidMap'][$branchKey] = $uid;
+		self::$state['uidNext'] = $uid + 1;
+
+		return $uid;
+	}
+
+	// ─── File ownership helpers ────────────────────────────────────
+
+	/**
+	 * Set ownership of the branch CoW root to the branch uid.
+	 * This ensures files created by the branch worker are owned by
+	 * the branch uid, and other branch workers cannot modify them.
+	 *
+	 * Only the top-level directory and its immediate real directories
+	 * are chowned.  Symlinks (pointing at trunk files) are not chowned
+	 * because lchown would change the link itself, not the target,
+	 * and the branch uid should not own trunk files.
+	 *
+	 * @method chownBranchRoot
+	 * @static
+	 * @private
+	 * @param {string} $branchRoot  Absolute path to the branch CoW root
+	 * @param {int} $uid  The branch uid
+	 */
+	private static function chownBranchRoot($branchRoot, $uid)
+	{
+		@chown($branchRoot, $uid);
+		@chgrp($branchRoot, $uid);
+		// Restrict so only the branch's own UID can access (0750).
+		// Group access allowed so the server process can still read
+		// when it needs to (e.g. for merge operations).
+		@chmod($branchRoot, 0750);
+
+		// Recurse into real directories (not symlinks) and chown them
+		// so the branch worker can create files inside.
+		self::chownDirsRecursive($branchRoot, $uid);
+	}
+
+	/**
+	 * Recursively chown real directories (not symlinks) under $dir.
+	 * @method chownDirsRecursive
+	 * @static
+	 * @private
+	 */
+	private static function chownDirsRecursive($dir, $uid)
+	{
+		$entries = @scandir($dir);
+		if ($entries === false) return;
+
+		foreach ($entries as $entry) {
+			if ($entry === '.' || $entry === '..') continue;
+			$path = $dir . '/' . $entry;
+			if (is_dir($path) && !is_link($path)) {
+				@chown($path, $uid);
+				@chgrp($path, $uid);
+				self::chownDirsRecursive($path, $uid);
+			}
+			// Symlinks are left alone — they point at trunk files
+			// which keep trunk ownership.
+		}
+	}
+
+	/**
+	 * Set ownership of trunk files to the trunk uid.
+	 *
+	 * This is called once when the first branch is created, to ensure
+	 * that trunk files are owned by the trunk uid (not root).  Branch
+	 * workers running under their own uid can read these files (mode 0644)
+	 * but cannot write to them, giving kernel-enforced immutability of
+	 * trunk content from the branch worker's perspective.
+	 *
+	 * Only runs when the server has setuid capability (running as root).
+	 *
+	 * @method chownTrunkFiles
+	 * @static
+	 * @private
+	 * @param {string} $appRoot  Absolute path to the app's root directory
+	 * @param {int} $trunkUid  The trunk app's assigned uid
+	 */
+	private static function chownTrunkFiles($appRoot, $trunkUid)
+	{
+		// Check if already owned by the trunk uid (avoid unnecessary work)
+		$stat = @stat($appRoot);
+		if ($stat && $stat['uid'] === $trunkUid) {
+			return; // Already owned by trunk uid
+		}
+
+		// Recursively chown the app root to the trunk uid.
+		// Use a subprocess for efficiency on large trees.
+		$cmd = 'chown -R ' . (int)$trunkUid . ':' . (int)$trunkUid
+			. ' ' . escapeshellarg($appRoot) . ' 2>&1';
+		$output = array();
+		$ret = 0;
+		exec($cmd, $output, $ret);
+		if ($ret !== 0) {
+			error_log("Q_WebServer_Branch: chown trunk files failed: "
+				. implode("\n", $output));
+		}
+
+		// Ensure files are world-readable (mode 0644 for files, 0755
+		// for directories) so branch workers can read through symlinks.
+		$cmd = 'chmod -R a+rX ' . escapeshellarg($appRoot) . ' 2>&1';
+		exec($cmd, $output, $ret);
+		if ($ret !== 0) {
+			error_log("Q_WebServer_Branch: chmod trunk files failed: "
+				. implode("\n", $output));
+		}
+	}
+
+	// ─── Platform-compatible filesystem helpers ────────────────────
+
+	/**
+	 * Create a symlink, delegating to Q_Utils::symlink() when the
+	 * Platform is loaded for cross-platform support (Windows mklink).
+	 *
+	 * @method makeSymlink
+	 * @static
+	 * @param {string} $target  What the symlink points to
+	 * @param {string} $link  Where to place the symlink
+	 * @param {boolean} [$skipIfExists=false]
+	 */
+	static function makeSymlink($target, $link, $skipIfExists = false)
+	{
+		if (class_exists('Q_Utils', false)
+			&& method_exists('Q_Utils', 'symlink')
+		) {
+			Q_Utils::symlink($target, $link, $skipIfExists);
+			return;
+		}
+		// Standalone fallback
+		if (is_link($link)) {
+			if ($skipIfExists) return;
+			unlink($link);
+		}
+		$dir = dirname($link);
+		if (!is_dir($dir)) {
+			@mkdir($dir, 0777, true);
+		}
+		@symlink($target, $link);
+	}
+
+	/**
+	 * Recursively remove a directory and all its contents.
+	 * Delegates to Q_Utils::rmdir() when the Platform is loaded.
+	 * Handles symlinks (removes the link, not the target).
+	 *
+	 * @method removeDir
+	 * @static
+	 * @param {string} $dir
+	 * @return {boolean}
+	 */
+	static function removeDir($dir)
+	{
+		if (class_exists('Q_Utils', false)
+			&& method_exists('Q_Utils', 'rmdir')
+		) {
+			return Q_Utils::rmdir($dir);
+		}
+		// Standalone fallback
+		if (!file_exists($dir) && !is_link($dir)) return true;
+		if (!is_dir($dir) || is_link($dir)) return unlink($dir);
+
+		$entries = scandir($dir);
+		foreach ($entries as $entry) {
+			if ($entry === '.' || $entry === '..') continue;
+			$path = $dir . '/' . $entry;
+			if (is_link($path)) {
+				unlink($path);
+			} elseif (is_dir($path)) {
+				self::removeDir($path);
+			} else {
+				unlink($path);
+			}
+		}
+		return rmdir($dir);
+	}
+
+	/**
+	 * Copy a directory recursively. Delegates to Q_Utils::cp()
+	 * when the Platform is loaded.
+	 *
+	 * @method copyDir
+	 * @static
+	 * @param {string} $src
+	 * @param {string} $dest
+	 * @return {boolean}
+	 */
+	static function copyDir($src, $dest)
+	{
+		if (class_exists('Q_Utils', false)
+			&& method_exists('Q_Utils', 'cp')
+		) {
+			return Q_Utils::cp($src, $dest);
+		}
+		// Standalone fallback
+		if (is_file($src)) return copy($src, $dest);
+		if (!is_dir($src)) return false;
+		@mkdir($dest, 0755, true);
+		foreach (scandir($src) as $entry) {
+			if ($entry === '.' || $entry === '..') continue;
+			if (is_dir($src . '/' . $entry)) {
+				self::copyDir($src . '/' . $entry, $dest . '/' . $entry);
+			} else {
+				copy($src . '/' . $entry, $dest . '/' . $entry);
+			}
+		}
+		return true;
+	}
+
+	// ─── Utilities ──────────────────────────────────────────────────
+
+	/**
+	 * Determine which permission tier an extension requires.
+	 *
+	 * @method extensionTier
+	 * @static
+	 * @param {string} $ext  Lowercase file extension
+	 * @param {string} $filePath  Full relative path (for template detection)
+	 * @param {array} $preset  Framework preset
+	 * @return {string|null} Required tier, or null if extension not recognized
+	 */
+	static function extensionTier($ext, $filePath = '', $preset = array())
+	{
+		// PHP files: check templatePaths first
+		if ($ext === 'php' || $ext === 'phtml') {
+			$templatePaths = $preset['templatePaths'] ?? array();
+			foreach ($templatePaths as $pattern) {
+				if (self::globMatch($filePath, $pattern)) {
+					return 'markup';
+				}
+			}
+			return 'code';
+		}
+
+		// Check each tier from most restrictive to least
+		foreach (array('styles', 'markup', 'frontend') as $tier) {
+			$exts = self::$tiers[$tier];
+			if ($exts !== null && in_array($ext, $exts, true)) {
+				return $tier;
+			}
+		}
+
+		// Unknown extensions default to code tier
+		return 'code';
+	}
+
+	/**
+	 * Simple glob matching supporting * and ** patterns.
+	 *
+	 * @method globMatch
+	 * @static
+	 * @param {string} $path  Path to test
+	 * @param {string} $pattern  Glob pattern
+	 * @return {boolean}
+	 */
+	static function globMatch($path, $pattern)
+	{
+		// Normalize separators
+		$path = str_replace('\\', '/', $path);
+		$pattern = str_replace('\\', '/', $pattern);
+
+		// Remove leading slashes for consistency
+		$path = ltrim($path, '/');
+		$pattern = ltrim($pattern, '/');
+
+		// Convert glob pattern to regex
+		$regex = '';
+		$len = strlen($pattern);
+		for ($i = 0; $i < $len; $i++) {
+			$c = $pattern[$i];
+			if ($c === '*') {
+				if ($i + 1 < $len && $pattern[$i + 1] === '*') {
+					// ** matches any path including separators
+					$i++;
+					if ($i + 1 < $len && $pattern[$i + 1] === '/') {
+						$i++; // consume the trailing /
+						$regex .= '(?:.+/)?';
+					} else {
+						$regex .= '.*';
+					}
+				} else {
+					// * matches anything except /
+					$regex .= '[^/]*';
+				}
+			} elseif ($c === '?') {
+				$regex .= '[^/]';
+			} elseif ($c === '.') {
+				$regex .= '\\.';
+			} else {
+				$regex .= preg_quote($c, '#');
+			}
+		}
+
+		return (bool) preg_match('#^' . $regex . '$#', $path);
+	}
+
+	/**
+	 * Check if a dot-notation config path matches any pattern in a list.
+	 * Pattern "Q.theme" matches "Q.theme" and "Q.theme.colors" (anything under it).
+	 *
+	 * @method configPathMatches
+	 * @static
+	 * @param {string} $path  Dot-notation config path
+	 * @param {array} $patterns  List of dot-notation patterns
+	 * @return {boolean}
+	 */
+	static function configPathMatches($path, $patterns)
+	{
+		foreach ($patterns as $pattern) {
+			if ($path === $pattern) return true;
+			// Pattern is a prefix: Q.theme matches Q.theme.colors
+			if (strpos($path, $pattern . '.') === 0) return true;
+			// Wildcard at end: Q.database.* matches Q.database.host
+			if (substr($pattern, -2) === '.*') {
+				$base = substr($pattern, 0, -2);
+				if ($path === $base || strpos($path, $base . '.') === 0) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	// ─── Framework presets for file permissions ─────────────────────
+
+	/**
+	 * Return the file-permission preset for a framework.
+	 *
+	 * Each preset declares:
+	 *  - tierPaths: per-tier deny/allow path globs
+	 *  - templatePaths: globs identifying PHP files that count as markup
+	 *  - configFormat: "json", "yaml", or null (PHP-based config)
+	 *  - configFiles: globs identifying config files for key-level gating
+	 *  - tierConfig: per-tier allow/deny config key paths
+	 *
+	 * @method getFrameworkPreset
+	 * @static
+	 * @param {string} $presetName  Framework name (laravel, wordpress, etc.)
+	 * @return {array} Preset array, or empty array if unknown
+	 */
+	static function getFrameworkPreset($presetName)
+	{
+		$presets = array(
+			'laravel' => array(
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('.env', 'config/**', 'storage/**', 'bootstrap/**'),
+					),
+					'markup' => array(
+						'deny' => array('.env', 'config/database.php', 'config/app.php', 'bootstrap/**'),
+					),
+					'frontend' => array(
+						'deny' => array('.env', 'config/database.php'),
+					),
+					'code' => array(
+						'deny' => array('.env'),
+					),
+				),
+				'templatePaths' => array(
+					'resources/views/**/*.blade.php',
+				),
+				'configFormat' => null, // PHP arrays
+				'configFiles' => array(),
+				'tierConfig' => array(),
+				'sensitiveKeys' => array(
+					'DB_PASSWORD', 'DB_USERNAME', 'DB_HOST', 'DB_DATABASE',
+					'APP_KEY', '*_SECRET', 'MAIL_PASSWORD', 'REDIS_PASSWORD',
+					'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+					'PUSHER_APP_SECRET', 'STRIPE_SECRET',
+				),
+			),
+			'symfony' => array(
+				'sensitiveKeys' => array(
+					'doctrine.dbal.url', 'doctrine.dbal.password',
+					'doctrine.dbal.user', 'framework.secret',
+					'mailer.dsn', 'DATABASE_URL', 'APP_SECRET',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('.env', '.env.local', 'config/**'),
+					),
+					'markup' => array(
+						'deny' => array('.env', '.env.local', 'config/packages/doctrine.yaml', 'config/packages/security.yaml'),
+					),
+					'frontend' => array(
+						'deny' => array('.env', '.env.local', 'config/packages/doctrine.yaml'),
+					),
+					'code' => array(
+						'deny' => array('.env', '.env.local'),
+					),
+				),
+				'templatePaths' => array(
+					'templates/**/*.html.twig',
+					'templates/**/*.twig',
+				),
+				'configFormat' => 'yaml',
+				'configFiles' => array('config/**/*.yaml', 'config/**/*.yml'),
+				'tierConfig' => array(
+					'styles' => array(
+						'allow' => array('twig.globals.theme'),
+					),
+					'markup' => array(
+						'allow' => array('twig', 'framework.router'),
+						'deny' => array('doctrine.dbal.url', 'doctrine.dbal.password'),
+					),
+					'frontend' => array(
+						'allow' => array('twig', 'framework.router', 'framework.assets'),
+						'deny' => array('doctrine.dbal.url', 'doctrine.dbal.password'),
+					),
+					'code' => array(
+						'deny' => array('doctrine.dbal.url', 'doctrine.dbal.password'),
+					),
+				),
+			),
+			'wordpress' => array(
+				'sensitiveKeys' => array(
+					'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST',
+					'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY',
+					'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT',
+					'*_KEY', '*_SALT',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('wp-config.php', 'wp-includes/**', 'wp-admin/**'),
+					),
+					'markup' => array(
+						'deny' => array('wp-config.php', 'wp-includes/**', 'wp-admin/**', 'wp-content/plugins/**/*.php'),
+					),
+					'frontend' => array(
+						'deny' => array('wp-config.php', 'wp-includes/**', 'wp-admin/**'),
+					),
+					'code' => array(
+						'deny' => array('wp-config.php'),
+					),
+				),
+				'templatePaths' => array(
+					'wp-content/themes/**/*.php',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+			'drupal' => array(
+				'sensitiveKeys' => array(
+					'databases.default.default.database',
+					'databases.default.default.username',
+					'databases.default.default.password',
+					'databases.default.default.host',
+					'settings.hash_salt',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('sites/*/settings.php', 'sites/*/services.yml', 'core/**'),
+					),
+					'markup' => array(
+						'deny' => array('sites/*/settings.php', 'sites/*/services.yml', 'core/**'),
+					),
+					'frontend' => array(
+						'deny' => array('sites/*/settings.php', 'sites/*/services.yml'),
+					),
+					'code' => array(
+						'deny' => array('sites/*/settings.php'),
+					),
+				),
+				'templatePaths' => array(
+					'themes/**/*.html.twig',
+					'modules/custom/**/templates/**/*.html.twig',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+			'cakephp' => array(
+				'sensitiveKeys' => array(
+					'Datasources.default.host', 'Datasources.default.username',
+					'Datasources.default.password', 'Datasources.default.database',
+					'Security.salt',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('.env', 'config/app.php', 'config/app_local.php', 'config/**'),
+					),
+					'markup' => array(
+						'deny' => array('.env', 'config/app.php', 'config/app_local.php'),
+					),
+					'frontend' => array(
+						'deny' => array('.env', 'config/app.php', 'config/app_local.php'),
+					),
+					'code' => array(
+						'deny' => array('.env'),
+					),
+				),
+				'templatePaths' => array(
+					'templates/**/*.php',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+			'codeigniter' => array(
+				'sensitiveKeys' => array(
+					'database.default.hostname', 'database.default.username',
+					'database.default.password', 'database.default.database',
+					'encryption.key',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('.env', 'app/Config/**'),
+					),
+					'markup' => array(
+						'deny' => array('.env', 'app/Config/Database.php', 'app/Config/App.php'),
+					),
+					'frontend' => array(
+						'deny' => array('.env', 'app/Config/Database.php'),
+					),
+					'code' => array(
+						'deny' => array('.env'),
+					),
+				),
+				'templatePaths' => array(
+					'app/Views/**/*.php',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+			'yii' => array(
+				'sensitiveKeys' => array(
+					'components.db.dsn', 'components.db.username',
+					'components.db.password', 'cookieValidationKey',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('.env', 'config/**'),
+					),
+					'markup' => array(
+						'deny' => array('.env', 'config/db.php', 'config/params.php'),
+					),
+					'frontend' => array(
+						'deny' => array('.env', 'config/db.php'),
+					),
+					'code' => array(
+						'deny' => array('.env'),
+					),
+				),
+				'templatePaths' => array(
+					'views/**/*.php',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+			'qbix' => array(
+				'sensitiveKeys' => array(
+					'Q.database.*', 'Q.secrets.*',
+					'Q.Users.oAuth.*', 'Q.Users.stripe.*',
+					'Q.Streams.push.*',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('local/**', 'config/**'),
+					),
+					'markup' => array(
+						'deny' => array('local/app.json', 'config/Q/database.json'),
+						'allow' => array('config/Q/text/**'),
+					),
+					'frontend' => array(
+						'deny' => array('local/app.json'),
+					),
+					'code' => array(
+						'deny' => array(),
+					),
+				),
+				'templatePaths' => array(
+					'views/**/*.php',
+				),
+				'configFormat' => 'json',
+				'configFiles' => array('local/app.json', 'config/**/*.json'),
+				'tierConfig' => array(
+					'styles' => array(
+						'allow' => array('Q.theme.colors', 'Q.theme.fonts'),
+					),
+					'markup' => array(
+						'allow' => array('Q.theme', 'Q.menus', 'Q.text'),
+						'deny' => array('Q.database'),
+					),
+					'frontend' => array(
+						'allow' => array('Q.theme', 'Q.menus', 'Q.text', 'Q.routes'),
+						'deny' => array('Q.database'),
+					),
+					'code' => array(
+						'deny' => array(),
+					),
+				),
+			),
+			'joomla' => array(
+				'sensitiveKeys' => array(
+					'host', 'user', 'password', 'db', 'dbprefix',
+					'secret', 'smtpuser', 'smtppass',
+					'ftp_user', 'ftp_pass',
+				),
+				'tierPaths' => array(
+					'styles' => array(
+						'deny' => array('configuration.php', 'administrator/**', 'libraries/**'),
+					),
+					'markup' => array(
+						'deny' => array('configuration.php', 'administrator/**', 'libraries/**'),
+					),
+					'frontend' => array(
+						'deny' => array('configuration.php', 'administrator/**'),
+					),
+					'code' => array(
+						'deny' => array('configuration.php'),
+					),
+				),
+				'templatePaths' => array(
+					'templates/**/*.php',
+					'components/**/tmpl/**/*.php',
+				),
+				'configFormat' => null,
+				'configFiles' => array(),
+				'tierConfig' => array(),
+			),
+		);
+
+		return $presets[$presetName] ?? array();
+	}
+
+	// ─── Branch authentication ──────────────────────────────────────
+
+	/**
+	 * Authenticate a request for branch access.
+	 *
+	 * Checks (in order):
+	 * 1. Panel session cookie (Q_panel_token)
+	 * 2. Bearer token in Authorization header
+	 * 3. Basic auth (branch-level password)
+	 *
+	 * If authenticated, looks up the user's branch permission and file
+	 * tier.  Returns an array with user info, or null if no branch
+	 * access (the caller should return 403).
+	 *
+	 * @method authenticateForBranch
+	 * @static
+	 * @param {array} $branchRecord  The resolved branch record
+	 * @param {array} $headers  Parsed HTTP headers (lowercase keys)
+	 * @param {array} $cookies  Parsed cookies
+	 * @return {array|null} Array with keys: user, branchPerm, fileTier,
+	 *   preset, userPaths, userConfig.  Null if access denied.
+	 */
+	static function authenticateForBranch($branchRecord, $headers = array(), $cookies = array())
+	{
+		$user = null;
+
+		// 1. Panel session cookie — uses the same session store as the
+		//    control panel.  The panel login returns a token that is
+		//    stored in Q_panel_token cookie.
+		$panelToken = $cookies['Q_panel_token'] ?? '';
+		if ($panelToken
+			&& class_exists('Q_WebServer_Panel', false)
+			&& Q_WebServer_Panel::validateToken($panelToken)
+		) {
+			// Panel sessions are admin — they have the panel password
+			$user = 'panel';
+		}
+
+		// 2. Bearer token — look up in the branch's access list.
+		//    Branch tokens are stored in the branch record.
+		if (!$user) {
+			$authHeader = $headers['authorization'] ?? '';
+			if (strpos($authHeader, 'Bearer ') === 0) {
+				$token = substr($authHeader, 7);
+				// Check branch-level token list
+				$tokens = $branchRecord['tokens'] ?? array();
+				if (isset($tokens[$token])) {
+					$user = $tokens[$token]; // maps token => username
+				}
+				// Also check panel session as Bearer
+				if (!$user && $panelToken === ''
+					&& class_exists('Q_WebServer_Panel', false)
+					&& Q_WebServer_Panel::validateToken($token)
+				) {
+					$user = 'panel';
+				}
+			}
+		}
+
+		// 3. Basic auth — branch can have a shared password
+		if (!$user) {
+			$authHeader = $headers['authorization'] ?? '';
+			if (strpos($authHeader, 'Basic ') === 0) {
+				$decoded = base64_decode(substr($authHeader, 6));
+				if ($decoded !== false) {
+					$parts = explode(':', $decoded, 2);
+					$user = $parts[0] ?? '';
+					$pass = $parts[1] ?? '';
+					// Verify against branch password
+					$branchPass = $branchRecord['password'] ?? null;
+					if ($branchPass !== null) {
+						if (!password_verify($pass, $branchPass)) {
+							$user = null; // wrong password
+						}
+					} else {
+						// No branch password set — basic auth not available
+						$user = null;
+					}
+				}
+			}
+		}
+
+		// 4. Check wildcard access (public branches)
+		if (!$user) {
+			$access = $branchRecord['access'] ?? array();
+			$wildcardEntry = $access['*'] ?? null;
+			if ($wildcardEntry !== null) {
+				$user = '*';
+			}
+		}
+
+		if (!$user) return null;
+
+		// Look up branch permission
+		$branchPerm = self::getBranchPermission($branchRecord, $user);
+		if (!$branchPerm) return null;
+
+		// Look up file tier
+		$fileTier = self::getFileTier($branchRecord, $user);
+
+		// Get framework preset for file permissions
+		$presetName = $branchRecord['preset']
+			?? Q_Config::get('Q', 'webserver', 'hosts',
+				$branchRecord['appHost'] ?? '', 'preset', null);
+		$preset = $presetName ? self::getFrameworkPreset($presetName) : array();
+
+		// Get per-user path and config overrides
+		$userPaths = self::getUserPathOverrides($branchRecord, $user);
+		$userConfig = self::getUserConfigOverrides($branchRecord, $user);
+
+		self::$currentUser = $user;
+
+		return array(
+			'user' => $user,
+			'branchPerm' => $branchPerm,
+			'fileTier' => $fileTier,
+			'preset' => $preset,
+			'userPaths' => $userPaths,
+			'userConfig' => $userConfig,
+		);
+	}
+
+	// ─── Interop with Q_Branch ──────────────────────────────────────
+
+	/**
+	 * Get a Q_Branch instance for a branch's content files, if the
+	 * Platform is loaded and Q_Branch is available.
+	 *
+	 * This enables content-level forking (stream uploads, file stores)
+	 * within an app-level branch. App-level branching (this class) and
+	 * content-level branching (Q_Branch) are complementary.
+	 *
+	 * @method contentBranch
+	 * @static
+	 * @param {string} $branchName
+	 * @param {array} [$options]
+	 * @return {Q_Branch|null}  Q_Branch instance if available, null otherwise
+	 */
+	static function contentBranch($branchName, $options = array())
+	{
+		if (!class_exists('Q_Branch', false)) {
+			return null;
+		}
+		return Q_Branch::of($branchName, $options);
+	}
+
+	/**
+	 * Diff this branch against its trunk using Q_Branch::diff() semantics
+	 * when the Platform is loaded, or a standalone implementation.
+	 *
+	 * Returns paths from the branch's perspective:
+	 *   added   — in branch but not in trunk (new files)
+	 *   removed — in trunk but removed from branch
+	 *   changed — in both but content differs
+	 *
+	 * @method diff
+	 * @static
+	 * @param {string} $branchRoot  Absolute path to the branch directory
+	 * @param {string} $trunkRoot  Absolute path to the trunk directory
+	 * @return {array}  ['added' => [...], 'removed' => [...], 'changed' => [...]]
+	 */
+	static function diff($branchRoot, $trunkRoot)
+	{
+		$added = $removed = $changed = array();
+
+		// Collect branch files: only real files (not symlinks) are changes
+		$branchFiles = self::listFiles($branchRoot);
+		$trunkFiles = self::listFiles($trunkRoot);
+
+		foreach ($branchFiles as $rel => $dummy) {
+			$branchPath = $branchRoot . '/' . $rel;
+			$trunkPath = $trunkRoot . '/' . $rel;
+			if (is_link($branchPath)) {
+				// Still a symlink — inherited from trunk, not changed
+				continue;
+			}
+			if (!isset($trunkFiles[$rel])) {
+				$added[] = $rel;
+			} else {
+				// Real file in branch — compare content
+				if (md5_file($branchPath) !== md5_file($trunkPath)) {
+					$changed[] = $rel;
+				}
+			}
+		}
+
+		// Check for removals: trunk files whose symlinks were deleted from branch
+		foreach ($trunkFiles as $rel => $dummy) {
+			$branchPath = $branchRoot . '/' . $rel;
+			if (!file_exists($branchPath) && !is_link($branchPath)) {
+				$removed[] = $rel;
+			}
+		}
+
+		return compact('added', 'removed', 'changed');
+	}
+
+	/**
+	 * List all files in a directory tree, returning relative paths.
+	 * @method listFiles
+	 * @static
+	 * @private
+	 * @param {string} $dir
+	 * @return {array}  Map of relativePath => true
+	 */
+	private static function listFiles($dir)
+	{
+		$result = array();
+		if (!is_dir($dir)) return $result;
+
+		$baseLen = strlen($dir) + 1;
+		$iterator = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+		);
+		foreach ($iterator as $item) {
+			$pathname = $item->getPathname();
+			if ($item->isFile() || is_link($pathname)) {
+				$rel = str_replace(DIRECTORY_SEPARATOR, '/', substr($pathname, $baseLen));
+				// Skip the wholesale-symlinked directories
+				$first = explode('/', $rel)[0];
+				if (in_array($first, self::$skipDirs, true) && is_link($dir . '/' . $first)) {
+					continue;
+				}
+				$result[$rel] = true;
+			}
+		}
+		return $result;
+	}
+
+	// ─── AI collaboration API ──────────────────────────────────────
+
+	/**
+	 * Export a branch (or trunk) as an archive with credential scrubbing.
+	 *
+	 * Builds a file tree respecting the caller's file-permission tier,
+	 * scrubs credentials from config files, attaches a manifest with
+	 * framework metadata and placeholder list, creates an archive, and
+	 * returns a single-use download URL.
+	 *
+	 * @method apiExport
+	 * @static
+	 * @param {array} $params  Keys: appHost (required), branchName (optional),
+	 *   format ('tar.gz'|'zip', default 'tar.gz')
+	 * @param {array} $authResult  From authenticateForBranch()
+	 * @return {array} Result with downloadUrl, manifest, fileCount
+	 */
+	static function apiExport($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? null;
+		$format = $params['format'] ?? 'tar.gz';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if (!in_array($format, array('tar.gz', 'zip'))) {
+			return array('error' => 'format must be tar.gz or zip');
+		}
+
+		// Resolve the root directory
+		$root = null;
+		if ($branchName) {
+			if (!self::$state) self::loadState();
+			$key = $appHost . '/' . $branchName;
+			$branch = self::$state['branches'][$key] ?? null;
+			if (!$branch) {
+				return array('error' => "Branch not found: $branchName");
+			}
+			$root = $branch['root'];
+		} else {
+			// Trunk — use the vhost's document root
+			$root = Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', null);
+			if (!$root) {
+				return array('error' => "No root configured for host: $appHost");
+			}
+		}
+
+		if (!is_dir($root)) {
+			return array('error' => "Root directory not found: $root");
+		}
+
+		$fileTier = $authResult['fileTier'] ?? 'styles';
+		$preset = $authResult['preset'] ?? array();
+		$tierPaths = $preset['tierPaths'] ?? array();
+		$sensitiveKeys = $preset['sensitiveKeys'] ?? array();
+		$configFiles = $preset['configFiles'] ?? array();
+		$configFormat = $preset['configFormat'] ?? null;
+		$userPaths = $authResult['userPaths'] ?? array();
+
+		// Collect files respecting tier permissions
+		$allFiles = self::listFiles($root);
+		$includedFiles = array();
+		$skippedFiles = array();
+
+		foreach ($allFiles as $relPath => $dummy) {
+			$check = self::checkFilePermission($relPath, $fileTier, $tierPaths, $userPaths, $preset);
+			if ($check === true) {
+				$includedFiles[] = $relPath;
+			} else {
+				$skippedFiles[] = $relPath;
+			}
+		}
+
+		// Build the archive in a temp directory
+		$exportId = bin2hex(random_bytes(16));
+		$exportDir = sys_get_temp_dir() . '/qbix_export_' . $exportId;
+		mkdir($exportDir, 0755, true);
+
+		$allPlaceholders = array();
+		$allFlagged = array();
+
+		foreach ($includedFiles as $relPath) {
+			$srcPath = $root . '/' . $relPath;
+			$destPath = $exportDir . '/' . $relPath;
+			$destDir = dirname($destPath);
+			if (!is_dir($destDir)) {
+				mkdir($destDir, 0755, true);
+			}
+
+			// Check if this is a config file that needs scrubbing
+			$isConfig = false;
+			if ($configFormat) {
+				foreach ($configFiles as $pattern) {
+					if (self::globMatch($relPath, $pattern)) {
+						$isConfig = true;
+						break;
+					}
+				}
+			}
+
+			if ($isConfig && $configFormat) {
+				$content = file_get_contents($srcPath);
+				$parsed = self::parseConfigContent($content, $configFormat);
+				if ($parsed !== null) {
+					$scrubbed = self::scrubCredentials($parsed, $sensitiveKeys);
+					$allPlaceholders = array_merge($allPlaceholders, $scrubbed['placeholders']);
+					$allFlagged = array_merge($allFlagged, $scrubbed['flagged']);
+					// Re-encode
+					if ($configFormat === 'json') {
+						file_put_contents($destPath,
+							json_encode($scrubbed['config'],
+								JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+					} elseif ($configFormat === 'yaml') {
+						if (function_exists('yaml_emit')) {
+							file_put_contents($destPath, yaml_emit($scrubbed['config']));
+						} else {
+							// Fallback: copy original with inline replacements
+							$output = $content;
+							foreach ($scrubbed['placeholders'] as $ph) {
+								$keyParts = explode('.', $ph['key']);
+								$origValue = $parsed;
+								foreach ($keyParts as $k) {
+									$origValue = $origValue[$k] ?? null;
+								}
+								if ($origValue !== null) {
+									$output = str_replace($origValue, $ph['placeholder'], $output);
+								}
+							}
+							file_put_contents($destPath, $output);
+						}
+					}
+				} else {
+					copy($srcPath, $destPath);
+				}
+			} else {
+				// Non-config file or no structured format — check for credential
+				// values in any file that looks like it could contain secrets
+				$ext = pathinfo($relPath, PATHINFO_EXTENSION);
+				if (in_array($ext, array('env', 'ini', 'conf', 'cfg', 'properties'))) {
+					// Line-based key=value files (like .env)
+					$content = file_get_contents($srcPath);
+					$lines = explode("\n", $content);
+					$modified = false;
+					foreach ($lines as &$line) {
+						$trimmed = ltrim($line);
+						if ($trimmed === '' || $trimmed[0] === '#') continue;
+						if (strpos($trimmed, '=') === false) continue;
+						list($k, $v) = explode('=', $trimmed, 2);
+						$k = trim($k);
+						$v = trim($v, " \t\n\r\0\x0B\"'");
+						$detection = self::looksLikeCredential($k, $v, $sensitiveKeys);
+						if ($detection && $detection !== 'entropy') {
+							$placeholder = '{{' . $k . '}}';
+							$line = $k . '=' . $placeholder;
+							$allPlaceholders[] = array(
+								'key' => $k,
+								'placeholder' => $placeholder,
+								'detection' => $detection,
+							);
+							$modified = true;
+						} elseif ($detection === 'entropy') {
+							$allFlagged[] = array(
+								'key' => $k,
+								'reason' => 'High entropy value — possible credential',
+							);
+						}
+					}
+					unset($line);
+					if ($modified) {
+						file_put_contents($destPath, implode("\n", $lines));
+					} else {
+						copy($srcPath, $destPath);
+					}
+				} else {
+					copy($srcPath, $destPath);
+				}
+			}
+		}
+
+		// Write the manifest
+		$manifest = array(
+			'version' => '1.0',
+			'appHost' => $appHost,
+			'branchName' => $branchName,
+			'exportedAt' => gmdate('c'),
+			'exportedBy' => $authResult['user'] ?? 'unknown',
+			'fileTier' => $fileTier,
+			'framework' => array(
+				'preset' => array_search($preset, self::getFrameworkPreset('_all_') ?: array()) ?: null,
+				'configFormat' => $configFormat,
+			),
+			'files' => array(
+				'included' => count($includedFiles),
+				'skipped' => count($skippedFiles),
+			),
+			'placeholders' => $allPlaceholders,
+			'flagged' => $allFlagged,
+		);
+
+		// Determine the preset name properly
+		$presetName = null;
+		$presets = array('qbix', 'laravel', 'symfony', 'wordpress', 'drupal',
+			'cakephp', 'codeigniter', 'yii', 'joomla');
+		foreach ($presets as $pn) {
+			if (self::getFrameworkPreset($pn) === $preset) {
+				$presetName = $pn;
+				break;
+			}
+		}
+		$manifest['framework']['preset'] = $presetName;
+
+		file_put_contents($exportDir . '/MANIFEST.json',
+			json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+		// Create the archive
+		$archiveExt = $format === 'zip' ? '.zip' : '.tar.gz';
+		$archiveName = ($branchName ?: 'trunk') . '_' . date('Ymd_His') . $archiveExt;
+		$archivePath = sys_get_temp_dir() . '/qbix_archive_' . $exportId . $archiveExt;
+
+		if ($format === 'zip') {
+			$zip = new \ZipArchive();
+			if ($zip->open($archivePath, \ZipArchive::CREATE) !== true) {
+				return array('error' => 'Failed to create ZIP archive');
+			}
+			$exportFiles = self::listFiles($exportDir);
+			foreach ($exportFiles as $rel => $d) {
+				$zip->addFile($exportDir . '/' . $rel, $rel);
+			}
+			$zip->close();
+		} else {
+			// tar.gz using PharData
+			$tarPath = sys_get_temp_dir() . '/qbix_archive_' . $exportId . '.tar';
+			$phar = new \PharData($tarPath);
+			$phar->buildFromDirectory($exportDir);
+			$phar->compress(\Phar::GZ);
+			$archivePath = $tarPath . '.gz';
+			@unlink($tarPath);
+		}
+
+		// Generate a single-use download token
+		$downloadToken = bin2hex(random_bytes(32));
+		$downloadFile = sys_get_temp_dir() . '/qbix_download_' . $downloadToken . '.meta';
+		file_put_contents($downloadFile, json_encode(array(
+			'path' => $archivePath,
+			'name' => $archiveName,
+			'created' => time(),
+			'expires' => time() + 3600, // 1 hour
+			'used' => false,
+		)));
+
+		// Clean up the export directory
+		self::removeDir($exportDir);
+
+		return array(
+			'downloadUrl' => '/api/branch/download/' . $downloadToken,
+			'fileName' => $archiveName,
+			'manifest' => $manifest,
+		);
+	}
+
+	/**
+	 * Parse config file content into an array.
+	 *
+	 * @method parseConfigContent
+	 * @static
+	 * @param {string} $content  File content
+	 * @param {string} $format  'json' or 'yaml'
+	 * @return {array|null}  Parsed config, or null on parse error
+	 */
+	static function parseConfigContent($content, $format)
+	{
+		if ($format === 'json') {
+			$result = json_decode($content, true);
+			return is_array($result) ? $result : null;
+		}
+		if ($format === 'yaml') {
+			if (function_exists('yaml_parse')) {
+				$result = yaml_parse($content);
+				return is_array($result) ? $result : null;
+			}
+			// Fallback: try json_decode in case it's also valid JSON
+			return null;
+		}
+		return null;
+	}
+
+	/**
+	 * Push files to a branch's CoW overlay.
+	 *
+	 * Validates every file against the caller's tier and tierConfig
+	 * permissions before writing. Returns a summary of accepted and
+	 * rejected files.
+	 *
+	 * @method apiPush
+	 * @static
+	 * @param {array} $params  Keys: appHost (required), branchName (required),
+	 *   files (array of ['path' => relPath, 'content' => base64content])
+	 * @param {array} $authResult  From authenticateForBranch()
+	 * @return {array} Result with accepted, rejected arrays and previewUrl
+	 */
+	static function apiPush($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? '';
+		$files = $params['files'] ?? array();
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if (!$branchName) {
+			return array('error' => 'branchName is required');
+		}
+		if (empty($files)) {
+			return array('error' => 'files array is required and must not be empty');
+		}
+
+		// Require at least edit permission
+		$branchPerm = $authResult['branchPerm'] ?? 'view';
+		if ($branchPerm === 'view') {
+			return array('error' => 'Push requires edit or admin branch permission');
+		}
+
+		// Resolve the branch
+		if (!self::$state) self::loadState();
+		$key = $appHost . '/' . $branchName;
+		$branch = self::$state['branches'][$key] ?? null;
+		if (!$branch) {
+			return array('error' => "Branch not found: $branchName");
+		}
+
+		$branchRoot = $branch['root'];
+		clearstatcache();
+		// Use lstat to check directory existence — stat() can return
+		// stale results on overlay/container filesystems even after
+		// clearstatcache()
+		$branchStat = @lstat($branchRoot);
+		if (!$branchStat || ($branchStat['mode'] & 0040000) === 0) {
+			return array('error' => "Branch root directory not found");
+		}
+
+		$fileTier = $authResult['fileTier'] ?? 'styles';
+		$preset = $authResult['preset'] ?? array();
+		$tierPaths = $preset['tierPaths'] ?? array();
+		$tierConfig = $preset['tierConfig'] ?? array();
+		$configFiles = $preset['configFiles'] ?? array();
+		$configFormat = $preset['configFormat'] ?? null;
+		$sensitiveKeys = $preset['sensitiveKeys'] ?? array();
+		$userPaths = $authResult['userPaths'] ?? array();
+		$userConfig = $authResult['userConfig'] ?? array();
+
+		$accepted = array();
+		$rejected = array();
+
+		foreach ($files as $fileEntry) {
+			$relPath = $fileEntry['path'] ?? '';
+			$content = $fileEntry['content'] ?? '';
+			$encoding = $fileEntry['encoding'] ?? 'base64';
+
+			if (!$relPath) {
+				$rejected[] = array('path' => '(empty)', 'reason' => 'Missing file path');
+				continue;
+			}
+
+			// Sanitize path — no directory traversal
+			$relPath = ltrim($relPath, '/');
+			if (strpos($relPath, '..') !== false || strpos($relPath, "\0") !== false) {
+				$rejected[] = array('path' => $relPath, 'reason' => 'Invalid path');
+				continue;
+			}
+
+			// Enforce branch deny paths (default lockdown).
+			// Code-tier users bypass deny checks — they have full access.
+			$branchDenyPaths = $branch['denyPaths'] ?? array();
+			if ($fileTier !== 'code' && $branchDenyPaths) {
+				if (self::isDeniedByDefault($relPath, $branchDenyPaths)) {
+					$rejected[] = array('path' => $relPath, 'reason' => 'Path denied by branch lockdown policy');
+					continue;
+				}
+			}
+
+			// Check file permission (extension + tierPaths)
+			$permCheck = self::checkFilePermission($relPath, $fileTier, $tierPaths, $userPaths, $preset);
+			if ($permCheck !== true) {
+				$rejected[] = array('path' => $relPath, 'reason' => $permCheck);
+				continue;
+			}
+
+			// Decode content
+			if ($encoding === 'base64') {
+				$decoded = base64_decode($content, true);
+				if ($decoded === false) {
+					$rejected[] = array('path' => $relPath, 'reason' => 'Invalid base64 content');
+					continue;
+				}
+			} else {
+				$decoded = $content;
+			}
+
+			// Check config-key permissions for structured config files
+			if ($configFormat && $fileTier !== 'code') {
+				$isConfig = false;
+				foreach ($configFiles as $pattern) {
+					if (self::globMatch($relPath, $pattern)) {
+						$isConfig = true;
+						break;
+					}
+				}
+
+				if ($isConfig) {
+					$newParsed = self::parseConfigContent($decoded, $configFormat);
+					if ($newParsed !== null) {
+						// Load original if it exists
+						$origPath = $branchRoot . '/' . $relPath;
+						$origParsed = array();
+						if (file_exists($origPath)) {
+							$origContent = file_get_contents($origPath);
+							$origParsed = self::parseConfigContent($origContent, $configFormat) ?: array();
+						}
+
+						$changedKeys = self::diffConfigKeys($origParsed, $newParsed);
+						if (!empty($changedKeys)) {
+							$configCheck = self::checkConfigPermission(
+								$changedKeys, $fileTier, $tierConfig, $userConfig
+							);
+							if ($configCheck !== true) {
+								$rejected[] = array('path' => $relPath, 'reason' => $configCheck);
+								continue;
+							}
+						}
+					}
+				}
+			}
+
+			// Write the file to the branch CoW overlay
+			$destPath = $branchRoot . '/' . $relPath;
+			$destDir = dirname($destPath);
+			if (!is_dir($destDir)) {
+				mkdir($destDir, 0755, true);
+			}
+
+			// If this is a symlink (inherited from trunk), remove it first
+			// to create a real file (the CoW break)
+			if (is_link($destPath)) {
+				unlink($destPath);
+			}
+
+			if (file_put_contents($destPath, $decoded) !== false) {
+				$accepted[] = array('path' => $relPath, 'size' => strlen($decoded));
+			} else {
+				$rejected[] = array('path' => $relPath, 'reason' => 'Write failed');
+			}
+		}
+
+		// Build the preview URL
+		$previewUrl = 'https://' . $branchName . '.' . $appHost . '/';
+
+		return array(
+			'accepted' => $accepted,
+			'rejected' => $rejected,
+			'previewUrl' => $previewUrl,
+			'summary' => count($accepted) . ' accepted, ' . count($rejected) . ' rejected',
+		);
+	}
+
+	/**
+	 * Request a merge of a branch back to trunk.
+	 *
+	 * Creates a merge request record in the branch metadata and
+	 * dispatches notifications to app admins.
+	 *
+	 * @method apiRequestMerge
+	 * @static
+	 * @param {array} $params  Keys: appHost (required), branchName (required),
+	 *   title (optional), description (optional)
+	 * @param {array} $authResult  From authenticateForBranch()
+	 * @return {array} Result with mergeRequestId, status
+	 */
+	static function apiRequestMerge($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? '';
+		$title = $params['title'] ?? "Merge $branchName";
+		$description = $params['description'] ?? '';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if (!$branchName) {
+			return array('error' => 'branchName is required');
+		}
+
+		// Require at least edit permission
+		$branchPerm = $authResult['branchPerm'] ?? 'view';
+		if ($branchPerm === 'view') {
+			return array('error' => 'Merge requests require edit or admin branch permission');
+		}
+
+		// Resolve the branch
+		if (!self::$state) self::loadState();
+		$key = $appHost . '/' . $branchName;
+		$branch = self::$state['branches'][$key] ?? null;
+		if (!$branch) {
+			return array('error' => "Branch not found: $branchName");
+		}
+
+		// Generate the merge request
+		$mergeRequestId = 'mr-' . bin2hex(random_bytes(8));
+		$mergeRequest = array(
+			'id' => $mergeRequestId,
+			'branchName' => $branchName,
+			'appHost' => $appHost,
+			'title' => $title,
+			'description' => $description,
+			'requestedBy' => $authResult['user'] ?? 'unknown',
+			'requestedAt' => gmdate('c'),
+			'status' => 'pending',
+		);
+
+		// Get the diff summary
+		$trunkRoot = Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', null);
+		if ($trunkRoot && is_dir($trunkRoot) && is_dir($branch['root'])) {
+			$diffResult = self::diff($branch['root'], $trunkRoot);
+			$mergeRequest['changes'] = array(
+				'added' => count($diffResult['added']),
+				'changed' => count($diffResult['changed']),
+				'removed' => count($diffResult['removed']),
+			);
+		}
+
+		// Store the merge request in state
+		if (!isset(self::$state['branches'][$key]['mergeRequests'])) {
+			self::$state['branches'][$key]['mergeRequests'] = array();
+		}
+		self::$state['branches'][$key]['mergeRequests'][$mergeRequestId] = $mergeRequest;
+		self::saveState();
+
+		// Notify admins — dispatch an event if the Platform is loaded
+		if (class_exists('Q', false) && method_exists('Q', 'event')) {
+			try {
+				Q::event('Q/WebServer/Branch/mergeRequest', $mergeRequest);
+			} catch (\Exception $e) {
+				// Non-fatal — the merge request is recorded even if
+				// notification dispatch fails
+			}
+		}
+
+		return array(
+			'mergeRequestId' => $mergeRequestId,
+			'status' => 'pending',
+			'changes' => $mergeRequest['changes'] ?? null,
+		);
+	}
+
+	/**
+	 * Serve a single-use download created by apiExport.
+	 *
+	 * @method serveDownload
+	 * @static
+	 * @param {string} $token  The download token from the export URL
+	 * @return {array|null}  ['path' => archivePath, 'name' => fileName] or null
+	 */
+	static function serveDownload($token)
+	{
+		if (!preg_match('/^[0-9a-f]{64}$/', $token)) {
+			return null;
+		}
+		$metaFile = sys_get_temp_dir() . '/qbix_download_' . $token . '.meta';
+		if (!file_exists($metaFile)) {
+			return null;
+		}
+
+		$meta = json_decode(file_get_contents($metaFile), true);
+		if (!$meta) return null;
+
+		// Check expiration
+		if (time() > ($meta['expires'] ?? 0)) {
+			@unlink($metaFile);
+			@unlink($meta['path'] ?? '');
+			return null;
+		}
+
+		// Mark as used (single-use)
+		if (!empty($meta['used'])) {
+			return null;
+		}
+		$meta['used'] = true;
+		file_put_contents($metaFile, json_encode($meta));
+
+		return array(
+			'path' => $meta['path'],
+			'name' => $meta['name'],
+		);
+	}
+
+}
