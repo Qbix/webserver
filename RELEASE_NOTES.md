@@ -1,3 +1,74 @@
+# Qbix Server v3.0 — Observability
+
+v2.3 made Qbix Server safe for collaboration. v3.0 adds observability at two levels: client-side telemetry that you opt into, and server-side analytics that record every request automatically.
+
+## Client-Side Metrics
+
+When `Q.webserver.clientMetrics.enabled` is `true`, the server automatically inserts `<script>` tags before `</head>` (or `</body>`) in HTML responses. The injected Metrics.js core — plus optional trackers — reports events back to a configurable POST endpoint via `sendBeacon` or `fetch`. Events are stored as daily TSV files.
+
+Injection respects the `Sec-Fetch-Dest` header: only top-level document requests get injected, not subresource fetches or iframes. Pages that already reference `Metrics.js` or `Metrics.min.js` (Qbix Platform sites) are skipped.
+
+**Bundled trackers**:
+- **ScrollTracker** — section-aware scroll telemetry, depth milestones (25/50/75/100%), TOC highlighting, anchor click tracking
+- **NavigationTracker** — superset of ScrollTracker with dynamic section tracking (tabs, columns, expandables), dwell time, DOM mutation observer
+- **MediaTracker** — auto-discovers native HTML5 video/audio plus YouTube, Vimeo, SoundCloud, Wistia, JW Player, Dailymotion, Spotify, Twitch, and Muse.ai embeds. Tracks play/pause/seek/ended, unique watched-seconds via range-merge, periodic checkpoints.
+
+**SPA navigation**: the core detects client-side page changes via pushState/replaceState monkey-patching and popstate listener. When the Q framework is loaded, it hooks into `Q.Page.onPush` for reliable tracking. Each tracker resets its state on navigation.
+
+**Minified builds**: all four JS files ship with `.min.js` counterparts (terser, ~50% smaller). Set `minified: true` in config or point `scriptUrl` at a `.min.js` file and the trackers follow automatically.
+
+**Generic injection**: the `extraScripts` and `extraStyles` config arrays let you inject arbitrary JS and CSS files alongside the metrics scripts — useful for custom analytics, A/B testing, or application-wide stylesheets.
+
+**Dashboard**: a "Client Metrics" tab in the control panel shows daily event counts, unique visitors and sessions, top event types and pages. Events can be filtered by label or page prefix. Raw TSV files are downloadable.
+
+**Config** (all under `Q.webserver.clientMetrics`):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Master switch (opt-in) |
+| `endpoint` | `/Q/clientMetrics` | POST endpoint for events |
+| `scriptUrl` | `null` | External Metrics.js URL (null = serve bundled copy) |
+| `trackers` | `["scroll","media"]` | Which trackers to auto-init |
+| `retainDays` | `90` | Days to keep TSV files |
+| `inject` | `true` | Whether to inject the script tag |
+| `minified` | `false` | Use `.min.js` versions |
+| `extraScripts` | `[]` | Additional JS URLs to inject |
+| `extraStyles` | `[]` | Additional CSS URLs to inject |
+| `checkpointInterval` | `10` | MediaTracker checkpoint seconds |
+| `debounce` | `1000` | Scroll/Navigation debounce ms |
+
+## Analytics Portal
+
+The control panel's "Analytics" tab provides server-side per-request analytics with no client-side opt-in required. Every HTTP request is recorded automatically in SQLite with session tracking, navigation flow, user agent parsing, and language detection.
+
+**Sankey flow visualization**: an interactive d3-sankey diagram shows how users navigate between pages. Click any node to drill down into incoming and outgoing flows for that page.
+
+**Session replay**: browse individual sessions with their full request timeline — entry page, every subsequent page, timestamps, response times, and status codes.
+
+**UA parsing**: extracts platform (iOS, Android, Windows, macOS, ChromeOS, Linux) and browser (Edge, Opera, Firefox, Samsung, Chrome, Safari, IE, Bot) from each request's User-Agent string.
+
+**Filters**: all analytics views can be filtered by host (app), time period, platform, browser, language, IP prefix, and path prefix.
+
+**API**: six new panel endpoints expose the analytics data programmatically — overview stats, Sankey flow edges, drilldown, session list, session detail, and date range.
+
+**Dashboard integration**: a mini Sankey diagram appears in the Apps tab for a quick overview of traffic flow, with a link to the full analytics portal.
+
+See [docs/METRICS.md](docs/METRICS.md) for the full reference — event format, tracker options, standalone usage, Q framework integration, analytics API, and schema.
+
+## Qbix App Auto-Detection
+
+Running `qbixserver` with no `--app` and no `--preset` now auto-detects Qbix apps. If the current directory contains `scripts/Q.inc.php` or `local/paths.json`, the server activates native Qbix mode automatically — no flags needed. `--preset=qbix` is also accepted as an explicit synonym. Qbix apps run natively on the persistent worker without the compat source-transform layer, so there is no opcode invalidation overhead.
+
+## Template File Extensions
+
+The `markup` and `frontend` file tiers now allow template extensions: `.handlebars`, `.hbs`, `.mustache`, `.twig`, `.blade`, `.ejs`, `.pug`, `.njk`. AI assistants and collaborators working on branches can push template files at the `markup` tier or above.
+
+## Upgrading from v2.3
+
+No breaking changes. All v2.3 configuration, APIs, branching, and MCP endpoints are preserved. The client metrics system is opt-in — nothing changes until you set `enabled: true`. The server-side analytics portal records requests automatically when metrics are enabled (the default).
+
+---
+
 # Qbix Server v2.3 — Safe Collaboration
 
 v2.1 made Qbix Server production-ready for frameworks. v2.3 makes it safe for multiple people — and AI assistants — to work on the same running app at the same time.
@@ -28,7 +99,7 @@ Branches and apps are locked down by default. The system uses a two-axis permiss
 | Tier | Allowed extensions |
 |---|---|
 | styles | .css, .scss, .less, .sass |
-| markup | above + .html, .htm, .svg, .md, images, fonts, .json, .xml, .yaml |
+| markup | above + .html, .htm, .svg, .md, templates (.handlebars, .hbs, .mustache, .twig, .blade, .ejs, .pug, .njk), images, fonts, .json, .xml, .yaml |
 | frontend | above + .js, .ts, .jsx, .tsx, .vue, .svelte |
 | code | everything (null = no restriction) |
 
@@ -149,9 +220,9 @@ The rewriter intercepts calls that would break under Qbix's execution model:
 - `php_sapi_name()` returns `'cli-server'` instead of `'cli'`. The `PHP_SAPI` constant is replaced via a context-aware constant engine that skips qualified references like `SomeClass::PHP_SAPI`.
 - All shimmed calls are emitted fully qualified (`\Q_WebServer_Compat::_header(...)`) so they resolve correctly inside namespaced framework code. The v2.0 rewriter omitted the leading backslash, which broke every Symfony, Laravel, and Drupal response.
 
-### 13 Framework Presets
+### 14 Framework Presets
 
-Built-in presets for Laravel, Symfony, WordPress, Drupal, CakePHP, CodeIgniter, Yii, Mezzio, Slim, Joomla, Magento, Nextcloud, and ownCloud. Each preset sets the front controller, upload limits, memory limits, and session settings appropriate for the framework.
+Built-in presets for Qbix, Laravel, Symfony, WordPress, Drupal, CakePHP, CodeIgniter, Yii, Mezzio, Slim, Joomla, Magento, Nextcloud, and ownCloud. Each preset sets the front controller, upload limits, memory limits, and session settings appropriate for the framework. The Qbix preset activates native mode (no source transforms).
 
 ### 12 Boot Adapters
 
@@ -255,7 +326,7 @@ The iOS TransportManager now uses the peer's actual `mesh_id` from the ECDH hand
 
 | Doc | What's new |
 |---|---|
-| [FRAMEWORKS.md](docs/FRAMEWORKS.md) | All 13 frameworks with presets, adapters, benchmarks |
+| [FRAMEWORKS.md](docs/FRAMEWORKS.md) | All 14 frameworks with presets, adapters, benchmarks |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Framework benchmark section |
 | [mobile/README.md](mobile/README.md) | Transport layer, GATT protocol, platform requirements |
 | [mobile/iOS.md](mobile/iOS.md) | Signing, TestFlight, App Store, Ad Hoc distribution |

@@ -36,6 +36,8 @@ class Q_WebServer_Metrics
 	private static $flowBuffer = [];     // [{from, to}] accumulated transitions
 	private static $pageHits = [];       // path => {hits, sessions:{}, totalMs}
 	private static $prevRps = [];        // last 5 minutes RPS for anomaly detection
+	private static $requestBuffer = [];  // [{ts, sessionId, path, prevPath, status, durationMs, ip, host, platform, browser, lang}]
+	private static $sessionUpdates = []; // sessionId => {firstSeen, lastSeen, ip, host, platform, browser, lang, pageCount, entryPath}
 
 	static function enabled()
 	{
@@ -94,6 +96,47 @@ class Q_WebServer_Metrics
 				avg_ms REAL DEFAULT 0,
 				last_hit TEXT
 			)');
+			// Individual request log for analytics
+			self::$db->exec('CREATE TABLE IF NOT EXISTS requests (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				ts INTEGER NOT NULL,
+				session_id TEXT NOT NULL,
+				path TEXT NOT NULL,
+				prev_path TEXT,
+				status INTEGER,
+				duration_ms REAL,
+				ip TEXT,
+				host TEXT,
+				platform TEXT,
+				browser TEXT,
+				language TEXT
+			)');
+			// Session summary table
+			self::$db->exec('CREATE TABLE IF NOT EXISTS sessions (
+				session_id TEXT PRIMARY KEY,
+				first_seen INTEGER NOT NULL,
+				last_seen INTEGER NOT NULL,
+				ip TEXT,
+				host TEXT,
+				platform TEXT,
+				browser TEXT,
+				language TEXT,
+				page_count INTEGER DEFAULT 1,
+				entry_path TEXT
+			)');
+			// Indexes for requests
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_ts ON requests(ts)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_session ON requests(session_id, ts)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_path ON requests(path)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_prev ON requests(prev_path, path)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_host ON requests(host)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_platform ON requests(platform)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_browser ON requests(browser)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_ip ON requests(ip)');
+			// Indexes for sessions
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_last ON sessions(last_seen)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_host ON sessions(host)');
+			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_ip ON sessions(ip)');
 		} catch (\Exception $e) {
 			self::$db = null;
 		}
@@ -104,7 +147,7 @@ class Q_WebServer_Metrics
 	/**
 	 * Record a completed request. Called from the server after sending the response.
 	 */
-	static function recordRequest($statusCode, $durationMs, $method, $path, $clientIp, $userAgent, $bytesSent, $cookies = [])
+	static function recordRequest($statusCode, $durationMs, $method, $path, $clientIp, $userAgent, $bytesSent, $cookies = [], $host = null, $headers = [])
 	{
 		if (!self::enabled()) return;
 
@@ -171,6 +214,42 @@ class Q_WebServer_Metrics
 			}
 			self::$sessions[$sessionId] = ['path' => $path, 'time' => time()];
 
+			// Buffer individual request for analytics
+			$ua = self::parseUserAgent($userAgent);
+			$lang = self::parsePrimaryLanguage($headers['accept-language'] ?? null);
+			$now = time();
+			self::$requestBuffer[] = [
+				'ts' => $now,
+				'sessionId' => $sessionId,
+				'path' => $path,
+				'prevPath' => $prevPath,
+				'status' => $statusCode,
+				'durationMs' => $durationMs,
+				'ip' => $clientIp,
+				'host' => $host,
+				'platform' => $ua['platform'],
+				'browser' => $ua['browser'],
+				'lang' => $lang,
+			];
+
+			// Update session metadata
+			if (!isset(self::$sessionUpdates[$sessionId])) {
+				self::$sessionUpdates[$sessionId] = [
+					'firstSeen' => $now,
+					'lastSeen' => $now,
+					'ip' => $clientIp,
+					'host' => $host,
+					'platform' => $ua['platform'],
+					'browser' => $ua['browser'],
+					'lang' => $lang,
+					'pageCount' => 1,
+					'entryPath' => $path,
+				];
+			} else {
+				self::$sessionUpdates[$sessionId]['lastSeen'] = $now;
+				self::$sessionUpdates[$sessionId]['pageCount']++;
+			}
+
 			if ($prevPath && $prevPath !== $path) {
 				self::$flowBuffer[] = ['from' => $prevPath, 'to' => $path];
 			}
@@ -211,6 +290,69 @@ class Q_WebServer_Metrics
 	{
 		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
 		return in_array($ext, ['css','js','png','jpg','jpeg','gif','svg','ico','woff','woff2','ttf','map','webp'], true);
+	}
+
+	/**
+	 * Parse User-Agent string for platform and browser.
+	 */
+	static function parseUserAgent($ua)
+	{
+		if (!$ua) return ['platform' => 'Other', 'browser' => 'Other'];
+
+		// Platform
+		$platform = 'Other';
+		if (stripos($ua, 'iPhone') !== false || stripos($ua, 'iPad') !== false) {
+			$platform = 'iOS';
+		} elseif (stripos($ua, 'Android') !== false) {
+			$platform = 'Android';
+		} elseif (stripos($ua, 'Windows') !== false) {
+			$platform = 'Windows';
+		} elseif (stripos($ua, 'Macintosh') !== false || stripos($ua, 'Mac OS') !== false) {
+			$platform = 'macOS';
+		} elseif (stripos($ua, 'CrOS') !== false) {
+			$platform = 'ChromeOS';
+		} elseif (stripos($ua, 'Linux') !== false) {
+			$platform = 'Linux';
+		}
+
+		// Browser (order matters: specific before generic)
+		$browser = 'Other';
+		if (stripos($ua, 'Edg/') !== false || stripos($ua, 'EdgA/') !== false) {
+			$browser = 'Edge';
+		} elseif (stripos($ua, 'OPR/') !== false || stripos($ua, 'Opera') !== false) {
+			$browser = 'Opera';
+		} elseif (stripos($ua, 'Firefox/') !== false || stripos($ua, 'FxiOS/') !== false) {
+			$browser = 'Firefox';
+		} elseif (stripos($ua, 'SamsungBrowser/') !== false) {
+			$browser = 'Samsung';
+		} elseif (stripos($ua, 'CriOS/') !== false) {
+			$browser = 'Chrome';
+		} elseif (stripos($ua, 'Chrome/') !== false) {
+			$browser = 'Chrome';
+		} elseif (stripos($ua, 'Safari/') !== false) {
+			$browser = 'Safari';
+		} elseif (stripos($ua, 'MSIE') !== false || stripos($ua, 'Trident/') !== false) {
+			$browser = 'IE';
+		}
+
+		// Check for bots
+		if (preg_match('/bot|crawl|spider|slurp|mediapartners/i', $ua)) {
+			$browser = 'Bot';
+		}
+
+		return ['platform' => $platform, 'browser' => $browser];
+	}
+
+	/**
+	 * Parse the primary language from Accept-Language header.
+	 */
+	static function parsePrimaryLanguage($header)
+	{
+		if (!$header) return null;
+		$parts = explode(',', $header);
+		$lang = trim(explode(';', $parts[0])[0]);
+		// Normalize: "en-US" → "en-US", "en" → "en"
+		return $lang ?: null;
 	}
 
 	/**
@@ -436,48 +578,212 @@ class Q_WebServer_Metrics
 	/**
 	 * Flush just the clickstream and page buffers to SQLite
 	 * (without closing the minute stats).
+	 *
+	 * Uses SQLite syntax compatible with old SQLite versions (including 3.7.x).
 	 */
 	private static function flushClickstream()
 	{
 		if (!self::$db) return;
+
+		// ── Flow transitions ──
 		if (!empty(self::$flowBuffer)) {
 			try {
-				$stmt = self::$db->prepare(
-					'INSERT INTO flow (from_path, to_path, count) VALUES (:f, :t, 1)
-					 ON CONFLICT(from_path, to_path) DO UPDATE SET count = count + 1'
+				self::$db->exec('BEGIN');
+
+				$update = self::$db->prepare(
+					'UPDATE flow
+					SET count = count + 1
+					WHERE from_path = :f AND to_path = :t'
 				);
-				foreach (self::$flowBuffer as $f) {
-					$stmt->bindValue(':f', $f['from']);
-					$stmt->bindValue(':t', $f['to']);
-					$stmt->execute();
-					$stmt->reset();
+
+				$insert = self::$db->prepare(
+					'INSERT OR IGNORE INTO flow
+					(from_path, to_path, count)
+					VALUES (:f, :t, 1)'
+				);
+
+				if ($update && $insert) {
+					foreach (self::$flowBuffer as $f) {
+						$update->bindValue(':f', $f['from']);
+						$update->bindValue(':t', $f['to']);
+						$update->execute();
+						$update->reset();
+
+						if (self::$db->changes() === 0) {
+							$insert->bindValue(':f', $f['from']);
+							$insert->bindValue(':t', $f['to']);
+							$insert->execute();
+							$insert->reset();
+						}
+					}
 				}
-			} catch (\Exception $e) {}
+
+				self::$db->exec('COMMIT');
+			} catch (\Throwable $e) {
+				@self::$db->exec('ROLLBACK');
+			}
+
 			self::$flowBuffer = [];
 		}
+
+		// ── Per-page statistics ──
 		if (!empty(self::$pageHits)) {
 			try {
+				self::$db->exec('BEGIN');
+
 				$now = date('c');
-				$stmt = self::$db->prepare(
-					'INSERT INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
-					 VALUES (:p, :h, :u, :a, :t)
-					 ON CONFLICT(path) DO UPDATE SET
-					   hits = hits + :h,
-					   unique_sessions = unique_sessions + :u,
-					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
-					   last_hit = :t'
+
+				/*
+				* Important: calculate the new weighted average using the OLD
+				* value of hits. SQLite evaluates the RHS expressions before
+				* assigning the updated values.
+				*/
+				$update = self::$db->prepare(
+					'UPDATE page_stats SET
+						avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
+						hits = hits + :h,
+						unique_sessions = unique_sessions + :u,
+						last_hit = :t
+					WHERE path = :p'
 				);
-				foreach (self::$pageHits as $path => $data) {
-					$stmt->bindValue(':p', $path);
-					$stmt->bindValue(':h', $data['hits']);
-					$stmt->bindValue(':u', count($data['sessions']));
-					$stmt->bindValue(':a', $data['hits'] > 0 ? $data['totalMs'] / $data['hits'] : 0);
-					$stmt->bindValue(':t', $now);
-					$stmt->execute();
-					$stmt->reset();
+
+				$insert = self::$db->prepare(
+					'INSERT OR IGNORE INTO page_stats
+					(path, hits, unique_sessions, avg_ms, last_hit)
+					VALUES (:p, :h, :u, :a, :t)'
+				);
+
+				if ($update && $insert) {
+					foreach (self::$pageHits as $path => $data) {
+						$hits = $data['hits'];
+						$unique = count($data['sessions']);
+						$avg = $hits > 0
+							? $data['totalMs'] / $hits
+							: 0;
+
+						$update->bindValue(':p', $path);
+						$update->bindValue(':h', $hits, SQLITE3_INTEGER);
+						$update->bindValue(':u', $unique, SQLITE3_INTEGER);
+						$update->bindValue(':a', $avg);
+						$update->bindValue(':t', $now);
+						$update->execute();
+						$update->reset();
+
+						if (self::$db->changes() === 0) {
+							$insert->bindValue(':p', $path);
+							$insert->bindValue(':h', $hits, SQLITE3_INTEGER);
+							$insert->bindValue(':u', $unique, SQLITE3_INTEGER);
+							$insert->bindValue(':a', $avg);
+							$insert->bindValue(':t', $now);
+							$insert->execute();
+							$insert->reset();
+						}
+					}
 				}
-			} catch (\Exception $e) {}
+
+				self::$db->exec('COMMIT');
+			} catch (\Throwable $e) {
+				@self::$db->exec('ROLLBACK');
+			}
+
 			self::$pageHits = [];
+		}
+
+		// ── Individual request records ──
+		if (!empty(self::$requestBuffer)) {
+			try {
+				self::$db->exec('BEGIN');
+
+				$stmt = self::$db->prepare(
+					'INSERT INTO requests
+					(ts, session_id, path, prev_path, status, duration_ms,
+					ip, host, platform, browser, language)
+					VALUES
+					(:ts, :sid, :path, :prev, :status, :dur,
+					:ip, :host, :plat, :br, :lang)'
+				);
+
+				if ($stmt) {
+					foreach (self::$requestBuffer as $r) {
+						$stmt->bindValue(':ts', $r['ts'], SQLITE3_INTEGER);
+						$stmt->bindValue(':sid', $r['sessionId']);
+						$stmt->bindValue(':path', $r['path']);
+						$stmt->bindValue(':prev', $r['prevPath']);
+						$stmt->bindValue(':status', $r['status'], SQLITE3_INTEGER);
+						$stmt->bindValue(':dur', $r['durationMs']);
+						$stmt->bindValue(':ip', $r['ip']);
+						$stmt->bindValue(':host', $r['host']);
+						$stmt->bindValue(':plat', $r['platform']);
+						$stmt->bindValue(':br', $r['browser']);
+						$stmt->bindValue(':lang', $r['lang']);
+						$stmt->execute();
+						$stmt->reset();
+					}
+				}
+
+				self::$db->exec('COMMIT');
+			} catch (\Throwable $e) {
+				@self::$db->exec('ROLLBACK');
+			}
+
+			self::$requestBuffer = [];
+		}
+
+		// ── Session summaries ──
+		if (!empty(self::$sessionUpdates)) {
+			try {
+				self::$db->exec('BEGIN');
+
+				$update = self::$db->prepare(
+					'UPDATE sessions SET
+						last_seen = CASE
+							WHEN last_seen > :last THEN last_seen
+							ELSE :last
+						END,
+						page_count = page_count + :cnt
+					WHERE session_id = :sid'
+				);
+
+				$insert = self::$db->prepare(
+					'INSERT OR IGNORE INTO sessions
+					(session_id, first_seen, last_seen, ip, host,
+					platform, browser, language, page_count, entry_path)
+					VALUES
+					(:sid, :first, :last, :ip, :host,
+					:plat, :br, :lang, :cnt, :entry)'
+				);
+
+				if ($update && $insert) {
+					foreach (self::$sessionUpdates as $sid => $s) {
+						$update->bindValue(':sid', $sid);
+						$update->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
+						$update->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
+						$update->execute();
+						$update->reset();
+
+						if (self::$db->changes() === 0) {
+							$insert->bindValue(':sid', $sid);
+							$insert->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
+							$insert->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
+							$insert->bindValue(':ip', $s['ip']);
+							$insert->bindValue(':host', $s['host']);
+							$insert->bindValue(':plat', $s['platform']);
+							$insert->bindValue(':br', $s['browser']);
+							$insert->bindValue(':lang', $s['lang']);
+							$insert->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
+							$insert->bindValue(':entry', $s['entryPath']);
+							$insert->execute();
+							$insert->reset();
+						}
+					}
+				}
+
+				self::$db->exec('COMMIT');
+			} catch (\Throwable $e) {
+				@self::$db->exec('ROLLBACK');
+			}
+
+			self::$sessionUpdates = [];
 		}
 	}
 
@@ -539,7 +845,10 @@ class Q_WebServer_Metrics
 		if (!self::$db) return;
 		$retainDays = Q_Config::get('Q', 'webserver', 'metrics', 'retainDays', 30);
 		$cutoff = date('Y-m-d H:i', strtotime("-$retainDays days"));
+		$cutoffTs = strtotime("-$retainDays days");
 		self::$db->exec("DELETE FROM minute_stats WHERE ts < '$cutoff'");
+		self::$db->exec("DELETE FROM requests WHERE ts < $cutoffTs");
+		self::$db->exec("DELETE FROM sessions WHERE last_seen < $cutoffTs");
 	}
 
 	// ── Query ──
@@ -667,6 +976,7 @@ class Q_WebServer_Metrics
 			'bufferSize' => count(self::$accessBuffer) + count(self::$errorBuffer),
 			'activeSessions' => count(self::$sessions),
 			'logFiles' => $logFiles,
+			'requestsBuffered' => count(self::$requestBuffer),
 			'retainDays' => Q_Config::get('Q', 'webserver', 'metrics', 'retainDays', 30),
 			'logRetainDays' => Q_Config::get('Q', 'webserver', 'metrics', 'logRetainDays', 7),
 		];
@@ -721,5 +1031,257 @@ class Q_WebServer_Metrics
 		$r = self::$db->query("SELECT from_path, count FROM flow WHERE to_path='$escapedPath' ORDER BY count DESC LIMIT 20");
 		while ($row = $r->fetchArray(SQLITE3_ASSOC)) $in[] = $row;
 		return ['outgoing' => $out, 'incoming' => $in];
+	}
+
+	// ── Analytics queries ──
+
+	/**
+	 * Get navigation flow edges with optional filters.
+	 * Returns [{from_path, to_path, count}] for Sankey diagrams.
+	 */
+	static function analyticsFlow($filters = [], $limit = 50)
+	{
+		if (!self::$db) return [];
+		$where = ['prev_path IS NOT NULL'];
+		$params = [];
+		self::buildAnalyticsWhere($filters, $where, $params);
+		$sql = 'SELECT prev_path AS from_path, path AS to_path, COUNT(*) AS count
+				FROM requests WHERE ' . implode(' AND ', $where) . '
+				GROUP BY prev_path, path ORDER BY count DESC LIMIT ' . (int) $limit;
+		return self::analyticsQuery($sql, $params);
+	}
+
+	/**
+	 * Get drilldown: where users go FROM a specific page, or come TO it.
+	 */
+	static function analyticsDrilldown($path, $direction = 'outgoing', $filters = [], $limit = 20)
+	{
+		if (!self::$db) return [];
+		$where = [];
+		$params = [];
+		self::buildAnalyticsWhere($filters, $where, $params);
+		if ($direction === 'outgoing') {
+			$where[] = 'prev_path = :drill_path';
+			$params[':drill_path'] = $path;
+			$sql = 'SELECT path AS to_path, COUNT(*) AS count
+					FROM requests WHERE ' . implode(' AND ', $where) . '
+					GROUP BY path ORDER BY count DESC LIMIT ' . (int) $limit;
+		} else {
+			$where[] = 'path = :drill_path';
+			$where[] = 'prev_path IS NOT NULL';
+			$params[':drill_path'] = $path;
+			$sql = 'SELECT prev_path AS from_path, COUNT(*) AS count
+					FROM requests WHERE ' . implode(' AND ', $where) . '
+					GROUP BY prev_path ORDER BY count DESC LIMIT ' . (int) $limit;
+		}
+		return self::analyticsQuery($sql, $params);
+	}
+
+	/**
+	 * List sessions matching filters with summary info.
+	 */
+	static function analyticsSessions($filters = [], $limit = 50, $offset = 0)
+	{
+		if (!self::$db) return [];
+		$where = [];
+		$params = [];
+		self::buildSessionWhere($filters, $where, $params);
+		$whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+		$sql = "SELECT session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path
+				FROM sessions $whereClause
+				ORDER BY last_seen DESC
+				LIMIT " . (int) $limit . " OFFSET " . (int) $offset;
+		return self::analyticsQuery($sql, $params);
+	}
+
+	/**
+	 * Get the full request path for a single session.
+	 */
+	static function sessionPath($sessionId)
+	{
+		if (!self::$db) return [];
+		$stmt = self::$db->prepare(
+			'SELECT ts, path, prev_path, status, duration_ms, ip, host
+			 FROM requests WHERE session_id = :sid ORDER BY ts ASC'
+		);
+		$stmt->bindValue(':sid', $sessionId);
+		$result = $stmt->execute();
+		$rows = [];
+		while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+			$rows[] = $row;
+		}
+		return $rows;
+	}
+
+	/**
+	 * Analytics overview: aggregate stats for the given filters.
+	 */
+	static function analyticsOverview($filters = [])
+	{
+		if (!self::$db) return [];
+		$where = [];
+		$params = [];
+		self::buildAnalyticsWhere($filters, $where, $params);
+		$whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+		$row = self::$db->querySingle(
+			"SELECT COUNT(*) AS page_views,
+					COUNT(DISTINCT session_id) AS sessions,
+					COUNT(DISTINCT ip) AS unique_ips,
+					AVG(duration_ms) AS avg_ms
+			 FROM requests $whereClause", true
+		);
+
+		// Top pages
+		$sql = "SELECT path, COUNT(*) AS hits FROM requests $whereClause GROUP BY path ORDER BY hits DESC LIMIT 10";
+		$topPages = self::analyticsQuery($sql, $params);
+
+		// Top platforms
+		$sql = "SELECT platform, COUNT(*) AS count FROM requests $whereClause GROUP BY platform ORDER BY count DESC";
+		$topPlatforms = self::analyticsQuery($sql, $params);
+
+		// Top browsers
+		$sql = "SELECT browser, COUNT(*) AS count FROM requests $whereClause GROUP BY browser ORDER BY count DESC";
+		$topBrowsers = self::analyticsQuery($sql, $params);
+
+		// Top languages
+		$sql = "SELECT language, COUNT(*) AS count FROM requests $whereClause AND language IS NOT NULL GROUP BY language ORDER BY count DESC LIMIT 10";
+		$topLanguages = self::analyticsQuery($sql, $params);
+
+		// Available hosts (for app filter)
+		$hostSql = "SELECT DISTINCT host FROM requests WHERE host IS NOT NULL ORDER BY host";
+		$hosts = [];
+		$r = self::$db->query($hostSql);
+		while ($h = $r->fetchArray(SQLITE3_ASSOC)) $hosts[] = $h['host'];
+
+		return [
+			'pageViews' => (int) ($row['page_views'] ?? 0),
+			'sessions' => (int) ($row['sessions'] ?? 0),
+			'uniqueIps' => (int) ($row['unique_ips'] ?? 0),
+			'avgMs' => round($row['avg_ms'] ?? 0, 1),
+			'topPages' => $topPages,
+			'topPlatforms' => $topPlatforms,
+			'topBrowsers' => $topBrowsers,
+			'topLanguages' => $topLanguages,
+			'hosts' => $hosts,
+		];
+	}
+
+	/**
+	 * Build WHERE clauses from analytics filters.
+	 * Supported filters: from (unix ts), to (unix ts), host, platform, browser, language, ip, path.
+	 */
+	private static function buildAnalyticsWhere($filters, &$where, &$params)
+	{
+		if (!empty($filters['from'])) {
+			$where[] = 'ts >= :from_ts';
+			$params[':from_ts'] = (int) $filters['from'];
+		}
+		if (!empty($filters['to'])) {
+			$where[] = 'ts <= :to_ts';
+			$params[':to_ts'] = (int) $filters['to'];
+		}
+		if (!empty($filters['host'])) {
+			$where[] = 'host = :host';
+			$params[':host'] = $filters['host'];
+		}
+		if (!empty($filters['platform'])) {
+			$where[] = 'platform = :platform';
+			$params[':platform'] = $filters['platform'];
+		}
+		if (!empty($filters['browser'])) {
+			$where[] = 'browser = :browser';
+			$params[':browser'] = $filters['browser'];
+		}
+		if (!empty($filters['language'])) {
+			$where[] = 'language = :language';
+			$params[':language'] = $filters['language'];
+		}
+		if (!empty($filters['ip'])) {
+			// Support prefix matching for IP ranges
+			$where[] = 'ip LIKE :ip_prefix';
+			$params[':ip_prefix'] = $filters['ip'] . '%';
+		}
+		if (!empty($filters['path'])) {
+			$where[] = 'path LIKE :path_prefix';
+			$params[':path_prefix'] = $filters['path'] . '%';
+		}
+	}
+
+	/**
+	 * Build WHERE clauses for sessions table.
+	 */
+	private static function buildSessionWhere($filters, &$where, &$params)
+	{
+		if (!empty($filters['from'])) {
+			$where[] = 'last_seen >= :from_ts';
+			$params[':from_ts'] = (int) $filters['from'];
+		}
+		if (!empty($filters['to'])) {
+			$where[] = 'first_seen <= :to_ts';
+			$params[':to_ts'] = (int) $filters['to'];
+		}
+		if (!empty($filters['host'])) {
+			$where[] = 'host = :host';
+			$params[':host'] = $filters['host'];
+		}
+		if (!empty($filters['platform'])) {
+			$where[] = 'platform = :platform';
+			$params[':platform'] = $filters['platform'];
+		}
+		if (!empty($filters['browser'])) {
+			$where[] = 'browser = :browser';
+			$params[':browser'] = $filters['browser'];
+		}
+		if (!empty($filters['language'])) {
+			$where[] = 'language = :language';
+			$params[':language'] = $filters['language'];
+		}
+		if (!empty($filters['ip'])) {
+			$where[] = 'ip LIKE :ip_prefix';
+			$params[':ip_prefix'] = $filters['ip'] . '%';
+		}
+	}
+
+	/**
+	 * Execute a parameterized analytics query and return rows.
+	 */
+	private static function analyticsQuery($sql, $params)
+	{
+		try {
+			$stmt = self::$db->prepare($sql);
+			foreach ($params as $key => $val) {
+				$stmt->bindValue($key, $val);
+			}
+			$result = $stmt->execute();
+			$rows = [];
+			while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+				$rows[] = $row;
+			}
+			return $rows;
+		} catch (\Exception $e) {
+			return [];
+		}
+	}
+
+	/**
+	 * Get date range of available analytics data.
+	 */
+	static function analyticsDateRange()
+	{
+		if (!self::$db) return null;
+		try {
+			$row = self::$db->querySingle(
+				'SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts, COUNT(*) AS total FROM requests', true
+			);
+			if (!$row || !$row['min_ts']) return null;
+			return [
+				'from' => (int) $row['min_ts'],
+				'to' => (int) $row['max_ts'],
+				'total' => (int) $row['total'],
+			];
+		} catch (\Exception $e) {
+			return null;
+		}
 	}
 }

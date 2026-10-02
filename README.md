@@ -1,4 +1,4 @@
-# ⚡ Qbix Server v2.3
+# ⚡ Qbix Server v3.0
 
 https://qbixserver.com is an all-in-one server that handles everything for you. Drop files in folders. Get real-time applications that can handle millions of users. Produce and distribute [standalone binaries](#single-binary-distribution) that run on Linux, Mac, Windows, and now iOS and Android too. Qbix Server v2 lets you build secure decentralized apps that can even work offline, over WiFi and Bluetooth.
 
@@ -53,6 +53,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 - [Mesh Networking](#mesh-networking)
 - [Mobile](#mobile)
 - [Collaborative Branches](#-collaborative-branches)
+- [Metrics & Analytics](#-metrics--analytics)
 - [With Qbix Platform](#-with-qbix-platform)
 - [Architecture](#️-architecture)
 - [HTTP/2 Support](#-http2-support)
@@ -87,6 +88,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 | 🔄 | [Data Sync](docs/sync.md) | Bloom filters, prolly trees, conflict resolution, current limits |
 | 📱 | [iOS & Android](docs/mobile.md) | Running on phones, transports, permissions |
 | 📈 | [Benchmarks](docs/BENCHMARKS.md) | Full methodology and numbers |
+| 📊 | [Metrics & Analytics](docs/METRICS.md) | Client-side telemetry, server-side analytics portal, Sankey flow, session replay |
 | 🔄 | [State Reset](docs/reset.md) | What gets restored between requests |
 | 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
 | 🔀 | [Migrate from Apache](docs/migrate-apache.md) | .htaccess unchanged, VirtualHost mapping |
@@ -183,10 +185,11 @@ The server intercepts 27 PHP functions (`header()`, `session_start()`, `setcooki
 
 ### Supported Frameworks
 
-Qbix Server ships presets and boot adapters for 13 frameworks. Every framework runs unmodified — no plugins or code changes needed.
+Qbix Server ships presets and boot adapters for 14 frameworks. Every framework runs unmodified — no plugins or code changes needed.
 
 | Framework | Preset | Speedup vs php-builtin |
 |---|---|---|
+| **Qbix** | `--preset=qbix` (auto-detected) | — |
 | [Laravel](docs/FRAMEWORKS.md#laravel) | `--preset=laravel` | [3.4×](docs/BENCHMARKS.md#laravel) |
 | [Symfony](docs/FRAMEWORKS.md#symfony) | `--preset=symfony` | [—](docs/BENCHMARKS.md#symfony) |
 | [WordPress](docs/FRAMEWORKS.md#wordpress) | `--preset=wordpress` | — |
@@ -336,6 +339,8 @@ php qbixserver.php --port=8080  # done
 | **Collaborative branches** | Copy-on-write branches with per-user permissions, database cloning, and merge review |
 | **Default lockdown** | Branches locked down by default — file-tier permissions, deny paths, optional OS-level UID isolation |
 | **MCP integration** | Model Context Protocol endpoint for AI-assisted editing with branch push, patch, export, and merge requests |
+| **Client metrics** | Opt-in [script injection](docs/METRICS.md) for client-side telemetry — scroll depth, media tracking, SPA navigation, click tracking — stored as daily TSV, viewable in panel |
+| **Analytics portal** | Server-side [per-request analytics](docs/METRICS.md#analytics-portal) with Sankey flow visualization, session replay, UA parsing, and filterable drill-down — no client-side opt-in needed |
 | **Mesh networking** | Encrypted P2P over BLE + Wi-Fi with multi-hop routing |
 | **Data sync** | Bloom filter + prolly tree sync between peers |
 
@@ -852,7 +857,7 @@ Branches use a two-axis permission model:
 | **Branch permission** | `view`, `edit`, `admin` | Who can see, push to, or configure the branch |
 | **File tier** | `styles`, `markup`, `frontend`, `code` | Which file types the user can push |
 
-The `styles` tier allows only CSS/SCSS/LESS/SASS. `markup` adds HTML, SVG, Markdown, images, fonts, JSON, XML, YAML. `frontend` adds JS/TS/JSX/TSX/Vue/Svelte. `code` allows everything including PHP. Tiers are cumulative — each includes everything from the tier below.
+The `styles` tier allows only CSS/SCSS/LESS/SASS. `markup` adds HTML, SVG, Markdown, templates (Handlebars, Mustache, Twig, Blade, EJS, Pug, Nunjucks), images, fonts, JSON, XML, YAML. `frontend` adds JS/TS/JSX/TSX/Vue/Svelte. `code` allows everything including PHP. Tiers are cumulative — each includes everything from the tier below.
 
 ### Default lockdown
 
@@ -889,6 +894,37 @@ When a branch is ready, a collaborator creates a merge request. Admins review th
 ### AI-assisted editing on public servers
 
 Any Qbix Server exposed to the network becomes a workspace that AI coding assistants can safely edit. Claude, ChatGPT plugins, Cursor, Windsurf, or any MCP-compatible tool connects to the server's MCP endpoint, authenticates with a scoped token, and reads/writes files on a branch — never trunk. The server enforces file-tier permissions and deny-path rules on every write. When git or mercurial is installed (as it typically is on any Linux server), each patch the AI applies becomes a real VCS commit with a message and hash, so admins reviewing a merge request see a proper commit log. Because branches have real git repos, they can also push to or pull from repos on other servers, enabling staging-to-production promotion, distributed editing across multiple Qbix instances, and CI integration. See [AI Collaboration](docs/COLLABORATION.md) for the full workflow, permission model, and multi-server patterns.
+
+---
+
+## 📊 Metrics & Analytics
+
+Qbix Server includes two complementary observability systems. Both are zero-config — no external services, no agents to install.
+
+### Client-side metrics (opt-in)
+
+Set `Q.webserver.clientMetrics.enabled` to `true` and the server injects telemetry scripts into every HTML page it serves. The bundled trackers report scroll depth, section reads, media playback, SPA navigation, outbound clicks, and dwell time. Events arrive as JSON via `sendBeacon` and are stored as daily TSV files. A "Client Metrics" tab in the control panel shows daily event counts, top pages, and top event types, with raw TSV download for offline analysis.
+
+The injection system also supports arbitrary JS/CSS via `extraScripts` and `extraStyles`, and respects `Sec-Fetch-Dest` so subresource fetches and iframes are never injected.
+
+Metrics.js works standalone on any website — include the script, point it at a POST endpoint, and it runs without Qbix Server. Minified builds (`.min.js`) ship alongside the full versions.
+
+### Server-side analytics (automatic)
+
+Every HTTP request is recorded in SQLite with session tracking, navigation flow, user agent parsing (platform + browser), and primary language. No client-side opt-in is needed — the server records requests as part of its normal metrics collection.
+
+The "Analytics" tab in the control panel provides:
+
+- **Sankey flow diagram** — interactive d3 visualization of how users navigate between pages. Click any node to drill down into its incoming and outgoing flows.
+- **Session replay** — browse individual sessions with their full request timeline: entry page, every subsequent navigation, timestamps, response times, and status codes.
+- **Filters** — narrow any view by host (app), time period, platform, browser, language, IP prefix, or path prefix.
+- **Overview stats** — page views, unique sessions, unique IPs, average response time, top pages, top platforms, top browsers, and top languages.
+
+A mini Sankey also appears in the Apps tab for a quick traffic overview.
+
+Six API endpoints expose the analytics data programmatically for integration with external dashboards or custom reporting.
+
+See [METRICS.md](docs/METRICS.md) for the full reference — event format, tracker options, standalone usage, analytics API endpoints, SQLite schema, and Q framework integration.
 
 ---
 

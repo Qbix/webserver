@@ -130,7 +130,7 @@ class Q_WebServer_MCP
 			'protocolVersion' => self::PROTOCOL_VERSION,
 			'serverInfo' => array(
 				'name' => 'qbix-server',
-				'version' => '1.0.0'
+				'version' => '3.0.0'
 			),
 			'capabilities' => array(
 				'tools' => new \stdClass(),
@@ -163,7 +163,7 @@ class Q_WebServer_MCP
 		}
 
 		// Branch collaboration tools
-		if (in_array($toolName, array('branch_export', 'branch_push', 'branch_request_merge'))) {
+		if (in_array($toolName, array('branch_export', 'branch_push', 'branch_patch', 'branch_request_merge'))) {
 			return self::handleBranchTool($toolName, $arguments, $parsed);
 		}
 
@@ -300,6 +300,39 @@ class Q_WebServer_MCP
 			),
 			'annotations' => array(
 				'title' => 'Branch Push',
+				'readOnlyHint' => false,
+				'destructiveHint' => false,
+				'openWorldHint' => false,
+			),
+		);
+
+		$tools[] = array(
+			'name' => 'branch_patch',
+			'description' => 'Apply a unified diff (patch) to a branch. All file paths in the diff are validated against your file-permission tier and deny paths before anything is written. Uses git if available (creating real commits), then falls back to mercurial, then to the patch command. If a commitMessage is provided and a VCS is available, the change is committed automatically.',
+			'inputSchema' => array(
+				'type' => 'object',
+				'properties' => array(
+					'appHost' => array(
+						'type' => 'string',
+						'description' => 'The app hostname',
+					),
+					'branchName' => array(
+						'type' => 'string',
+						'description' => 'Branch name to patch',
+					),
+					'patch' => array(
+						'type' => 'string',
+						'description' => 'Unified diff content (the output of git diff, diff -u, etc.). Must use a/ b/ path prefixes.',
+					),
+					'commitMessage' => array(
+						'type' => 'string',
+						'description' => 'If provided and a VCS (git or hg) is available, the patched files are committed with this message.',
+					),
+				),
+				'required' => array('appHost', 'branchName', 'patch'),
+			),
+			'annotations' => array(
+				'title' => 'Branch Patch',
 				'readOnlyHint' => false,
 				'destructiveHint' => false,
 				'openWorldHint' => false,
@@ -482,12 +515,44 @@ class Q_WebServer_MCP
 	static function getServerInstructions($host)
 	{
 		$appName = Q_Config::get('Q', 'app', $host);
-		return "This is a Qbix-powered server at $host"
-			. ($appName ? " running the $appName application" : '')
-			. ". Use the available tools to interact with the website's content. "
-			. "The site uses a stream-based content model where pages contain sections, "
-			. "and sections contain blocks. You can create, edit, and manage web content "
-			. "through the provided tools.";
+
+		$parts = array();
+
+		// Basic identity
+		$parts[] = "This is a Qbix-powered server at $host"
+			. ($appName ? " running the $appName application." : '.');
+
+		// Framework detection
+		$presets = array('laravel', 'symfony', 'wordpress', 'drupal',
+			'cakephp', 'codeigniter', 'yii', 'mezzio', 'slim',
+			'joomla', 'magento', 'nextcloud', 'owncloud');
+		$detected = Q_Config::get('Q', 'webserver', 'hosts', $host, 'preset', null);
+		if ($detected && in_array($detected, $presets)) {
+			$parts[] = "Framework: $detected.";
+		}
+
+		// Content model
+		$parts[] = "The site uses a stream-based content model where pages contain sections, and sections contain blocks. Use the available tools to create, edit, and manage content.";
+
+		// Branch collaboration
+		$parts[] = "Branches are copy-on-write overlays of the trunk. You can push individual files (branch_push) or apply unified diffs (branch_patch). Every file path is validated against your permission tier (styles, markup, frontend, or code) and deny-path rules before writing.";
+
+		// VCS availability
+		$vcs = Q_WebServer_Branch::detectVcs();
+		if ($vcs === 'git') {
+			$parts[] = "Git is available. The branch_patch tool initializes a git repo in the branch directory on first use and can create commits when you provide a commitMessage. Generate patches with `git diff` format using a/ b/ path prefixes.";
+		} elseif ($vcs === 'hg') {
+			$parts[] = "Mercurial (hg) is available. The branch_patch tool initializes an hg repo on first use and can create commits with a commitMessage.";
+		} elseif ($vcs === 'patch') {
+			$parts[] = "The patch command is available but no VCS is installed. Patches will be applied but no commit history is kept. Install git or mercurial for commit support.";
+		} else {
+			$parts[] = "No VCS or patch tool is available on this server. Use branch_push to update files individually.";
+		}
+
+		// LLM discovery hint
+		$parts[] = "For app-specific or framework-specific guidance, check for an LLM.txt file at the app root (e.g. https://$host/LLM.txt or https://$host/.well-known/llm.txt). That file, if present, describes the app's structure, conventions, and available APIs in a format designed for AI assistants.";
+
+		return implode(' ', $parts);
 	}
 
 	static function toolResult($text, $isError = false)
@@ -550,6 +615,9 @@ class Q_WebServer_MCP
 					break;
 				case 'branch_push':
 					$result = Q_WebServer_Branch::apiPush($arguments, $authResult);
+					break;
+				case 'branch_patch':
+					$result = Q_WebServer_Branch::apiPatch($arguments, $authResult);
 					break;
 				case 'branch_request_merge':
 					$result = Q_WebServer_Branch::apiRequestMerge($arguments, $authResult);

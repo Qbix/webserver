@@ -228,10 +228,12 @@ class Q_WebServer
 		$socketPath = Q_Config::get('Q', 'webserver', 'socket', null);
 
 		// TCP listener — always bind unless port is explicitly 0
-		self::$socket = stream_socket_server(
-			"tcp://{$host}:{$port}", $errno, $errstr,
-			STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
-		);
+		if ($port > 0) {
+			self::$socket = stream_socket_server(
+				"tcp://{$host}:{$port}", $errno, $errstr,
+				STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
+			);
+		}
 		if (!self::$socket) {
 			throw new Exception("Could not bind to {$host}:{$port} — $errstr");
 		}
@@ -809,6 +811,19 @@ class Q_WebServer
 			});
 		}
 
+		// Client-side metrics — script injection and event collection
+		$clientMetricsFile = __DIR__ . '/WebServer/ClientMetrics.php';
+		if (is_file($clientMetricsFile)) {
+			require_once $clientMetricsFile;
+			if (Q_WebServer_ClientMetrics::enabled()) {
+				Q_WebServer_ClientMetrics::init();
+				// Daily purge of old TSV files
+				Q_Evented::repeat(86400, function () {
+					Q_WebServer_ClientMetrics::purgeOld();
+				});
+			}
+		}
+
 		Q_Evented::run();
 	}
 
@@ -1121,7 +1136,9 @@ class Q_WebServer
 					$parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
 					$parsed['headers']['user-agent'] ?? '',
 					self::$lastBytes,
-					$parsed['cookies'] ?? []
+					$parsed['cookies'] ?? [],
+					$parsed['headers']['host'] ?? null,
+					$parsed['headers'] ?? []
 				);
 			}
 			self::$lastBytes = 0;
@@ -1253,6 +1270,20 @@ class Q_WebServer
 					'headers'=>array('Content-Type'=>'text/plain; version=0.0.4'));
 			}
 			return array('status'=>404, 'body'=>'Metrics not enabled');
+		}
+		// Client-side metrics: event collection + bundled script serving
+		if (class_exists('Q_WebServer_ClientMetrics', false)
+			&& Q_WebServer_ClientMetrics::enabled()
+		) {
+			$cmEndpoint = Q_WebServer_ClientMetrics::endpoint();
+			if ($path === $cmEndpoint) {
+				return Q_WebServer_ClientMetrics::handlePost($parsed);
+			}
+			if (strpos($path, $cmEndpoint . '/') === 0) {
+				$filename = basename($path);
+				$result = Q_WebServer_ClientMetrics::serveScript($filename);
+				if ($result) return $result;
+			}
 		}
 		if ($path === '/Q/attestation') {
 			$attFile = __DIR__ . '/WebServer/Trust.php';
@@ -1606,6 +1637,11 @@ class Q_WebServer
 		$__tp = array(); $__tp['start'] = hrtime(true);
 		$method = $parsed['method'];
 		$path = $parsed['path'];
+
+		// Store request headers for ClientMetrics Sec-Fetch-Dest check
+		if (class_exists('Q_WebServer_ClientMetrics', false)) {
+			Q_WebServer_ClientMetrics::setRequestHeaders($parsed['headers'] ?? array());
+		}
 
 		// ?Q.clearCache — flush all in-memory caches and re-read config
 		$qs = $parsed['query'] ?? '';
@@ -3218,6 +3254,12 @@ WORKER;
 					);
 				} else {
 					$body = file_get_contents($fsPath);
+					// Inject client metrics script into static HTML before compression
+					if (class_exists('Q_WebServer_ClientMetrics', false)
+						&& Q_WebServer_ClientMetrics::enabled()
+					) {
+						$body = Q_WebServer_ClientMetrics::injectScript($body, $contentType, $reqHeaders);
+					}
 					$body = Q_WebServer_Headers::maybeCompress($body, $contentType, $reqHeaders, $gzHeaders);
 				}
 				$out = "HTTP/1.1 200 OK\r\n" . $baseHeaders;
@@ -3233,6 +3275,13 @@ WORKER;
 
 		// ── Uncompressed — serve and cache ──
 		$body = file_get_contents($fsPath);
+		// Inject client metrics script into static HTML
+		if (class_exists('Q_WebServer_ClientMetrics', false)
+			&& Q_WebServer_ClientMetrics::enabled()
+		) {
+			$body = Q_WebServer_ClientMetrics::injectScript($body, $contentType, $reqHeaders);
+			$size = strlen($body); // update size after injection
+		}
 		$kaHead = "HTTP/1.1 200 OK\r\n" . $baseHeaders
 			. "Content-Length: $size\r\nConnection: keep-alive\r\n\r\n";
 		$clHead = "HTTP/1.1 200 OK\r\n" . $baseHeaders
@@ -4477,6 +4526,15 @@ HTML;
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
 		$body = (string) $body;
+
+		// Inject client metrics script into HTML responses
+		if ($status === 200
+			&& class_exists('Q_WebServer_ClientMetrics', false)
+			&& Q_WebServer_ClientMetrics::enabled()
+		) {
+			$body = Q_WebServer_ClientMetrics::injectScript($body, $type);
+		}
+
 		self::$lastBytes = strlen($body);
 		static $serverTag = null;
 		if ($serverTag === null) {

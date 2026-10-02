@@ -80,9 +80,12 @@ class Q_WebServer_Panel
 
 			$result = self::handleApi($path, $parsed);
 			if (!empty($result['_raw'])) {
-				Q_WebServer::sendResponse($client, 200,
+				$rawHeaders = array();
+				if (!empty($result['headers'])) $rawHeaders = $result['headers'];
+				if (!isset($rawHeaders['Cache-Control'])) $rawHeaders['Cache-Control'] = 'public, max-age=3600';
+				Q_WebServer::sendResponse($client, self::httpStatus($result),
 					$result['body'], $result['contentType'],
-					array('Cache-Control' => 'public, max-age=3600'));
+					$rawHeaders);
 			} else {
 				Q_WebServer::sendResponse($client, self::httpStatus($result),
 					json_encode($result), 'application/json');
@@ -517,6 +520,43 @@ class Q_WebServer_Panel
 				$qp = self::queryParams($parsed);
 				$path = $qp['path'] ?? '/';
 				return Q_WebServer_Metrics::pageFlow($path);
+			case 'metrics/analytics':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$filters = self::analyticsFilters($qp);
+				return Q_WebServer_Metrics::analyticsOverview($filters);
+			case 'metrics/analytics/flow':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$filters = self::analyticsFilters($qp);
+				$limit = (int) ($qp['limit'] ?? 50);
+				return ['edges' => Q_WebServer_Metrics::analyticsFlow($filters, min($limit, 200))];
+			case 'metrics/analytics/drilldown':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$filters = self::analyticsFilters($qp);
+				$path = $qp['path'] ?? '/';
+				$dir = $qp['direction'] ?? 'outgoing';
+				return [
+					'path' => $path,
+					'direction' => $dir,
+					'edges' => Q_WebServer_Metrics::analyticsDrilldown($path, $dir, $filters)
+				];
+			case 'metrics/analytics/sessions':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$filters = self::analyticsFilters($qp);
+				$limit = (int) ($qp['limit'] ?? 50);
+				$offset = (int) ($qp['offset'] ?? 0);
+				return ['sessions' => Q_WebServer_Metrics::analyticsSessions($filters, min($limit, 100), $offset)];
+			case 'metrics/analytics/session':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$sid = $qp['id'] ?? '';
+				return ['requests' => Q_WebServer_Metrics::sessionPath($sid)];
+			case 'metrics/analytics/dates':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				return Q_WebServer_Metrics::analyticsDateRange() ?? ['from' => null, 'to' => null, 'total' => 0];
 			case 'cache/clear':
 				return self::apiClearCache();
 			case 'workers':
@@ -589,6 +629,28 @@ class Q_WebServer_Panel
 				$tData = array_merge($tData, $tQuery);
 				return Q_WebServer_Transport::handleApi($tAction, $tData);
 			default:
+				// Prefix-matched routes (sub-paths with variable segments)
+				if (strpos($route, 'client-metrics') === 0) {
+					$cmFile = dirname(__DIR__) . '/WebServer/ClientMetrics.php';
+					if (!lstat($cmFile)) {
+						return array('status' => 404, 'error' => 'Client metrics not available');
+					}
+					require_once $cmFile;
+					$subPath = substr($route, 14); // strip "client-metrics"
+					$cmResult = Q_WebServer_ClientMetrics::handlePanelApi($subPath, $parsed);
+					// handlePanelApi returns {status, body, headers} with
+					// pre-encoded body — convert to handleApi format
+					$cmHeaders = $cmResult['headers'] ?? array();
+					$ct = $cmHeaders['Content-Type'] ?? 'application/json';
+					unset($cmHeaders['Content-Type']);
+					return array(
+						'_raw' => true,
+						'body' => $cmResult['body'] ?? '',
+						'contentType' => $ct,
+						'status' => $cmResult['status'] ?? 200,
+						'headers' => $cmHeaders ?: null
+					);
+				}
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
 	}
@@ -4987,6 +5049,23 @@ class Q_WebServer_Panel
 		return $p;
 	}
 
+	/**
+	 * Extract analytics filter parameters from query params.
+	 */
+	private static function analyticsFilters($qp)
+	{
+		$filters = [];
+		if (!empty($qp['from'])) $filters['from'] = (int) $qp['from'];
+		if (!empty($qp['to'])) $filters['to'] = (int) $qp['to'];
+		if (!empty($qp['host'])) $filters['host'] = $qp['host'];
+		if (!empty($qp['platform'])) $filters['platform'] = $qp['platform'];
+		if (!empty($qp['browser'])) $filters['browser'] = $qp['browser'];
+		if (!empty($qp['language'])) $filters['language'] = $qp['language'];
+		if (!empty($qp['ip'])) $filters['ip'] = $qp['ip'];
+		if (!empty($qp['path'])) $filters['path'] = $qp['path'];
+		return $filters;
+	}
+
 	static function appsDir()
 	{
 		// 1. Explicit Q config
@@ -5313,6 +5392,8 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('mobile',event)">Mobile</div>
   <div class="tab" onclick="showTab('users',event)">Users</div>
   <div class="tab" onclick="showTab('branches',event)">Branches</div>
+  <div class="tab" onclick="showTab('clientmetrics',event)">Client Metrics</div>
+  <div class="tab" onclick="showTab('analytics',event)">Analytics</div>
 </div>
 
 <!-- APPS TAB -->
@@ -5341,6 +5422,13 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <button class="btn btn-ghost" onclick="hideCreate()">Cancel</button></div>
   </div>
   <div id="apps-list"></div>
+  <div id="mini-sankey-wrap" style="margin-top:20px;display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3 style="font-size:14px">Top Navigation Flows</h3>
+      <a href="#" onclick="showTab('analytics',event);return false" style="font-size:12px;color:var(--ac)">Full Analytics →</a>
+    </div>
+    <svg id="mini-sankey" style="width:100%;min-height:180px"></svg>
+  </div>
 </div>
 
 <!-- DOMAINS TAB -->
@@ -5712,6 +5800,76 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   </div>
 </div>
 
+<div id="tab-clientmetrics" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Client-Side Metrics</h2>
+  <div id="cm-status" style="margin-bottom:16px"></div>
+  <div class="card" id="cm-overview" style="display:none">
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px" id="cm-stats"></div>
+    <div style="margin-bottom:12px">
+      <label style="font-size:13px;font-weight:600">Date</label>
+      <select id="cm-date-select" onchange="loadClientMetricsDate(this.value)" style="margin-left:8px;padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px"></select>
+      <a id="cm-tsv-link" href="#" download style="margin-left:12px;font-size:13px;display:none">Download TSV</a>
+    </div>
+    <div id="cm-summary" style="margin-bottom:16px"></div>
+    <div style="margin-bottom:8px">
+      <input type="text" id="cm-filter-label" placeholder="Filter by label prefix" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;width:180px">
+      <input type="text" id="cm-filter-page" placeholder="Filter by page prefix" style="margin-left:8px;padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;width:180px">
+      <button class="btn btn-sm btn-primary" onclick="applyClientMetricsFilter()" style="margin-left:8px">Filter</button>
+    </div>
+    <div id="cm-events" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+</div>
+
+<div id="tab-analytics" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Navigation Analytics</h2>
+  <div id="an-status" style="margin-bottom:16px"></div>
+  <div class="card" id="an-main" style="display:none">
+    <div id="an-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;align-items:flex-end">
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">App / Host</label>
+        <select id="an-host" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px"><option value="">All</option></select></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">Period</label>
+        <select id="an-period" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px">
+          <option value="3600">Last hour</option><option value="86400" selected>Last 24h</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">Platform</label>
+        <select id="an-platform" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px"><option value="">All</option></select></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">Browser</label>
+        <select id="an-browser" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px"><option value="">All</option></select></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">Language</label>
+        <input type="text" id="an-language" placeholder="e.g. en-US" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;width:80px"></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">IP prefix</label>
+        <input type="text" id="an-ip" placeholder="e.g. 192.168" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;width:100px"></div>
+      <div><label style="font-size:11px;display:block;margin-bottom:2px">Path prefix</label>
+        <input type="text" id="an-path" placeholder="e.g. /blog" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;width:100px"></div>
+      <button class="btn btn-sm btn-primary" onclick="loadAnalytics()" style="align-self:flex-end">Apply</button>
+    </div>
+    <div id="an-overview" style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <div id="an-sankey-wrap" style="position:relative;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:16px">
+      <div id="an-breadcrumb" style="font-size:12px;color:var(--dim);margin-bottom:6px;display:none">
+        <a href="#" onclick="analyticsResetDrill();return false" style="color:var(--ac)">All flows</a> <span id="an-bc-text"></span>
+      </div>
+      <svg id="an-sankey" style="width:100%;min-height:300px"></svg>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <h3 style="font-size:14px;margin-bottom:8px">Top Pages</h3>
+        <div id="an-pages" style="max-height:300px;overflow-y:auto"></div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <h3 style="font-size:14px;margin-bottom:8px">Sessions <span id="an-sess-count" style="color:var(--dim);font-weight:normal;font-size:12px"></span></h3>
+        <div id="an-sessions" style="max-height:400px;overflow-y:auto"></div>
+        <button class="btn btn-sm" id="an-sess-more" onclick="loadMoreSessions()" style="display:none;margin-top:8px">Load more</button>
+      </div>
+    </div>
+    <div id="an-session-detail" style="display:none;margin-top:16px">
+      <h3 style="font-size:14px;margin-bottom:8px">Session Path <button class="btn btn-sm" onclick="document.getElementById('an-session-detail').style.display='none'" style="margin-left:8px;font-size:11px">Close</button></h3>
+      <div id="an-session-path"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3-sankey/0.12.3/d3-sankey.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
 <script>
 const API = '/Q/api';
 let hasNode = false;
@@ -5977,6 +6135,8 @@ function showTab(name, ev) {
   if (name==='mobile') { loadToolchains(); loadMobileAppSelect(); }
   if (name==='users') loadUsers();
   if (name==='branches') loadBranches();
+  if (name==='clientmetrics') loadClientMetrics();
+  if (name==='analytics') loadAnalytics();
 }
 
 // Apps
@@ -5998,6 +6158,56 @@ async function loadApps() {
     return;
   }
   renderAppList(el);
+  // Load mini Sankey
+  loadMiniSankey();
+}
+async function loadMiniSankey() {
+  try {
+    var from = Math.floor(Date.now()/1000) - 86400;
+    var data = await api('metrics/analytics/flow?limit=20&from=' + from);
+    var edges = data.edges || [];
+    var wrap = document.getElementById('mini-sankey-wrap');
+    if (!edges.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    var svg = d3.select('#mini-sankey');
+    svg.selectAll('*').remove();
+    var width = Math.max(wrap.clientWidth - 16, 300);
+    var nodeSet = {};
+    edges.forEach(function(e) { nodeSet[e.from_path] = true; nodeSet[e.to_path] = true; });
+    var nodeNames = Object.keys(nodeSet);
+    var nodes = nodeNames.map(function(n) { return {name: n}; });
+    var nameIdx = {};
+    nodeNames.forEach(function(n, i) { nameIdx[n] = i; });
+    var links = edges.map(function(e) {
+      return {source: nameIdx[e.from_path], target: nameIdx[e.to_path], value: parseInt(e.count) || 1};
+    }).filter(function(l) { return l.source !== l.target; });
+    if (!links.length) { wrap.style.display = 'none'; return; }
+    var height = Math.max(Math.min(nodes.length * 22, 250), 180);
+    svg.attr('width', width).attr('height', height).attr('viewBox', '0 0 ' + width + ' ' + height);
+    var sankey = d3.sankey().nodeWidth(10).nodePadding(8).nodeSort(null).extent([[1,1],[width-1,height-4]]);
+    var graph;
+    try {
+      graph = sankey({nodes: nodes.map(function(d){return Object.assign({},d)}), links: links.map(function(d){return Object.assign({},d)})});
+    } catch(e) { wrap.style.display = 'none'; return; }
+    var color = d3.scaleOrdinal(d3.schemeTableau10);
+    svg.append('g').attr('fill','none').attr('stroke-opacity',0.3)
+      .selectAll('path').data(graph.links).join('path')
+      .attr('d', d3.sankeyLinkHorizontal())
+      .attr('stroke', function(d){return color(d.source.name)})
+      .attr('stroke-width', function(d){return Math.max(1,d.width)});
+    var node = svg.append('g').selectAll('g').data(graph.nodes).join('g');
+    node.append('rect')
+      .attr('x',function(d){return d.x0}).attr('y',function(d){return d.y0})
+      .attr('height',function(d){return Math.max(1,d.y1-d.y0)})
+      .attr('width',function(d){return d.x1-d.x0})
+      .attr('fill',function(d){return color(d.name)}).attr('rx',2);
+    node.append('text')
+      .attr('x',function(d){return d.x0<width/2?d.x1+4:d.x0-4})
+      .attr('y',function(d){return(d.y1+d.y0)/2}).attr('dy','0.35em')
+      .attr('text-anchor',function(d){return d.x0<width/2?'start':'end'})
+      .attr('font-size','10px').attr('fill','var(--fg)')
+      .text(function(d){return d.name.length>30?d.name.substring(0,27)+'...':d.name});
+  } catch(e) { /* no analytics data yet */ }
 }
 function renderAppList(el) {
   el.innerHTML = _appsData.map(function(a) {
@@ -7886,6 +8096,408 @@ function formatBytes(b) {
   while (b >= 1024 && i < 3) { b /= 1024; i++; }
   return b.toFixed(1) + ' ' + u[i];
 }
+
+// ── Client Metrics ────────────────────────────────────
+var _cmDates = [];
+var _cmCurrentDate = '';
+async function loadClientMetrics() {
+  var statusEl = document.getElementById('cm-status');
+  var overviewEl = document.getElementById('cm-overview');
+  try {
+    var d = await api('client-metrics');
+    if (d.error) {
+      statusEl.innerHTML = '<div class="card"><p style="color:var(--dim)">Client metrics not enabled. Set <code>Q.webserver.clientMetrics.enabled = true</code> in config.</p></div>';
+      overviewEl.style.display = 'none';
+      return;
+    }
+    _cmDates = d.dates || [];
+    statusEl.innerHTML = '';
+    overviewEl.style.display = '';
+
+    // Populate date select (newest first)
+    var sel = document.getElementById('cm-date-select');
+    sel.innerHTML = _cmDates.slice().reverse().map(function(dt) {
+      return '<option value="'+dt+'">'+dt+'</option>';
+    }).join('');
+
+    // Show today's summary if available
+    if (d.today) {
+      renderClientMetricsSummary(d.today);
+      _cmCurrentDate = _cmDates[_cmDates.length - 1] || '';
+    } else if (_cmDates.length) {
+      _cmCurrentDate = _cmDates[_cmDates.length - 1];
+      loadClientMetricsDate(_cmCurrentDate);
+    } else {
+      document.getElementById('cm-stats').innerHTML = '<p style="color:var(--dim);font-size:13px">No client metrics data yet. Events will appear once visitors interact with pages.</p>';
+    }
+  } catch(e) {
+    statusEl.innerHTML = '<div class="card"><p style="color:var(--red)">Error loading client metrics: '+escHtml(e.message)+'</p></div>';
+  }
+}
+
+async function loadClientMetricsDate(date) {
+  _cmCurrentDate = date;
+  var tsvLink = document.getElementById('cm-tsv-link');
+  tsvLink.href = API + '/client-metrics/' + date + '/tsv';
+  tsvLink.style.display = 'inline';
+  try {
+    var d = await api('client-metrics/' + date);
+    renderClientMetricsSummary(d);
+    loadClientMetricsEvents(date, '', '');
+  } catch(e) { /* silent */ }
+}
+
+function renderClientMetricsSummary(s) {
+  var statsEl = document.getElementById('cm-stats');
+  statsEl.innerHTML =
+    '<div style="text-align:center"><div style="font-size:24px;font-weight:700">'+
+      (s.events||0)+'</div><div style="font-size:12px;color:var(--dim)">Events</div></div>'+
+    '<div style="text-align:center"><div style="font-size:24px;font-weight:700">'+
+      (s.visitors||0)+'</div><div style="font-size:12px;color:var(--dim)">Visitors</div></div>'+
+    '<div style="text-align:center"><div style="font-size:24px;font-weight:700">'+
+      (s.sessions||0)+'</div><div style="font-size:12px;color:var(--dim)">Sessions</div></div>';
+
+  var sumEl = document.getElementById('cm-summary');
+  var html = '';
+  if (s.topLabels && Object.keys(s.topLabels).length) {
+    html += '<div style="margin-bottom:12px"><strong style="font-size:13px">Top Event Types</strong>';
+    html += '<table style="width:100%;font-size:12px;margin-top:4px;border-collapse:collapse">';
+    var labels = Object.entries(s.topLabels).slice(0, 10);
+    labels.forEach(function(kv) {
+      html += '<tr><td style="padding:2px 8px 2px 0">'+escHtml(kv[0])+'</td><td style="padding:2px 0;text-align:right;color:var(--dim)">'+kv[1]+'</td></tr>';
+    });
+    html += '</table></div>';
+  }
+  if (s.topPages && Object.keys(s.topPages).length) {
+    html += '<div><strong style="font-size:13px">Top Pages</strong>';
+    html += '<table style="width:100%;font-size:12px;margin-top:4px;border-collapse:collapse">';
+    var pages = Object.entries(s.topPages).slice(0, 10);
+    pages.forEach(function(kv) {
+      html += '<tr><td style="padding:2px 8px 2px 0">'+escHtml(kv[0])+'</td><td style="padding:2px 0;text-align:right;color:var(--dim)">'+kv[1]+'</td></tr>';
+    });
+    html += '</table></div>';
+  }
+  sumEl.innerHTML = html;
+}
+
+async function loadClientMetricsEvents(date, label, page) {
+  var evEl = document.getElementById('cm-events');
+  var params = '?limit=200';
+  if (label) params += '&label=' + encodeURIComponent(label);
+  if (page) params += '&page=' + encodeURIComponent(page);
+  try {
+    var d = await api('client-metrics/' + date + '/events' + params);
+    if (!d.rows || !d.rows.length) {
+      evEl.innerHTML = '<p style="color:var(--dim);font-size:12px">No events' +
+        (label || page ? ' matching filter' : '') + '.</p>';
+      return;
+    }
+    var cols = d.columns || Object.keys(d.rows[0]);
+    var html = '<table style="width:100%;font-size:11px;border-collapse:collapse">';
+    html += '<thead><tr>' + cols.map(function(c){
+      return '<th style="padding:3px 6px;text-align:left;border-bottom:1px solid var(--brd);white-space:nowrap">'+escHtml(c)+'</th>';
+    }).join('') + '</tr></thead><tbody>';
+    d.rows.forEach(function(row) {
+      html += '<tr>' + cols.map(function(c){
+        var v = row[c] || '';
+        if (v.length > 60) v = v.slice(0, 57) + '...';
+        return '<td style="padding:2px 6px;border-bottom:1px solid var(--brd);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis">'+escHtml(v)+'</td>';
+      }).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    if (d.total > d.rows.length) {
+      html += '<p style="font-size:11px;color:var(--dim);margin-top:4px">Showing '+d.rows.length+' of '+d.total+' events</p>';
+    }
+    evEl.innerHTML = html;
+  } catch(e) {
+    evEl.innerHTML = '<p style="color:var(--red);font-size:12px">Error loading events</p>';
+  }
+}
+
+function applyClientMetricsFilter() {
+  var label = document.getElementById('cm-filter-label').value.trim();
+  var page = document.getElementById('cm-filter-page').value.trim();
+  if (_cmCurrentDate) loadClientMetricsEvents(_cmCurrentDate, label, page);
+}
+
+// ── Analytics (Sankey) ─────────────────────────────
+
+var _anSessionOffset = 0;
+var _anDrillPath = null;
+var _anOverviewData = null;
+
+function anFilters() {
+  var f = {};
+  var period = document.getElementById('an-period').value;
+  if (period) f.from = Math.floor(Date.now()/1000) - parseInt(period);
+  var host = document.getElementById('an-host').value;
+  if (host) f.host = host;
+  var plat = document.getElementById('an-platform').value;
+  if (plat) f.platform = plat;
+  var br = document.getElementById('an-browser').value;
+  if (br) f.browser = br;
+  var lang = document.getElementById('an-language').value.trim();
+  if (lang) f.language = lang;
+  var ip = document.getElementById('an-ip').value.trim();
+  if (ip) f.ip = ip;
+  var path = document.getElementById('an-path').value.trim();
+  if (path) f.path = path;
+  return f;
+}
+
+function anQueryString(f) {
+  var parts = [];
+  for (var k in f) parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(f[k]));
+  return parts.join('&');
+}
+
+async function loadAnalytics() {
+  var statusEl = document.getElementById('an-status');
+  var mainEl = document.getElementById('an-main');
+  try {
+    var f = anFilters();
+    var qs = anQueryString(f);
+    var data = await api('metrics/analytics' + (qs ? '?' + qs : ''));
+    _anOverviewData = data;
+    mainEl.style.display = '';
+    statusEl.textContent = '';
+
+    // Populate filter dropdowns from data
+    var hostSel = document.getElementById('an-host');
+    if (data.hosts && hostSel.options.length <= 1) {
+      data.hosts.forEach(function(h) {
+        var o = document.createElement('option'); o.value = h; o.textContent = h;
+        hostSel.appendChild(o);
+      });
+    }
+    var platSel = document.getElementById('an-platform');
+    if (data.topPlatforms && platSel.options.length <= 1) {
+      data.topPlatforms.forEach(function(p) {
+        var o = document.createElement('option'); o.value = p.platform; o.textContent = p.platform + ' (' + p.count + ')';
+        platSel.appendChild(o);
+      });
+    }
+    var brSel = document.getElementById('an-browser');
+    if (data.topBrowsers && brSel.options.length <= 1) {
+      data.topBrowsers.forEach(function(b) {
+        var o = document.createElement('option'); o.value = b.browser; o.textContent = b.browser + ' (' + b.count + ')';
+        brSel.appendChild(o);
+      });
+    }
+
+    // Overview stats
+    var ov = document.getElementById('an-overview');
+    ov.innerHTML = '<div><div style="font-size:22px;font-weight:700">' + (data.pageViews||0).toLocaleString() + '</div><div style="font-size:11px;color:var(--dim)">Page Views</div></div>'
+      + '<div><div style="font-size:22px;font-weight:700">' + (data.sessions||0).toLocaleString() + '</div><div style="font-size:11px;color:var(--dim)">Sessions</div></div>'
+      + '<div><div style="font-size:22px;font-weight:700">' + (data.uniqueIps||0).toLocaleString() + '</div><div style="font-size:11px;color:var(--dim)">Unique IPs</div></div>'
+      + '<div><div style="font-size:22px;font-weight:700">' + (data.avgMs||0).toFixed(0) + ' ms</div><div style="font-size:11px;color:var(--dim)">Avg Response</div></div>';
+
+    // Top pages
+    var pagesEl = document.getElementById('an-pages');
+    if (data.topPages && data.topPages.length) {
+      var maxH = data.topPages[0].hits;
+      pagesEl.innerHTML = data.topPages.map(function(p) {
+        var pct = maxH > 0 ? (p.hits / maxH * 100) : 0;
+        return '<div style="margin-bottom:4px;cursor:pointer" onclick="analyticsDrill(\'' + escAttr(p.path) + '\')">'
+          + '<div style="display:flex;justify-content:space-between;font-size:12px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%">' + escHtml(p.path) + '</span><span style="color:var(--dim)">' + p.hits + '</span></div>'
+          + '<div style="height:3px;background:var(--brd);border-radius:2px;margin-top:2px"><div style="height:100%;background:var(--ac);border-radius:2px;width:' + pct + '%"></div></div></div>';
+      }).join('');
+    } else {
+      pagesEl.innerHTML = '<div style="font-size:13px;color:var(--dim)">No data yet</div>';
+    }
+
+    // Load Sankey
+    _anDrillPath = null;
+    document.getElementById('an-breadcrumb').style.display = 'none';
+    loadSankey(f);
+
+    // Load sessions
+    _anSessionOffset = 0;
+    loadSessions(f, false);
+  } catch(e) {
+    if (e.message === 'auth') return;
+    statusEl.innerHTML = '<div style="color:var(--dim);font-size:13px">No analytics data yet. Analytics are recorded automatically when server-side metrics are enabled.</div>';
+  }
+}
+
+async function loadSankey(f, drillPath) {
+  try {
+    var qs = anQueryString(f);
+    var url = drillPath
+      ? 'metrics/analytics/drilldown?path=' + encodeURIComponent(drillPath) + '&direction=outgoing' + (qs ? '&' + qs : '')
+      : 'metrics/analytics/flow?limit=100' + (qs ? '&' + qs : '');
+    var data = await api(url);
+    var edges = data.edges || [];
+    renderSankey(edges, drillPath);
+  } catch(e) {}
+}
+
+function renderSankey(edges, drillPath) {
+  var svg = d3.select('#an-sankey');
+  svg.selectAll('*').remove();
+  if (!edges || !edges.length) {
+    svg.attr('height', 60);
+    svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--dim)').attr('font-size', '13px').text('No flow data for the current filters.');
+    return;
+  }
+
+  var wrap = document.getElementById('an-sankey-wrap');
+  var width = Math.max(wrap.clientWidth - 16, 400);
+  var nodeSet = {};
+  edges.forEach(function(e) { nodeSet[e.from_path || e.from] = true; nodeSet[e.to_path || e.to] = true; });
+  var nodeNames = Object.keys(nodeSet);
+  var nodes = nodeNames.map(function(n) { return {name: n}; });
+  var nameIdx = {};
+  nodeNames.forEach(function(n, i) { nameIdx[n] = i; });
+  var links = edges.map(function(e) {
+    var src = e.from_path || e.from;
+    var tgt = e.to_path || e.to;
+    return {source: nameIdx[src], target: nameIdx[tgt], value: parseInt(e.count) || 1};
+  }).filter(function(l) { return l.source !== l.target; }); // remove self-loops
+  if (!links.length) {
+    svg.attr('height', 60);
+    svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--dim)').attr('font-size', '13px').text('No transitions to display.');
+    return;
+  }
+
+  var height = Math.max(nodes.length * 28, 300);
+  svg.attr('width', width).attr('height', height).attr('viewBox', '0 0 ' + width + ' ' + height);
+
+  var sankey = d3.sankey()
+    .nodeWidth(14).nodePadding(10)
+    .nodeSort(null)
+    .extent([[1, 1], [width - 1, height - 6]]);
+
+  var graph;
+  try {
+    graph = sankey({nodes: nodes.map(function(d) { return Object.assign({}, d); }), links: links.map(function(d) { return Object.assign({}, d); })});
+  } catch(err) {
+    svg.attr('height', 60);
+    svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--dim)').attr('font-size', '13px').text('Could not render Sankey (data may have circular references).');
+    return;
+  }
+
+  var color = d3.scaleOrdinal(d3.schemeTableau10);
+
+  // Links
+  svg.append('g').attr('fill', 'none').attr('stroke-opacity', 0.35)
+    .selectAll('path').data(graph.links).join('path')
+    .attr('d', d3.sankeyLinkHorizontal())
+    .attr('stroke', function(d) { return color(d.source.name); })
+    .attr('stroke-width', function(d) { return Math.max(1, d.width); })
+    .append('title').text(function(d) { return d.source.name + ' → ' + d.target.name + '\n' + d.value + ' transitions'; });
+
+  // Nodes
+  var node = svg.append('g').selectAll('g').data(graph.nodes).join('g');
+  node.append('rect')
+    .attr('x', function(d) { return d.x0; }).attr('y', function(d) { return d.y0; })
+    .attr('height', function(d) { return Math.max(1, d.y1 - d.y0); })
+    .attr('width', function(d) { return d.x1 - d.x0; })
+    .attr('fill', function(d) { return color(d.name); })
+    .attr('rx', 2)
+    .style('cursor', 'pointer')
+    .on('click', function(ev, d) { analyticsDrill(d.name); })
+    .append('title').text(function(d) { return d.name + '\n' + d.value + ' views'; });
+
+  // Labels
+  node.append('text')
+    .attr('x', function(d) { return d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6; })
+    .attr('y', function(d) { return (d.y1 + d.y0) / 2; })
+    .attr('dy', '0.35em')
+    .attr('text-anchor', function(d) { return d.x0 < width / 2 ? 'start' : 'end'; })
+    .attr('font-size', '11px').attr('fill', 'var(--fg)')
+    .text(function(d) {
+      var label = d.name.length > 40 ? d.name.substring(0, 37) + '...' : d.name;
+      return label + ' (' + d.value + ')';
+    });
+}
+
+function analyticsDrill(path) {
+  _anDrillPath = path;
+  var bc = document.getElementById('an-breadcrumb');
+  bc.style.display = '';
+  document.getElementById('an-bc-text').textContent = ' → ' + path;
+  loadSankey(anFilters(), path);
+}
+
+function analyticsResetDrill() {
+  _anDrillPath = null;
+  document.getElementById('an-breadcrumb').style.display = 'none';
+  loadSankey(anFilters());
+}
+
+async function loadSessions(f, append) {
+  try {
+    var qs = anQueryString(f);
+    var data = await api('metrics/analytics/sessions?limit=50&offset=' + _anSessionOffset + (qs ? '&' + qs : ''));
+    var sessions = data.sessions || [];
+    var el = document.getElementById('an-sessions');
+    if (!append) el.innerHTML = '';
+    var countEl = document.getElementById('an-sess-count');
+    if (_anOverviewData) countEl.textContent = '(' + (_anOverviewData.sessions||0).toLocaleString() + ' total)';
+
+    if (!sessions.length && !append) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--dim)">No sessions found</div>';
+      document.getElementById('an-sess-more').style.display = 'none';
+      return;
+    }
+    sessions.forEach(function(s) {
+      var div = document.createElement('div');
+      div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--brd);cursor:pointer;font-size:12px';
+      div.onmouseover = function() { this.style.background = 'rgba(128,128,128,0.1)'; };
+      div.onmouseout = function() { this.style.background = ''; };
+      div.onclick = function() { loadSessionDetail(s.session_id); };
+      var dt = new Date(s.first_seen * 1000);
+      var dur = s.last_seen - s.first_seen;
+      var durStr = dur < 60 ? dur + 's' : Math.round(dur / 60) + 'm';
+      div.innerHTML = '<div style="display:flex;justify-content:space-between;margin-bottom:2px">'
+        + '<span style="color:var(--ac)">' + escHtml(s.entry_path || '/') + '</span>'
+        + '<span style="color:var(--dim)">' + s.page_count + ' pages · ' + durStr + '</span></div>'
+        + '<div style="color:var(--dim)">' + escHtml(s.platform||'') + ' · ' + escHtml(s.browser||'') + ' · ' + escHtml(s.ip||'') + ' · ' + dt.toLocaleString() + '</div>';
+      el.appendChild(div);
+    });
+    document.getElementById('an-sess-more').style.display = sessions.length >= 50 ? '' : 'none';
+  } catch(e) {}
+}
+
+function loadMoreSessions() {
+  _anSessionOffset += 50;
+  loadSessions(anFilters(), true);
+}
+
+async function loadSessionDetail(sid) {
+  try {
+    var data = await api('metrics/analytics/session?id=' + encodeURIComponent(sid));
+    var reqs = data.requests || [];
+    var wrap = document.getElementById('an-session-detail');
+    var el = document.getElementById('an-session-path');
+    wrap.style.display = '';
+    if (!reqs.length) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--dim)">No requests found</div>';
+      return;
+    }
+    var html = '<div style="display:flex;flex-direction:column;gap:0">';
+    reqs.forEach(function(r, i) {
+      var dt = new Date(r.ts * 1000);
+      var color = r.status < 400 ? 'var(--grn)' : 'var(--red, #e74c3c)';
+      html += '<div style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:12px">'
+        + '<div style="min-width:18px;text-align:center">';
+      if (i < reqs.length - 1) {
+        html += '<div style="width:2px;height:24px;background:var(--brd);margin:2px auto"></div>';
+      }
+      html += '</div>'
+        + '<div style="width:8px;height:8px;border-radius:50%;background:' + color + ';margin-top:4px;flex-shrink:0"></div>'
+        + '<div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(r.path) + '</div>'
+        + '<div style="color:var(--dim);white-space:nowrap">' + (r.duration_ms||0).toFixed(0) + 'ms · ' + dt.toLocaleTimeString() + '</div>'
+        + '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    wrap.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  } catch(e) {}
+}
+
+function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 
 // Init
 checkAuthAndInit();

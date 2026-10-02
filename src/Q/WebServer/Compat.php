@@ -1581,6 +1581,9 @@ class Q_WebServer_Compat
 	static function loadPreset($preset)
 	{
 		$presets = array(
+			'qbix' => array(
+				'enabled' => false, // native mode — no source transforms needed
+			),
 			'laravel' => array(
 				'enabled' => true,
 				'rewrite' => 'index.php',

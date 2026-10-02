@@ -86,7 +86,7 @@ The two-axis model applies to patches the same way it applies to individual file
 
 **File tier** controls which file types the caller can modify:
 - `styles` — CSS, SCSS, LESS, SASS only
-- `markup` — above + HTML, SVG, Markdown, images, fonts, JSON, XML, YAML
+- `markup` — above + HTML, SVG, Markdown, templates (Handlebars, Mustache, Twig, Blade, EJS, Pug, Nunjucks), images, fonts, JSON, XML, YAML
 - `frontend` — above + JS, TS, JSX, TSX, Vue, Svelte
 - `code` — everything (bypasses deny-path checks)
 

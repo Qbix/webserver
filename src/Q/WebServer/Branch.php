@@ -81,6 +81,7 @@ class Q_WebServer_Branch
 		'markup' => array(
 			'css', 'scss', 'less', 'sass',
 			'html', 'htm', 'svg', 'md', 'txt',
+			'handlebars', 'hbs', 'mustache', 'twig', 'blade', 'ejs', 'pug', 'njk',
 			'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'bmp',
 			'woff', 'woff2', 'ttf', 'otf', 'eot',
 			'json', 'xml', 'yaml', 'yml', 'toml',
@@ -88,6 +89,7 @@ class Q_WebServer_Branch
 		'frontend' => array(
 			'css', 'scss', 'less', 'sass',
 			'html', 'htm', 'svg', 'md', 'txt',
+			'handlebars', 'hbs', 'mustache', 'twig', 'blade', 'ejs', 'pug', 'njk',
 			'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'bmp',
 			'woff', 'woff2', 'ttf', 'otf', 'eot',
 			'json', 'xml', 'yaml', 'yml', 'toml',
@@ -3001,6 +3003,329 @@ class Q_WebServer_Branch
 			'previewUrl' => $previewUrl,
 			'summary' => count($accepted) . ' accepted, ' . count($rejected) . ' rejected',
 		);
+	}
+
+	/**
+	 * Detect the best available VCS or patch tool on this system.
+	 *
+	 * Preference order: git > hg > patch. On Windows, the `patch`
+	 * command is not available natively, so only git or hg are
+	 * returned.
+	 *
+	 * @method detectVcs
+	 * @static
+	 * @return {string|null}  'git', 'hg', 'patch', or null if none available
+	 */
+	static function detectVcs()
+	{
+		// Check git
+		$out = array();
+		$code = 0;
+		@exec('git --version 2>&1', $out, $code);
+		if ($code === 0 && !empty($out[0]) && strpos($out[0], 'git version') !== false) {
+			return 'git';
+		}
+
+		// Check mercurial
+		$out = array();
+		@exec('hg --version 2>&1', $out, $code);
+		if ($code === 0 && !empty($out[0])) {
+			return 'hg';
+		}
+
+		// On Windows, there's no native patch command
+		if (DIRECTORY_SEPARATOR === '\\') {
+			return null;
+		}
+
+		// Check patch
+		$out = array();
+		@exec('patch --version 2>&1', $out, $code);
+		if ($code === 0 && !empty($out[0])) {
+			return 'patch';
+		}
+
+		return null;
+	}
+
+	/**
+	 * Apply a unified diff (patch) to a branch.
+	 *
+	 * Validates every file path in the diff against the caller's tier
+	 * and deny-path permissions. Uses the best available VCS or patch
+	 * tool: git (with optional commit), hg (with optional commit), or
+	 * the `patch` command (no VCS history). On Windows, git or hg is
+	 * required.
+	 *
+	 * @method apiPatch
+	 * @static
+	 * @param {array} $params  Keys: appHost (required), branchName (required),
+	 *   patch (string, unified diff), commitMessage (optional string)
+	 * @param {array} $authResult  From authenticateForBranch()
+	 * @return {array} Result with vcs, filesChanged, commit info
+	 */
+	static function apiPatch($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? '';
+		$patch = $params['patch'] ?? '';
+		$commitMessage = $params['commitMessage'] ?? '';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if (!$branchName) {
+			return array('error' => 'branchName is required');
+		}
+		if (!$patch) {
+			return array('error' => 'patch (unified diff) is required');
+		}
+
+		// Require at least edit permission
+		$branchPerm = $authResult['branchPerm'] ?? 'view';
+		if ($branchPerm === 'view') {
+			return array('error' => 'Patch requires edit or admin branch permission');
+		}
+
+		// Check sandbox — shell must be allowed
+		$sandbox = $authResult['sandbox'] ?? array();
+		// We need shell access for VCS/patch commands
+		// The branch's own sandbox setting is checked here
+		if (!self::$state) self::loadState();
+		$key = $appHost . '/' . $branchName;
+		$branch = self::$state['branches'][$key] ?? null;
+		if (!$branch) {
+			return array('error' => "Branch not found: $branchName");
+		}
+
+		$branchRoot = $branch['root'];
+		clearstatcache();
+		$branchStat = @lstat($branchRoot);
+		if (!$branchStat || ($branchStat['mode'] & 0040000) === 0) {
+			return array('error' => 'Branch root directory not found');
+		}
+
+		// Detect available VCS
+		$vcs = self::detectVcs();
+		if (!$vcs) {
+			$msg = 'No patch tool available.';
+			if (DIRECTORY_SEPARATOR === '\\') {
+				$msg .= ' On Windows, install git or mercurial to use patch-based updates.';
+			} else {
+				$msg .= ' Install git, mercurial, or the patch command.';
+			}
+			return array('error' => $msg);
+		}
+
+		$fileTier = $authResult['fileTier'] ?? 'styles';
+		$preset = $authResult['preset'] ?? array();
+		$tierPaths = $preset['tierPaths'] ?? array();
+		$userPaths = $authResult['userPaths'] ?? array();
+		$branchDenyPaths = $branch['denyPaths'] ?? array();
+
+		// Parse the diff to extract affected file paths.
+		// Unified diff headers: --- a/path and +++ b/path
+		$affectedPaths = array();
+		$rejected = array();
+		$lines = explode("\n", $patch);
+		foreach ($lines as $line) {
+			// Match +++ b/path or --- a/path (skip /dev/null for new/deleted)
+			if (preg_match('/^(?:\+\+\+|---)\s+[ab]\/(.+)$/', $line, $m)) {
+				$relPath = $m[1];
+				if ($relPath === '/dev/null' || $relPath === 'dev/null') {
+					continue;
+				}
+				$affectedPaths[$relPath] = true;
+			}
+		}
+
+		if (empty($affectedPaths)) {
+			return array('error' => 'No file paths found in patch. Ensure it is a unified diff with a/ b/ prefixes.');
+		}
+
+		// Validate every affected path against permissions
+		foreach ($affectedPaths as $relPath => $_) {
+			// Sanitize
+			if (strpos($relPath, '..') !== false || strpos($relPath, "\0") !== false) {
+				$rejected[] = array('path' => $relPath, 'reason' => 'Invalid path');
+				continue;
+			}
+
+			// Deny path check (code tier bypasses)
+			if ($fileTier !== 'code' && $branchDenyPaths) {
+				if (self::isDeniedByDefault($relPath, $branchDenyPaths)) {
+					$rejected[] = array('path' => $relPath, 'reason' => 'Path denied by branch lockdown policy');
+					continue;
+				}
+			}
+
+			// File tier check
+			$permCheck = self::checkFilePermission($relPath, $fileTier, $tierPaths, $userPaths, $preset);
+			if ($permCheck !== true) {
+				$rejected[] = array('path' => $relPath, 'reason' => $permCheck);
+			}
+		}
+
+		if (!empty($rejected)) {
+			return array(
+				'error' => 'Patch rejected: some files are outside your permissions',
+				'rejected' => $rejected,
+			);
+		}
+
+		// Before applying, break CoW symlinks for any affected files
+		foreach ($affectedPaths as $relPath => $_) {
+			$destPath = $branchRoot . '/' . $relPath;
+			if (is_link($destPath)) {
+				// Read the symlink target, copy it to a real file
+				$target = readlink($destPath);
+				if ($target && file_exists($target)) {
+					unlink($destPath);
+					copy($target, $destPath);
+				} else {
+					// Symlink to missing file — just remove it
+					unlink($destPath);
+				}
+			}
+			// Ensure parent directories exist
+			$destDir = dirname($destPath);
+			if (!is_dir($destDir)) {
+				mkdir($destDir, 0755, true);
+			}
+		}
+
+		// Write the patch to a temp file
+		$patchFile = sys_get_temp_dir() . '/qbix_patch_' . bin2hex(random_bytes(8)) . '.patch';
+		file_put_contents($patchFile, $patch);
+
+		$result = array(
+			'vcs' => $vcs,
+			'filesChanged' => array_keys($affectedPaths),
+		);
+
+		$output = array();
+		$exitCode = 0;
+
+		try {
+			switch ($vcs) {
+				case 'git':
+					// Initialize git repo if not already one
+					if (!is_dir($branchRoot . '/.git')) {
+						@exec('git -C ' . escapeshellarg($branchRoot) . ' init 2>&1', $output, $exitCode);
+						if ($exitCode !== 0) {
+							return array('error' => 'Failed to initialize git repository: ' . implode("\n", $output));
+						}
+						// Initial commit of existing files
+						@exec('git -C ' . escapeshellarg($branchRoot) . ' add -A 2>&1', $output, $exitCode);
+						@exec('git -C ' . escapeshellarg($branchRoot) . ' commit -m ' . escapeshellarg('Initial branch state') . ' --allow-empty 2>&1', $output, $exitCode);
+						$result['gitInitialized'] = true;
+					}
+
+					// Apply the patch
+					$output = array();
+					@exec('git -C ' . escapeshellarg($branchRoot) . ' apply --stat ' . escapeshellarg($patchFile) . ' 2>&1', $output, $exitCode);
+					$result['stat'] = implode("\n", $output);
+
+					$output = array();
+					@exec('git -C ' . escapeshellarg($branchRoot) . ' apply ' . escapeshellarg($patchFile) . ' 2>&1', $output, $exitCode);
+					if ($exitCode !== 0) {
+						return array(
+							'error' => 'git apply failed',
+							'detail' => implode("\n", $output),
+							'vcs' => 'git',
+						);
+					}
+
+					// Commit if message provided
+					if ($commitMessage) {
+						$output = array();
+						@exec('git -C ' . escapeshellarg($branchRoot) . ' add -A 2>&1', $output, $exitCode);
+						$output = array();
+						@exec('git -C ' . escapeshellarg($branchRoot) . ' commit -m ' . escapeshellarg($commitMessage) . ' 2>&1', $output, $exitCode);
+						if ($exitCode === 0) {
+							// Get the commit hash
+							$hashOut = array();
+							@exec('git -C ' . escapeshellarg($branchRoot) . ' rev-parse HEAD 2>&1', $hashOut, $exitCode);
+							$result['commit'] = array(
+								'hash' => trim($hashOut[0] ?? ''),
+								'message' => $commitMessage,
+							);
+						}
+					}
+					break;
+
+				case 'hg':
+					// Initialize hg repo if not already one
+					if (!is_dir($branchRoot . '/.hg')) {
+						@exec('hg init ' . escapeshellarg($branchRoot) . ' 2>&1', $output, $exitCode);
+						if ($exitCode !== 0) {
+							return array('error' => 'Failed to initialize mercurial repository: ' . implode("\n", $output));
+						}
+						@exec('hg -R ' . escapeshellarg($branchRoot) . ' add 2>&1', $output, $exitCode);
+						@exec('hg -R ' . escapeshellarg($branchRoot) . ' commit -m ' . escapeshellarg('Initial branch state') . ' 2>&1', $output, $exitCode);
+						$result['hgInitialized'] = true;
+					}
+
+					if ($commitMessage) {
+						// hg import applies and commits in one step
+						$output = array();
+						@exec('hg -R ' . escapeshellarg($branchRoot) . ' import --no-commit ' . escapeshellarg($patchFile) . ' 2>&1', $output, $exitCode);
+						if ($exitCode !== 0) {
+							return array(
+								'error' => 'hg import failed',
+								'detail' => implode("\n", $output),
+								'vcs' => 'hg',
+							);
+						}
+						$output = array();
+						@exec('hg -R ' . escapeshellarg($branchRoot) . ' commit -m ' . escapeshellarg($commitMessage) . ' 2>&1', $output, $exitCode);
+						if ($exitCode === 0) {
+							$hashOut = array();
+							@exec('hg -R ' . escapeshellarg($branchRoot) . ' log -r . --template {node|short} 2>&1', $hashOut, $exitCode);
+							$result['commit'] = array(
+								'hash' => trim($hashOut[0] ?? ''),
+								'message' => $commitMessage,
+							);
+						}
+					} else {
+						$output = array();
+						@exec('hg -R ' . escapeshellarg($branchRoot) . ' import --no-commit ' . escapeshellarg($patchFile) . ' 2>&1', $output, $exitCode);
+						if ($exitCode !== 0) {
+							return array(
+								'error' => 'hg import failed',
+								'detail' => implode("\n", $output),
+								'vcs' => 'hg',
+							);
+						}
+					}
+					break;
+
+				case 'patch':
+					// Use the patch command directly
+					$output = array();
+					@exec('patch -d ' . escapeshellarg($branchRoot) . ' -p1 < ' . escapeshellarg($patchFile) . ' 2>&1', $output, $exitCode);
+					if ($exitCode !== 0) {
+						return array(
+							'error' => 'patch command failed',
+							'detail' => implode("\n", $output),
+							'vcs' => 'patch',
+						);
+					}
+					if ($commitMessage) {
+						$result['note'] = 'Commit message ignored: no VCS available. Install git or mercurial for commit support.';
+					}
+					break;
+			}
+		} finally {
+			@unlink($patchFile);
+		}
+
+		$result['output'] = implode("\n", $output);
+		$previewUrl = 'https://' . $branchName . '.' . $appHost . '/';
+		$result['previewUrl'] = $previewUrl;
+		$result['summary'] = count($affectedPaths) . ' file(s) patched via ' . $vcs;
+
+		return $result;
 	}
 
 	/**

@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '2.1.0');
+define('QBIX_SERVER_VERSION', '3.0.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── OPcache for CLI ─────────────────────────────────
@@ -99,7 +99,7 @@ foreach ($argv as $i => $arg) {
 		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
 		echo "  --workers=N      Persistent workers (default: auto = nproc × 50)\n";
 		echo "  --config=FILE    JSON config file\n";
-		echo "  --preset=NAME    Framework preset (laravel, symfony, wordpress, drupal)\n";
+		echo "  --preset=NAME    Framework preset (qbix, laravel, symfony, wordpress, drupal)\n";
 		echo "  --pid=PATH       PID file path\n";
 		echo "  --hotreload      Watch files, auto-restart on changes\n";
 		echo "  --debug          Verbose logging\n";
@@ -187,6 +187,26 @@ foreach ($argv as $i => $arg) {
 // ── Determine mode: standalone vs Qbix app ──────────
 
 $qbixMode = false;
+
+// Auto-detect Qbix app when no --app is given.
+// --preset=qbix is treated as an explicit request for native Qbix mode
+// (not the compat layer — Qbix doesn't need source transforms).
+// With no flags at all, auto-detect if cwd looks like a Qbix app.
+if (!$opts['app']) {
+	$isQbixPreset = ($opts['preset'] === 'qbix');
+	$noFlags = !$opts['preset'];
+	if ($isQbixPreset || $noFlags) {
+		$cwd = getcwd();
+		if (file_exists($cwd . '/scripts/Q.inc.php')
+			|| file_exists($cwd . '/local/paths.json')
+		) {
+			$opts['app'] = $cwd;
+			if ($isQbixPreset) {
+				$opts['preset'] = ''; // consumed; skip compat layer
+			}
+		}
+	}
+}
 
 if ($opts['app']) {
 	// Qbix app mode — load the full framework
