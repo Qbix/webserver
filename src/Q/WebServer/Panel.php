@@ -118,9 +118,10 @@ class Q_WebServer_Panel
 	 */
 	static function panelConfigPath()
 	{
-		return defined('APP_DIR')
-			? APP_DIR . '/local/panel.json'
-			: qbix_data_path('local/panel.json');
+		if (defined('APP_DIR') && strncmp(APP_DIR, 'phar://', 7) !== 0) {
+			return APP_DIR . '/local/panel.json';
+		}
+		return qbix_data_path('local/panel.json');
 	}
 
 	/**
@@ -300,27 +301,44 @@ class Q_WebServer_Panel
 			return array('ok' => false, 'error' => 'No auth token provided');
 		}
 
+		// Check session tokens
 		$sessions = $config['sessions'] ?? array();
 		$sess = $sessions[$token] ?? null;
-		if (!$sess) {
-			return array('ok' => false, 'error' => 'Token expired or invalid');
-		}
-		// Support old format (int expiry) and new format (array)
-		if (is_array($sess)) {
-			if (($sess['expiry'] ?? 0) < time()) {
+		if ($sess) {
+			// Support old format (int expiry) and new format (array)
+			if (is_array($sess)) {
+				if (($sess['expiry'] ?? 0) < time()) {
+					return array('ok' => false, 'error' => 'Token expired or invalid');
+				}
+				return array(
+					'ok' => true,
+					'user' => $sess['user'] ?? 'owner',
+					'role' => $sess['role'] ?? 'owner',
+				);
+			}
+			// Legacy: integer expiry = owner session
+			if ((int) $sess < time()) {
 				return array('ok' => false, 'error' => 'Token expired or invalid');
+			}
+			return array('ok' => true, 'user' => 'owner', 'role' => 'owner');
+		}
+
+		// Check long-lived API tokens
+		$apiTokens = $config['apiTokens'] ?? array();
+		$apiTok = $apiTokens[$token] ?? null;
+		if ($apiTok) {
+			if (($apiTok['expiry'] ?? 0) < time()) {
+				return array('ok' => false, 'error' => 'API token expired');
 			}
 			return array(
 				'ok' => true,
-				'user' => $sess['user'] ?? 'owner',
-				'role' => $sess['role'] ?? 'owner',
+				'user' => $apiTok['user'] ?? 'owner',
+				'role' => $apiTok['role'] ?? 'owner',
+				'tokenType' => 'api',
 			);
 		}
-		// Legacy: integer expiry = owner session
-		if ((int) $sess < time()) {
-			return array('ok' => false, 'error' => 'Token expired or invalid');
-		}
-		return array('ok' => true, 'user' => 'owner', 'role' => 'owner');
+
+		return array('ok' => false, 'error' => 'Token expired or invalid');
 	}
 
 	/**
@@ -335,18 +353,32 @@ class Q_WebServer_Panel
 	{
 		if (empty($token)) return false;
 		$configPath = self::panelConfigPath();
+		clearstatcache(true, $configPath);
 		if (!file_exists($configPath)) return false;
 		$config = json_decode(file_get_contents($configPath), true);
+
+		// Check session tokens
 		$sessions = $config['sessions'] ?? array();
 		$sess = $sessions[$token] ?? null;
-		if (!$sess) return false;
-		if (is_array($sess)) {
-			if (($sess['expiry'] ?? 0) < time()) return false;
-			return array('user' => $sess['user'] ?? 'owner', 'role' => $sess['role'] ?? 'owner');
+		if ($sess) {
+			if (is_array($sess)) {
+				if (($sess['expiry'] ?? 0) < time()) return false;
+				return array('user' => $sess['user'] ?? 'owner', 'role' => $sess['role'] ?? 'owner');
+			}
+			// Legacy integer expiry
+			if ((int) $sess < time()) return false;
+			return array('user' => 'owner', 'role' => 'owner');
 		}
-		// Legacy integer expiry
-		if ((int) $sess < time()) return false;
-		return array('user' => 'owner', 'role' => 'owner');
+
+		// Check API tokens
+		$apiTokens = $config['apiTokens'] ?? array();
+		$apiTok = $apiTokens[$token] ?? null;
+		if ($apiTok) {
+			if (($apiTok['expiry'] ?? 0) < time()) return false;
+			return array('user' => $apiTok['user'] ?? 'owner', 'role' => $apiTok['role'] ?? 'owner');
+		}
+
+		return false;
 	}
 
 	/**
@@ -414,6 +446,12 @@ class Q_WebServer_Panel
 				return self::apiLogout($parsed);
 			case 'auth/me':
 				return self::apiAuthMe($parsed);
+			case 'auth/token':
+				return self::apiTokenCreate($parsed);
+			case 'auth/tokens':
+				return self::apiTokenList($parsed);
+			case 'auth/token/revoke':
+				return self::apiTokenRevoke($parsed);
 			// ── User Management ──────────────
 			case 'users':
 				return self::apiListUsers($parsed);
@@ -444,6 +482,8 @@ class Q_WebServer_Panel
 				return self::apiBranchLockdown($parsed);
 			case 'branches/defaults':
 				return self::apiBranchDefaults($parsed);
+			case 'branches/subdomain':
+				return self::apiBranchSubdomain($parsed);
 			case 'playground/run':
 				return self::apiPlaygroundRun($parsed);
 			case 'platform/install':
@@ -559,6 +599,15 @@ class Q_WebServer_Panel
 				return Q_WebServer_Metrics::analyticsDateRange() ?? ['from' => null, 'to' => null, 'total' => 0];
 			case 'cache/clear':
 				return self::apiClearCache();
+			// ── Config Management ──────────────
+			case 'config':
+				return self::apiConfigGet($parsed);
+			case 'config/update':
+				return self::apiConfigUpdate($parsed);
+			case 'config/delete':
+				return self::apiConfigDelete($parsed);
+			case 'config/schema':
+				return self::apiConfigSchema($parsed);
 			case 'workers':
 				return self::apiWorkerStatus();
 			case 'workers/resize':
@@ -728,52 +777,249 @@ class Q_WebServer_Panel
 		return array('ok' => true);
 	}
 
+	// ── API Tokens (long-lived bearer tokens for AI assistants, CI, etc.) ──
+
+	/**
+	 * Create a long-lived API token for the authenticated user.
+	 * Accepts: label (optional description), expiryDays (1-365, default 90)
+	 * Returns: { ok, token, label, user, role, expiry }
+	 */
+	private static function apiTokenCreate($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$label = trim($body['label'] ?? 'API Token');
+		$expiryDays = (int) ($body['expiryDays'] ?? 90);
+		if ($expiryDays < 1) $expiryDays = 1;
+		if ($expiryDays > 365) $expiryDays = 365;
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		if (!isset($config['apiTokens'])) $config['apiTokens'] = array();
+
+		$token = bin2hex(random_bytes(32));
+		$config['apiTokens'][$token] = array(
+			'user' => $auth['user'],
+			'role' => $auth['role'],
+			'label' => $label,
+			'created' => time(),
+			'expiry' => time() + 86400 * $expiryDays,
+		);
+		self::savePanelConfig($configPath, $config);
+
+		return array(
+			'ok' => true,
+			'token' => $token,
+			'label' => $label,
+			'user' => $auth['user'],
+			'role' => $auth['role'],
+			'expiry' => $config['apiTokens'][$token]['expiry'],
+		);
+	}
+
+	/**
+	 * List API tokens for the authenticated user. Admins/owners see all.
+	 * Token values are truncated to first 8 chars for security.
+	 */
+	private static function apiTokenList($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		$apiTokens = $config['apiTokens'] ?? array();
+		$isAdmin = self::roleLevel($auth['role']) >= self::roleLevel('admin');
+		$now = time();
+
+		$result = array();
+		foreach ($apiTokens as $tok => $info) {
+			// Non-admins only see their own tokens
+			if (!$isAdmin && ($info['user'] ?? '') !== $auth['user']) continue;
+			// Skip expired
+			if (($info['expiry'] ?? 0) < $now) continue;
+			$result[] = array(
+				'prefix' => substr($tok, 0, 8) . '...',
+				'label' => $info['label'] ?? '',
+				'user' => $info['user'] ?? '',
+				'role' => $info['role'] ?? '',
+				'created' => $info['created'] ?? 0,
+				'expiry' => $info['expiry'] ?? 0,
+			);
+		}
+		return array('tokens' => $result);
+	}
+
+	/**
+	 * Revoke an API token by prefix (first 8+ chars).
+	 */
+	private static function apiTokenRevoke($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$prefix = $body['prefix'] ?? '';
+		if (strlen($prefix) < 8) {
+			return array('error' => 'Provide at least 8 characters of the token prefix');
+		}
+		// Also accept full token
+		$prefix = str_replace('...', '', $prefix);
+
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		$apiTokens = $config['apiTokens'] ?? array();
+		$isAdmin = self::roleLevel($auth['role']) >= self::roleLevel('admin');
+		$revoked = 0;
+
+		foreach ($apiTokens as $tok => $info) {
+			if (strpos($tok, $prefix) !== 0) continue;
+			// Non-admins can only revoke their own
+			if (!$isAdmin && ($info['user'] ?? '') !== $auth['user']) {
+				return array('error' => 'Cannot revoke another user\'s token', 'status' => 403);
+			}
+			unset($config['apiTokens'][$tok]);
+			$revoked++;
+		}
+
+		if ($revoked === 0) {
+			return array('error' => 'No matching token found');
+		}
+		self::savePanelConfig($configPath, $config);
+		return array('ok' => true, 'revoked' => $revoked);
+	}
+
 	// ── Auth Info ────────────────────────────────────────
 
 	private static function apiAuthMe($parsed)
 	{
 		$auth = self::checkAuth($parsed);
 		if (empty($auth['ok'])) return $auth;
-		return array('user' => $auth['user'], 'role' => $auth['role']);
+		$result = array('user' => $auth['user'], 'role' => $auth['role']);
+		// Include scope for managers
+		if ($auth['role'] === 'manager') {
+			$configPath = self::panelConfigPath();
+			$config = json_decode(file_get_contents($configPath), true);
+			$userRec = $config['users'][$auth['user']] ?? array();
+			$result['scope'] = $userRec['scope'] ?? array();
+		}
+		return $result;
 	}
 
 	// ── User Management API ─────────────────────────────
 	// Only owner/admin can manage users.
 
-	private static function requireOwner($parsed)
+	/**
+	 * Role hierarchy: owner > admin > manager > user
+	 * Returns numeric level for comparison.
+	 */
+	private static function roleLevel($role)
+	{
+		$levels = array('owner' => 100, 'admin' => 80, 'manager' => 60, 'user' => 40);
+		return $levels[$role] ?? 0;
+	}
+
+	/**
+	 * Require admin or owner role.
+	 * Returns null on success, or error array.
+	 */
+	private static function requireAdmin($parsed)
 	{
 		$auth = self::checkAuth($parsed);
 		if (empty($auth['ok'])) return $auth;
-		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
-			return array('error' => 'Only owners and admins can manage users', 'status' => 403);
+		if (self::roleLevel($auth['role']) < self::roleLevel('admin')) {
+			return array('error' => 'Admin or owner access required', 'status' => 403);
 		}
-		return null; // no error
+		return null;
+	}
+
+	/**
+	 * Require manager, admin or owner role.
+	 * Returns null on success, or error array.
+	 */
+	private static function requireManager($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		if (self::roleLevel($auth['role']) < self::roleLevel('manager')) {
+			return array('error' => 'Manager access required', 'status' => 403);
+		}
+		return null;
+	}
+
+	/**
+	 * Check if a user has scope over a given app/domain.
+	 * Owners and admins always have scope.
+	 * Managers have scope only over their assigned apps/domains.
+	 */
+	private static function hasScope($auth, $scopeType, $scopeValue)
+	{
+		if (self::roleLevel($auth['role']) >= self::roleLevel('admin')) return true;
+		if ($auth['role'] !== 'manager') return false;
+		// Load manager's scope
+		$configPath = self::panelConfigPath();
+		$config = json_decode(file_get_contents($configPath), true);
+		$userRec = $config['users'][$auth['user']] ?? array();
+		$scopes = $userRec['scope'] ?? array();
+		// Scope is array of {type: "app"|"domain", value: "..."}
+		foreach ($scopes as $s) {
+			if (($s['type'] ?? '') === $scopeType && ($s['value'] ?? '') === $scopeValue) {
+				return true;
+			}
+			// Wildcard: type=all means all apps/domains
+			if (($s['type'] ?? '') === 'all') return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Legacy alias — require admin+. Used by user management endpoints.
+	 */
+	private static function requireOwner($parsed)
+	{
+		return self::requireAdmin($parsed);
 	}
 
 	private static function apiListUsers($parsed)
 	{
-		$err = self::requireOwner($parsed);
-		if ($err) return $err;
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		// Managers and above can list users
+		if (self::roleLevel($auth['role']) < self::roleLevel('manager')) {
+			return array('error' => 'Manager access required', 'status' => 403);
+		}
 
 		$configPath = self::panelConfigPath();
 		$config = json_decode(file_get_contents($configPath), true);
 		$users = $config['users'] ?? array();
 		$result = array();
 		foreach ($users as $uname => $urec) {
-			$result[] = array(
+			$rec = array(
 				'username' => $uname,
 				'role' => $urec['role'] ?? 'user',
 				'created' => $urec['created'] ?? null,
 				'branches' => $urec['branches'] ?? array(),
 			);
+			if (!empty($urec['scope'])) {
+				$rec['scope'] = $urec['scope'];
+			}
+			$result[] = $rec;
 		}
 		return array('users' => $result);
 	}
 
 	private static function apiAddUser($parsed)
 	{
-		$err = self::requireOwner($parsed);
-		if ($err) return $err;
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		// Managers can add users (role=user only), admins can add users+managers
+		if (self::roleLevel($auth['role']) < self::roleLevel('manager')) {
+			return array('error' => 'Manager access required', 'status' => 403);
+		}
 
 		$body = !empty($parsed['body'])
 			? json_decode($parsed['body'], true) : array();
@@ -790,8 +1036,21 @@ class Q_WebServer_Panel
 		if (strlen($password) < 6) {
 			return array('error' => 'Password must be at least 6 characters');
 		}
-		if (!in_array($role, array('user', 'admin'), true)) {
-			return array('error' => 'Role must be "user" or "admin"');
+		if (!in_array($role, array('user', 'admin', 'manager'), true)) {
+			return array('error' => 'Role must be "user", "manager", or "admin"');
+		}
+
+		// Only owner can create admins
+		if ($role === 'admin' && ($auth['role'] ?? '') !== 'owner') {
+			return array('error' => 'Only the owner can create admin accounts', 'status' => 403);
+		}
+		// Only admin+ can create managers
+		if ($role === 'manager' && self::roleLevel($auth['role']) < self::roleLevel('admin')) {
+			return array('error' => 'Only admins and owner can create manager accounts', 'status' => 403);
+		}
+		// Managers can only create users (not managers or admins)
+		if ($auth['role'] === 'manager' && $role !== 'user') {
+			return array('error' => 'Managers can only create user accounts', 'status' => 403);
 		}
 
 		$configPath = self::panelConfigPath();
@@ -801,20 +1060,27 @@ class Q_WebServer_Panel
 			return array('error' => 'User already exists: ' . $username);
 		}
 
-		$config['users'][$username] = array(
+		$userRec = array(
 			'passwordHash' => password_hash($password, PASSWORD_DEFAULT),
 			'role' => $role,
 			'created' => time(),
 			'branches' => $body['branches'] ?? array(),
 		);
+
+		// Manager scope: which apps/domains they manage
+		if ($role === 'manager' && !empty($body['scope'])) {
+			$userRec['scope'] = $body['scope'];
+		}
+
+		$config['users'][$username] = $userRec;
 		self::savePanelConfig($configPath, $config);
 		return array('ok' => true, 'username' => $username);
 	}
 
 	private static function apiUpdateUser($parsed)
 	{
-		$err = self::requireOwner($parsed);
-		if ($err) return $err;
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
 
 		$body = !empty($parsed['body'])
 			? json_decode($parsed['body'], true) : array();
@@ -826,19 +1092,44 @@ class Q_WebServer_Panel
 			return array('error' => 'User not found: ' . $username);
 		}
 
+		$callerLevel = self::roleLevel($auth['role']);
+		$targetRole = $config['users'][$username]['role'] ?? 'user';
+		$targetLevel = self::roleLevel($targetRole);
+
+		// Managers can update users within their scope, admins/owners can update anyone below them
+		if ($callerLevel <= $targetLevel && $auth['user'] !== $username) {
+			return array('error' => 'Cannot modify a user with equal or higher role', 'status' => 403);
+		}
+		// At minimum, managers can manage users
+		if ($callerLevel < self::roleLevel('manager') && $auth['user'] !== $username) {
+			return array('error' => 'Manager access required', 'status' => 403);
+		}
+
 		// Update role
 		if (isset($body['role'])) {
 			if ($username === 'owner') {
 				return array('error' => 'Cannot change owner role');
 			}
-			if (!in_array($body['role'], array('user', 'admin'), true)) {
-				return array('error' => 'Role must be "user" or "admin"');
+			if (!in_array($body['role'], array('user', 'admin', 'manager'), true)) {
+				return array('error' => 'Role must be "user", "manager", or "admin"');
+			}
+			// Can only assign roles below your own level
+			$newRoleLevel = self::roleLevel($body['role']);
+			if ($newRoleLevel >= $callerLevel) {
+				return array('error' => 'Cannot assign a role equal to or above your own', 'status' => 403);
+			}
+			// Only owner can create admins
+			if ($body['role'] === 'admin' && $auth['role'] !== 'owner') {
+				return array('error' => 'Only the owner can assign admin role', 'status' => 403);
 			}
 			$config['users'][$username]['role'] = $body['role'];
 		}
 
-		// Update password
+		// Update password (users can change their own, managers+ can reset others)
 		if (!empty($body['password'])) {
+			if ($auth['user'] !== $username && $callerLevel < self::roleLevel('manager')) {
+				return array('error' => 'Cannot change another user\'s password', 'status' => 403);
+			}
 			if (strlen($body['password']) < 6) {
 				return array('error' => 'Password must be at least 6 characters');
 			}
@@ -855,6 +1146,14 @@ class Q_WebServer_Panel
 		// Update branch access list
 		if (isset($body['branches'])) {
 			$config['users'][$username]['branches'] = $body['branches'];
+		}
+
+		// Update manager scope
+		if (isset($body['scope'])) {
+			if ($callerLevel < self::roleLevel('admin')) {
+				return array('error' => 'Only admins and owner can set manager scope', 'status' => 403);
+			}
+			$config['users'][$username]['scope'] = $body['scope'];
 		}
 
 		self::savePanelConfig($configPath, $config);
@@ -889,6 +1188,578 @@ class Q_WebServer_Panel
 		return array('ok' => true);
 	}
 
+	// ── Config Management API ─────────────────────────────
+
+	/**
+	 * Config key metadata — defines which keys exist, their types,
+	 * default values, descriptions, and minimum role to edit.
+	 */
+	private static function configSchema()
+	{
+		return array(
+			'Q.webserver.port' => array(
+				'type' => 'integer', 'level' => 'system',
+				'desc' => 'HTTP listen port',
+			),
+			'Q.webserver.tls.certDir' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Directory for TLS certificates',
+			),
+			'Q.webserver.tls.acmeEmail' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Email for ACME/Let\'s Encrypt registration',
+			),
+			'Q.webserver.tls.acmeStaging' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Use ACME staging environment',
+			),
+			'Q.webserver.boot.workers' => array(
+				'type' => 'integer', 'level' => 'admin',
+				'desc' => 'Number of worker processes',
+			),
+			'Q.webserver.boot.ttl' => array(
+				'type' => 'integer', 'level' => 'admin',
+				'desc' => 'Worker TTL in seconds (0=unlimited)',
+			),
+			'Q.webserver.boot.host' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Server hostname for boot adapter',
+			),
+			'Q.webserver.boot.adapter' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Boot adapter (laravel, wordpress, drupal, etc.)',
+			),
+			'Q.webserver.boot.skipAutodetect' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Skip framework autodetection',
+			),
+			'Q.webserver.boot.skipHotFiles' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Skip hot file reloading',
+			),
+			'Q.webserver.precompress.enabled' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable static asset pre-compression',
+			),
+			'Q.webserver.precompress.minSize' => array(
+				'type' => 'integer', 'level' => 'safe',
+				'desc' => 'Minimum file size for pre-compression (bytes)',
+			),
+			'Q.webserver.precompress.level' => array(
+				'type' => 'integer', 'level' => 'safe',
+				'desc' => 'Gzip compression level (1-9)',
+			),
+			'Q.webserver.precompress.maxFiles' => array(
+				'type' => 'integer', 'level' => 'safe',
+				'desc' => 'Maximum files to pre-compress',
+			),
+			'Q.webserver.hotReload' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable hot reloading on file changes',
+			),
+			'Q.webserver.log.dir' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Log file directory',
+			),
+			'Q.panel.remote' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Allow control panel access from non-localhost',
+			),
+			'Q.webserver.panel.appsDir' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Override apps directory path',
+			),
+			'Q.webserver.autohost.enabled' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Enable automatic domain hosting',
+			),
+			'Q.webserver.autohost.authorize' => array(
+				'type' => 'select', 'level' => 'admin',
+				'options' => array('open', 'allowlist', 'off'),
+				'desc' => 'Autohost authorization mode',
+			),
+			'Q.webserver.autohost.dnsCheck' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Verify DNS points to this server before hosting',
+			),
+			'Q.webserver.autohost.rateLimit.perIpPerHour' => array(
+				'type' => 'integer', 'level' => 'admin',
+				'desc' => 'Autohost rate limit per IP per hour',
+			),
+			'Q.webserver.autohost.rateLimit.globalPerHour' => array(
+				'type' => 'integer', 'level' => 'admin',
+				'desc' => 'Autohost global rate limit per hour',
+			),
+			'Q.web.cache.enabled' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable response caching',
+			),
+			'Q.web.cache.maxAge' => array(
+				'type' => 'integer', 'level' => 'safe',
+				'desc' => 'Cache max-age in seconds',
+			),
+			'Q.webserver.clientMetrics.enabled' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable client-side metrics JS injection',
+			),
+			'Q.webserver.clientMetrics.scrollTracker' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable scroll depth tracking',
+			),
+			'Q.webserver.clientMetrics.mediaTracker' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable audio/video interaction tracking',
+			),
+			'Q.webserver.clientMetrics.navigationTracker' => array(
+				'type' => 'boolean', 'level' => 'safe',
+				'desc' => 'Enable navigation timing tracking',
+			),
+			'Q.webserver.watchdog' => array(
+				'type' => 'boolean', 'level' => 'admin',
+				'desc' => 'Enable watchdog auto-restart',
+			),
+			'Q.dashboard.maxSessions' => array(
+				'type' => 'integer', 'level' => 'safe',
+				'desc' => 'Maximum WebSocket sessions for dashboard',
+			),
+			'Q.dashboard.token' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Dashboard authentication token',
+			),
+			'Q.webserver.branches.subdomainSeparator' => array(
+				'type' => 'string', 'level' => 'admin',
+				'desc' => 'Separator between branch subdomain and app host',
+			),
+		);
+	}
+
+	/**
+	 * Minimum role required to edit a config at a given level.
+	 * safe = any authenticated user, admin = admin+, system = owner only
+	 */
+	private static function configLevelRole($level)
+	{
+		$map = array(
+			'safe' => 'user',
+			'admin' => 'admin',
+			'system' => 'owner',
+		);
+		return $map[$level] ?? 'owner';
+	}
+
+	/**
+	 * Convert a dotted key like "Q.webserver.port" to Q_Config::get args.
+	 */
+	private static function configKeyToPath($key)
+	{
+		return explode('.', $key);
+	}
+
+	/**
+	 * Returns the panel API endpoint definitions for discovery.
+	 * Single source of truth for OpenAPI and MCP generation.
+	 * Each entry: [method, path, summary, description, params[], tag, readOnly]
+	 */
+	static function panelApiEndpoints()
+	{
+		return array(
+			// Auth
+			array(
+				'id' => 'panel_login',
+				'method' => 'POST',
+				'path' => '/Q/api/auth/login',
+				'summary' => 'Authenticate and get a session token',
+				'description' => 'Returns a bearer token for subsequent API calls. Use username + password.',
+				'params' => array(
+					'username' => array('type' => 'string', 'description' => 'Username (default: "owner")'),
+					'password' => array('type' => 'string', 'description' => 'Password', 'required' => true),
+				),
+				'tag' => 'Panel Auth',
+				'readOnly' => false,
+				'noAuth' => true,
+			),
+			array(
+				'id' => 'panel_auth_me',
+				'method' => 'GET',
+				'path' => '/Q/api/auth/me',
+				'summary' => 'Get current user info',
+				'description' => 'Returns the authenticated user\'s username, role, and scope.',
+				'params' => array(),
+				'tag' => 'Panel Auth',
+				'readOnly' => true,
+			),
+			array(
+				'id' => 'panel_token_create',
+				'method' => 'POST',
+				'path' => '/Q/api/auth/token',
+				'summary' => 'Create a long-lived API token',
+				'description' => 'Creates a bearer token for AI assistants, CI pipelines, or other integrations. Tokens inherit the caller\'s role.',
+				'params' => array(
+					'label' => array('type' => 'string', 'description' => 'Human-readable label for this token'),
+					'expiryDays' => array('type' => 'integer', 'description' => 'Days until expiry (1-365, default 90)'),
+				),
+				'tag' => 'Panel Auth',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_token_list',
+				'method' => 'GET',
+				'path' => '/Q/api/auth/tokens',
+				'summary' => 'List API tokens',
+				'description' => 'Lists active API tokens. Non-admins see only their own.',
+				'params' => array(),
+				'tag' => 'Panel Auth',
+				'readOnly' => true,
+			),
+			array(
+				'id' => 'panel_token_revoke',
+				'method' => 'POST',
+				'path' => '/Q/api/auth/token/revoke',
+				'summary' => 'Revoke an API token',
+				'description' => 'Revokes an API token by its prefix (at least 8 characters).',
+				'params' => array(
+					'prefix' => array('type' => 'string', 'description' => 'First 8+ characters of the token', 'required' => true),
+				),
+				'tag' => 'Panel Auth',
+				'readOnly' => false,
+			),
+			// Config
+			array(
+				'id' => 'panel_config_get',
+				'method' => 'GET',
+				'path' => '/Q/api/config',
+				'summary' => 'Get server configuration',
+				'description' => 'Returns all config values the caller\'s role can see, with metadata (type, level, description, whether overridden).',
+				'params' => array(),
+				'tag' => 'Panel Config',
+				'readOnly' => true,
+			),
+			array(
+				'id' => 'panel_config_update',
+				'method' => 'POST',
+				'path' => '/Q/api/config/update',
+				'summary' => 'Set a config value',
+				'description' => 'Sets a server config key. Validates type and checks the caller\'s role against the key\'s access level.',
+				'params' => array(
+					'key' => array('type' => 'string', 'description' => 'Dotted config key (e.g. "webserver.hotReload")', 'required' => true),
+					'value' => array('description' => 'The value to set (type must match schema)', 'required' => true),
+				),
+				'tag' => 'Panel Config',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_config_delete',
+				'method' => 'POST',
+				'path' => '/Q/api/config/delete',
+				'summary' => 'Revert a config override to default',
+				'description' => 'Removes a runtime config override, reverting the key to its file-based or default value.',
+				'params' => array(
+					'key' => array('type' => 'string', 'description' => 'Dotted config key to revert', 'required' => true),
+				),
+				'tag' => 'Panel Config',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_config_schema',
+				'method' => 'GET',
+				'path' => '/Q/api/config/schema',
+				'summary' => 'Get config schema',
+				'description' => 'Returns the full config schema: key names, types, descriptions, access levels, default values, and options.',
+				'params' => array(),
+				'tag' => 'Panel Config',
+				'readOnly' => true,
+			),
+			// Users
+			array(
+				'id' => 'panel_users_list',
+				'method' => 'GET',
+				'path' => '/Q/api/users',
+				'summary' => 'List panel users',
+				'description' => 'Returns all panel users with their roles and branch access. Requires admin or owner role.',
+				'params' => array(),
+				'tag' => 'Panel Users',
+				'readOnly' => true,
+			),
+			array(
+				'id' => 'panel_users_add',
+				'method' => 'POST',
+				'path' => '/Q/api/users/add',
+				'summary' => 'Add a panel user',
+				'description' => 'Creates a new user. Callers can only create roles below their own.',
+				'params' => array(
+					'username' => array('type' => 'string', 'description' => 'Username', 'required' => true),
+					'password' => array('type' => 'string', 'description' => 'Password (min 6 chars)', 'required' => true),
+					'role' => array('type' => 'string', 'description' => 'Role: user, manager, or admin', 'required' => true),
+				),
+				'tag' => 'Panel Users',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_users_update',
+				'method' => 'POST',
+				'path' => '/Q/api/users/update',
+				'summary' => 'Update a panel user',
+				'description' => 'Change a user\'s role, scope, or password. Respects role hierarchy.',
+				'params' => array(
+					'username' => array('type' => 'string', 'description' => 'Username to update', 'required' => true),
+					'role' => array('type' => 'string', 'description' => 'New role'),
+					'scope' => array('type' => 'array', 'description' => 'Manager scope array'),
+					'password' => array('type' => 'string', 'description' => 'New password'),
+				),
+				'tag' => 'Panel Users',
+				'readOnly' => false,
+			),
+			// Branches
+			array(
+				'id' => 'panel_branches_list',
+				'method' => 'GET',
+				'path' => '/Q/api/branches',
+				'summary' => 'List branches',
+				'description' => 'Returns all branches for the served app with their subdomains, creators, dates, and TLS status.',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname'),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => true,
+			),
+			array(
+				'id' => 'panel_branches_create',
+				'method' => 'POST',
+				'path' => '/Q/api/branches/create',
+				'summary' => 'Create a branch',
+				'description' => 'Creates a copy-on-write branch with its own directory, database clone, and subdomain.',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname', 'required' => true),
+					'branchName' => array('type' => 'string', 'description' => 'Branch name', 'required' => true),
+					'subdomain' => array('type' => 'string', 'description' => 'Custom subdomain (defaults to branch name)'),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_branches_delete',
+				'method' => 'POST',
+				'path' => '/Q/api/branches/delete',
+				'summary' => 'Delete a branch',
+				'description' => 'Removes a branch\'s directory, database, and subdomain.',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname', 'required' => true),
+					'branchName' => array('type' => 'string', 'description' => 'Branch to delete', 'required' => true),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_branches_subdomain',
+				'method' => 'POST',
+				'path' => '/Q/api/branches/subdomain',
+				'summary' => 'Get or set a branch\'s subdomain',
+				'description' => 'When subdomain is provided, sets it; otherwise returns the current subdomain.',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname', 'required' => true),
+					'branchName' => array('type' => 'string', 'description' => 'Branch name', 'required' => true),
+					'subdomain' => array('type' => 'string', 'description' => 'New subdomain (omit to get current)'),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_branches_access',
+				'method' => 'POST',
+				'path' => '/Q/api/branches/access',
+				'summary' => 'Get or set branch access permissions',
+				'description' => 'Per-user access control: branch permission (view/edit/admin) and file permission (none/styles/markup/frontend/code).',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname', 'required' => true),
+					'branchName' => array('type' => 'string', 'description' => 'Branch name', 'required' => true),
+					'access' => array('type' => 'object', 'description' => 'Access map: {"user": {"branch":"edit","files":"frontend"}}'),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => false,
+			),
+			array(
+				'id' => 'panel_branches_lockdown',
+				'method' => 'POST',
+				'path' => '/Q/api/branches/lockdown',
+				'summary' => 'Get or set branch lockdown settings',
+				'description' => 'Controls default file permission tier and deny paths for a branch.',
+				'params' => array(
+					'appHost' => array('type' => 'string', 'description' => 'App hostname', 'required' => true),
+					'branchName' => array('type' => 'string', 'description' => 'Branch name', 'required' => true),
+					'defaultTier' => array('type' => 'string', 'description' => 'Default tier: styles, markup, frontend, or code'),
+					'denyPaths' => array('type' => 'array', 'description' => 'Glob patterns for denied paths'),
+				),
+				'tag' => 'Panel Branches',
+				'readOnly' => false,
+			),
+		);
+	}
+
+	/**
+	 * Get current config values.
+	 * Returns the full config tree or a specific path.
+	 */
+	private static function apiConfigGet($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$qp = self::queryParams($parsed);
+		$prefix = $qp['prefix'] ?? '';
+		$schema = self::configSchema();
+
+		// Load overrides from panel.json
+		$configPath = self::panelConfigPath();
+		$panelConfig = json_decode(file_get_contents($configPath), true);
+		$overrides = $panelConfig['configOverrides'] ?? array();
+
+		$result = array();
+		foreach ($schema as $key => $meta) {
+			if ($prefix && strpos($key, $prefix) !== 0) continue;
+			// Check role access
+			$requiredRole = self::configLevelRole($meta['level']);
+			if (self::roleLevel($auth['role']) < self::roleLevel($requiredRole)) continue;
+
+			$path = self::configKeyToPath($key);
+			// Get current value from Q_Config
+			$args = $path;
+			$args[] = null; // default
+			$current = call_user_func_array(array('Q_Config', 'get'), $args);
+			// Check for override
+			$hasOverride = array_key_exists($key, $overrides);
+			$result[$key] = array(
+				'value' => $hasOverride ? $overrides[$key] : $current,
+				'default' => $current,
+				'type' => $meta['type'],
+				'level' => $meta['level'],
+				'desc' => $meta['desc'],
+				'overridden' => $hasOverride,
+			);
+			if (isset($meta['options'])) {
+				$result[$key]['options'] = $meta['options'];
+			}
+		}
+		return array('config' => $result);
+	}
+
+	/**
+	 * Update a config value.
+	 * Stores the override in panel.json and applies it to Q_Config immediately.
+	 */
+	private static function apiConfigUpdate($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$key = $body['key'] ?? '';
+		$value = $body['value'] ?? null;
+
+		$schema = self::configSchema();
+
+		// Check if it's a known key
+		if (!isset($schema[$key])) {
+			// Allow admins to set arbitrary keys
+			if (self::roleLevel($auth['role']) < self::roleLevel('admin')) {
+				return array('error' => 'Unknown config key: ' . $key, 'status' => 400);
+			}
+		} else {
+			// Check role for known keys
+			$requiredRole = self::configLevelRole($schema[$key]['level']);
+			if (self::roleLevel($auth['role']) < self::roleLevel($requiredRole)) {
+				return array('error' => 'Insufficient permissions to modify: ' . $key, 'status' => 403);
+			}
+			// Type validation
+			$type = $schema[$key]['type'];
+			if ($type === 'integer' && !is_int($value) && !ctype_digit((string)$value)) {
+				return array('error' => 'Expected integer for: ' . $key, 'status' => 400);
+			}
+			if ($type === 'boolean' && !is_bool($value)) {
+				$value = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+				if ($value === null) return array('error' => 'Expected boolean for: ' . $key, 'status' => 400);
+			}
+			if ($type === 'select' && !in_array($value, $schema[$key]['options'] ?? array(), true)) {
+				return array('error' => 'Invalid value for: ' . $key . '. Options: ' . implode(', ', $schema[$key]['options'] ?? array()), 'status' => 400);
+			}
+			if ($type === 'integer') $value = (int) $value;
+		}
+
+		// Save override to panel.json
+		$configPath = self::panelConfigPath();
+		$panelConfig = json_decode(file_get_contents($configPath), true);
+		if (!isset($panelConfig['configOverrides'])) $panelConfig['configOverrides'] = array();
+		$panelConfig['configOverrides'][$key] = $value;
+		self::savePanelConfig($configPath, $panelConfig);
+
+		// Apply to live Q_Config
+		$path = self::configKeyToPath($key);
+		$path[] = $value;
+		call_user_func_array(array('Q_Config', 'set'), $path);
+
+		return array('ok' => true, 'key' => $key, 'value' => $value);
+	}
+
+	/**
+	 * Delete a config override (revert to default).
+	 */
+	private static function apiConfigDelete($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$key = $body['key'] ?? '';
+
+		$schema = self::configSchema();
+		if (isset($schema[$key])) {
+			$requiredRole = self::configLevelRole($schema[$key]['level']);
+			if (self::roleLevel($auth['role']) < self::roleLevel($requiredRole)) {
+				return array('error' => 'Insufficient permissions', 'status' => 403);
+			}
+		} elseif (self::roleLevel($auth['role']) < self::roleLevel('admin')) {
+			return array('error' => 'Admin access required for custom keys', 'status' => 403);
+		}
+
+		// Remove override from panel.json
+		$configPath = self::panelConfigPath();
+		$panelConfig = json_decode(file_get_contents($configPath), true);
+		if (isset($panelConfig['configOverrides'][$key])) {
+			unset($panelConfig['configOverrides'][$key]);
+			self::savePanelConfig($configPath, $panelConfig);
+		}
+
+		return array('ok' => true, 'key' => $key);
+	}
+
+	/**
+	 * Return the config schema.
+	 */
+	private static function apiConfigSchema($parsed)
+	{
+		$auth = self::checkAuth($parsed);
+		if (empty($auth['ok'])) return $auth;
+		return array('schema' => self::configSchema());
+	}
+
+	/**
+	 * Apply stored config overrides from panel.json on server startup.
+	 * Called by the server boot process.
+	 */
+	static function applyConfigOverrides()
+	{
+		$configPath = self::panelConfigPath();
+		if (!file_exists($configPath)) return;
+		$panelConfig = json_decode(file_get_contents($configPath), true);
+		$overrides = $panelConfig['configOverrides'] ?? array();
+		foreach ($overrides as $key => $value) {
+			$path = self::configKeyToPath($key);
+			$path[] = $value;
+			call_user_func_array(array('Q_Config', 'set'), $path);
+		}
+	}
+
 	// ── Branch Management API ───────────────────────────
 
 	private static function apiBranchRequireAuth($parsed)
@@ -915,15 +1786,41 @@ class Q_WebServer_Panel
 				}
 			}
 			$parts = explode('/', $key, 2);
+			$appHost = $rec['appHost'] ?? ($parts[0] ?? '');
+			$branchName = $parts[1] ?? '';
+			$subdomain = $rec['subdomain'] ?? strtolower($branchName);
+			// Check TLS cert status for this subdomain
+			$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+			$fqdn = $subdomain . '.' . $appHost;
+			$certPath = rtrim($certDir, '/') . '/' . $fqdn . '/fullchain.pem';
+			$tlsStatus = null;
+			if (is_file($certPath)) {
+				$expiry = Q_WebServer_Acme::certExpiry($certPath);
+				$tlsStatus = array(
+					'provisioned' => true,
+					'expires' => $expiry ? gmdate('Y-m-d\TH:i:s\Z', $expiry) : null,
+					'needsRenewal' => Q_WebServer_Acme::needsRenewal($certPath),
+				);
+			} else {
+				$pendingMarker = rtrim($certDir, '/') . '/.pending/' . $fqdn;
+				$tlsStatus = array(
+					'provisioned' => false,
+					'pending' => is_file($pendingMarker),
+				);
+			}
+
 			$result[] = array(
 				'key' => $key,
-				'appHost' => $rec['appHost'] ?? ($parts[0] ?? ''),
-				'name' => $parts[1] ?? '',
+				'appHost' => $appHost,
+				'name' => $branchName,
+				'subdomain' => $subdomain,
+				'url' => $subdomain . '.' . $appHost,
 				'root' => $rec['root'] ?? '',
 				'created' => $rec['created'] ?? null,
 				'createdBy' => $rec['createdBy'] ?? null,
 				'access' => $rec['access'] ?? array(),
 				'db' => !empty($rec['db']) ? array('name' => $rec['db']['name'] ?? null) : null,
+				'tls' => $tlsStatus,
 			);
 		}
 		return array('branches' => $result);
@@ -1299,6 +2196,56 @@ class Q_WebServer_Panel
 		Q_WebServer_Branch::$state[$appDefaultsKey] = $existing;
 		Q_WebServer_Branch::saveState();
 		return array('ok' => true);
+	}
+
+	private static function apiBranchSubdomain($parsed)
+	{
+		list($auth, $err) = self::apiBranchRequireAuth($parsed);
+		if ($err) return $err;
+
+		$body = !empty($parsed['body'])
+			? json_decode($parsed['body'], true) : array();
+		$appHost = $body['appHost'] ?? '';
+		$branchName = $body['branchName'] ?? '';
+
+		if (!$appHost || !$branchName) {
+			return array('error' => 'appHost and branchName are required');
+		}
+
+		require_once dirname(__DIR__) . '/WebServer/Branch.php';
+
+		$record = Q_WebServer_Branch::get($appHost, $branchName);
+		if (!$record) {
+			return array('error' => 'Branch not found: ' . $appHost . '/' . $branchName);
+		}
+
+		// Check permission: owner/admin can change any, others need admin access on this branch
+		if ($auth['role'] !== 'owner' && $auth['role'] !== 'admin') {
+			$access = $record['access'][$auth['user']] ?? null;
+			if (!$access || ($access['branch'] ?? '') !== 'admin') {
+				return array('error' => 'Only owners/admins can change subdomain', 'status' => 403);
+			}
+		}
+
+		$subdomain = $body['subdomain'] ?? '';
+		if ($subdomain === '') {
+			// GET: return current subdomain
+			return array(
+				'ok' => true,
+				'subdomain' => $record['subdomain'] ?? strtolower($branchName),
+				'url' => ($record['subdomain'] ?? strtolower($branchName)) . '.' . $appHost,
+			);
+		}
+
+		$result = Q_WebServer_Branch::setSubdomain($appHost, $branchName, $subdomain);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+		return array(
+			'ok' => true,
+			'subdomain' => $subdomain,
+			'url' => $subdomain . '.' . $appHost,
+		);
 	}
 
 	// ── Apps API ─────────────────────────────────────────
@@ -5169,8 +6116,10 @@ class Q_WebServer_Panel
 --red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08);
 --fg:#e1e4ed;--card:rgba(22,24,40,.7);--border:rgba(255,255,255,.06);--brd:rgba(255,255,255,.06);--warn:#fbbf24}
 @media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);
---txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05);
---fg:#1a1a2e;--card:rgba(255,255,255,.85);--border:rgba(0,0,0,.08);--brd:rgba(0,0,0,.08);--warn:#d97706}}
+--txt:#1a1a2e;--dim:#555770;--glow:rgba(124,92,252,.05);
+--fg:#1a1a2e;--card:rgba(255,255,255,.85);--border:rgba(0,0,0,.08);--brd:rgba(0,0,0,.08);--warn:#d97706}
+.tabs{background:rgba(22,24,40,.82)}
+.tab{color:#9a9cb8}.tab:hover{color:#cdcfe0}}
 body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
   background:var(--bg);color:var(--txt);font-size:14px;min-height:100vh;
   background-image:
@@ -5332,6 +6281,53 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 .suggest-warn .suggest-desc{color:rgba(245,158,11,.5)}
 .suggest-warn .suggest-action{background:rgba(245,158,11,.15);color:var(--yel)}
 
+/* ── Branch cards ── */
+.br-card{background:var(--sfc);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  border:1px solid var(--bdr);border-radius:12px;padding:16px;margin-bottom:10px;
+  box-shadow:0 2px 12px rgba(0,0,0,.15);transition:border-color .15s}
+.br-card:hover{border-color:rgba(124,92,252,.2)}
+.br-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.br-info{flex:1;min-width:0}
+.br-name{font-size:15px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.br-name .dot{width:8px;height:8px;border-radius:50%;background:var(--grn);flex-shrink:0;
+  box-shadow:0 0 6px rgba(74,222,128,.4)}
+.br-url{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.br-url a{color:var(--cyn);font-size:12px;font-family:'SF Mono',monospace;text-decoration:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-url a:hover{text-decoration:underline}
+.br-url .br-edit-slug{cursor:pointer;opacity:.4;transition:opacity .15s;font-size:12px;flex-shrink:0}
+.br-url .br-edit-slug:hover{opacity:1}
+.br-meta{font-size:11px;color:var(--dim);display:flex;flex-wrap:wrap;gap:4px 12px}
+.br-actions{display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;align-items:flex-start}
+.br-slug-edit{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.br-slug-edit input{width:160px;padding:5px 8px;font-size:12px;font-family:'SF Mono',monospace;border-radius:6px}
+.br-slug-edit .br-slug-suffix{font-size:12px;color:var(--dim);font-family:'SF Mono',monospace}
+
+/* ── Access dialog ── */
+.access-list{margin-bottom:14px}
+.access-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;
+  background:rgba(255,255,255,.03);margin-bottom:4px;flex-wrap:wrap}
+.access-row .access-user{font-weight:600;font-size:13px;flex:1;min-width:80px}
+.access-row select{width:auto;padding:4px 8px;font-size:11px;border-radius:4px}
+.access-row .access-remove{cursor:pointer;color:var(--red);opacity:.6;font-size:14px;padding:2px 6px;
+  transition:opacity .15s;flex-shrink:0}
+.access-row .access-remove:hover{opacity:1}
+.access-add{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.access-add input{width:120px;padding:6px 10px;font-size:12px}
+.access-add select{width:auto;padding:6px 8px;font-size:11px}
+
+/* ── Create branch card ── */
+.br-create{background:var(--sfc);border:1px solid var(--bdr);border-radius:12px;padding:18px;
+  margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.br-create h3{font-size:14px;font-weight:700;margin-bottom:12px}
+.br-preview{font-size:11px;color:var(--cyn);font-family:'SF Mono',monospace;margin-top:6px;
+  min-height:16px;opacity:.7}
+.br-section{margin-top:16px}
+.br-section-title{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;
+  gap:8px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.br-section-title .chevron{transition:transform .2s;font-size:10px;opacity:.5}
+.br-section-title .chevron.open{transform:rotate(90deg)}
+
 /* ── Responsive ── */
 @media(max-width:768px){
   .top{padding:14px 16px}
@@ -5353,6 +6349,11 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   .form-row label{min-width:0}
   .grid-2{grid-template-columns:1fr}
   .dialog{padding:20px;border-radius:12px}
+  .br-header{flex-direction:column}
+  .br-actions{width:100%;justify-content:flex-start;margin-top:8px}
+  .br-slug-edit input{width:120px}
+  .access-add{flex-direction:column;align-items:stretch}
+  .access-add input,.access-add select{width:100%}
 }
 @media(max-width:380px){
   .top h1{font-size:14px}
@@ -5390,6 +6391,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('servers',event)">Servers</div>
   <div class="tab" onclick="showTab('nearby',event)">Nearby</div>
   <div class="tab" onclick="showTab('mobile',event)">Mobile</div>
+  <div class="tab" onclick="showTab('config',event)">Config</div>
   <div class="tab" onclick="showTab('users',event)">Users</div>
   <div class="tab" onclick="showTab('branches',event)">Branches</div>
   <div class="tab" onclick="showTab('clientmetrics',event)">Client Metrics</div>
@@ -5763,6 +6765,30 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 </div>
 
 <!-- USERS TAB -->
+<!-- CONFIG TAB -->
+<div id="tab-config" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Server Configuration</h2>
+  <div id="cfg-status" style="margin-bottom:12px"></div>
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+    <select id="cfg-level-filter" onchange="loadConfig()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px">
+      <option value="">All levels</option>
+      <option value="safe">Safe (user-editable)</option>
+      <option value="admin">Admin only</option>
+      <option value="system">System (owner only)</option>
+    </select>
+    <input type="text" id="cfg-search" placeholder="Search configs..." oninput="filterConfigUI()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:13px;flex:1;min-width:150px">
+    <label style="font-size:12px;color:var(--dim)"><input type="checkbox" id="cfg-overrides-only" onchange="filterConfigUI()" style="margin-right:4px">Overrides only</label>
+  </div>
+  <div id="cfg-list"></div>
+  <div class="card" id="cfg-custom-form" style="margin-top:16px;display:none">
+    <h3 style="font-size:14px;margin-bottom:12px">Set Custom Config Key</h3>
+    <div class="form-row"><label>Key</label><input type="text" id="cfg-custom-key" placeholder="Q.webserver.custom.key"></div>
+    <div class="form-row"><label>Value</label><input type="text" id="cfg-custom-value" placeholder="value (JSON)"></div>
+    <button class="btn btn-primary" onclick="setCustomConfig()">Set</button>
+    <div id="cfg-custom-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
+  </div>
+</div>
+
 <div id="tab-users" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">User Management</h2>
   <div id="users-list"></div>
@@ -5770,7 +6796,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <h3 style="font-size:14px;margin-bottom:12px">Add User</h3>
     <div class="form-row"><label>Username</label><input type="text" id="user-add-name" placeholder="username (lowercase, no spaces)"></div>
     <div class="form-row"><label>Password</label><input type="password" id="user-add-pw" placeholder="6+ characters"></div>
-    <div class="form-row"><label>Role</label><select id="user-add-role"><option value="user">user</option><option value="admin">admin</option></select></div>
+    <div class="form-row"><label>Role</label><select id="user-add-role"><option value="user">user</option><option value="manager">manager</option><option value="admin">admin</option></select></div>
     <button class="btn btn-primary" onclick="addUser()">Add User</button>
     <div id="user-add-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
   </div>
@@ -5778,25 +6804,59 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 
 <!-- BRANCHES TAB -->
 <div id="tab-branches" class="content hidden">
-  <h2 style="font-size:16px;margin-bottom:16px">Branch Management</h2>
-  <div id="branches-list"></div>
-  <div class="card" style="margin-top:16px">
-    <h3 style="font-size:14px;margin-bottom:12px">Create Branch</h3>
-    <div class="form-row"><label>App Host</label><input type="text" id="br-app" placeholder="e.g. myapp.localhost"></div>
-    <div class="form-row"><label>Branch Name</label><input type="text" id="br-name" placeholder="branch-name"></div>
-    <button class="btn btn-primary" onclick="createBranch()">Create Branch</button>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <h2 style="font-size:16px;margin:0">Branches</h2>
+    <button class="btn btn-primary" onclick="toggleCreateBranch()">+ New Branch</button>
+  </div>
+
+  <!-- Create branch (collapsed by default) -->
+  <div id="br-create-form" class="br-create hidden">
+    <h3>Create Branch</h3>
+    <div class="form-row"><label>App Host</label><input type="text" id="br-app" placeholder="e.g. myapp.com"></div>
+    <div class="form-row"><label>Branch Name</label><input type="text" id="br-name" placeholder="feature-login" oninput="previewBranchUrl()"></div>
+    <div class="br-preview" id="br-url-preview"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-primary" onclick="createBranch()">Create</button>
+      <button class="btn btn-ghost" onclick="toggleCreateBranch()">Cancel</button>
+    </div>
     <div id="br-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
   </div>
-  <div class="card" style="margin-top:16px" id="br-db-config">
-    <h3 style="font-size:14px;margin-bottom:12px">Database Clone Config</h3>
-    <div class="form-row"><label>App Host</label><input type="text" id="br-db-app" placeholder="e.g. myapp.localhost"></div>
-    <div class="form-row"><label>Clone DB Name</label><input type="text" id="br-db-name" placeholder="test_database_name"></div>
-    <button class="btn btn-primary" onclick="saveBranchDbConfig()">Save</button>
-    <div id="br-db-info" style="font-size:12px;color:var(--dim);margin-top:8px"></div>
+
+  <!-- Branch list -->
+  <div id="branches-list"></div>
+
+  <!-- Collapsible sections -->
+  <div class="br-section">
+    <div class="br-section-title" onclick="toggleSection('br-db-config',this)">
+      <span class="chevron">&#9654;</span> Database Clone Config
+    </div>
+    <div id="br-db-config" class="hidden" style="padding-left:18px">
+      <div class="form-row"><label>App Host</label><input type="text" id="br-db-app" placeholder="e.g. myapp.com"></div>
+      <div class="form-row"><label>Clone DB</label><input type="text" id="br-db-name" placeholder="database_name"></div>
+      <button class="btn btn-primary btn-sm" onclick="saveBranchDbConfig()">Save</button>
+      <div id="br-db-info" style="font-size:12px;color:var(--dim);margin-top:8px"></div>
+    </div>
   </div>
-  <div class="card" style="margin-top:16px">
-    <h3 style="font-size:14px;margin-bottom:12px">Merge Requests</h3>
-    <div id="br-merge-requests"><p style="color:var(--dim);font-size:12px">No pending merge requests.</p></div>
+
+  <div class="br-section">
+    <div class="br-section-title" onclick="toggleSection('br-merge-reqs',this)">
+      <span class="chevron">&#9654;</span> Merge Requests
+    </div>
+    <div id="br-merge-reqs" class="hidden" style="padding-left:18px">
+      <div id="br-merge-requests"><p style="color:var(--dim);font-size:12px">No pending merge requests.</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Access Management Dialog -->
+<div id="access-dialog" class="dialog-overlay hidden" onclick="if(event.target===this)closeAccessDialog()">
+  <div class="dialog" style="max-width:480px">
+    <h3 id="access-dialog-title">Manage Access</h3>
+    <div id="access-dialog-body"></div>
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeAccessDialog()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAccess()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -6133,6 +7193,7 @@ function showTab(name, ev) {
   if (name==='frameworks') loadFrameworks();
   if (name==='scripts') loadAppSelect();
   if (name==='mobile') { loadToolchains(); loadMobileAppSelect(); }
+  if (name==='config') loadConfig();
   if (name==='users') loadUsers();
   if (name==='branches') loadBranches();
   if (name==='clientmetrics') loadClientMetrics();
@@ -7523,6 +8584,232 @@ async function loadCron() {
 }
 async function runCron(n){var r=await api('cron/run',{task:n});alert(r.error||'Dispatched '+n);}
 
+// ── Config ─────────────────────────────────────────
+var _cfgData = {};
+async function loadConfig() {
+  var el = document.getElementById('cfg-list');
+  el.innerHTML = '<div style="color:var(--dim);padding:12px">Loading configuration…</div>';
+  try {
+    var r = await api('config');
+    _cfgData = r.config || {};
+    renderConfigList();
+    // Show custom form for admins
+    var me = await api('auth/me');
+    var cf = document.getElementById('cfg-custom-form');
+    if (cf) cf.style.display = (me.role === 'owner' || me.role === 'admin') ? '' : 'none';
+  } catch(e) {
+    el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escHtml(e.message || 'Failed to load config') + '</p></div>';
+  }
+}
+
+var _cfgCollapsed = {};
+
+function renderConfigList() {
+  var el = document.getElementById('cfg-list');
+  var levelFilter = document.getElementById('cfg-level-filter').value;
+  var search = (document.getElementById('cfg-search').value || '').toLowerCase();
+  var overridesOnly = document.getElementById('cfg-overrides-only').checked;
+  var isFiltered = !!(levelFilter || search || overridesOnly);
+
+  var keys = Object.keys(_cfgData).sort();
+  var filtered = keys.filter(function(k) {
+    var m = _cfgData[k];
+    if (levelFilter && m.level !== levelFilter) return false;
+    if (overridesOnly && !m.overridden) return false;
+    if (search && k.toLowerCase().indexOf(search) === -1 && (m.desc || '').toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">No matching configs found.</p></div>';
+    return;
+  }
+
+  // Build tree from dotted keys
+  var tree = {};
+  filtered.forEach(function(k) {
+    var parts = k.split('.');
+    var node = tree;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (!node[parts[i]]) node[parts[i]] = {};
+      node = node[parts[i]];
+    }
+    node[parts[parts.length - 1]] = { _key: k, _meta: _cfgData[k] };
+  });
+
+  el.innerHTML = renderConfigTree(tree, '', 0, isFiltered);
+}
+
+function renderConfigTree(node, prefix, depth, forceOpen) {
+  var html = '';
+  var sortedKeys = Object.keys(node).sort();
+  for (var i = 0; i < sortedKeys.length; i++) {
+    var name = sortedKeys[i];
+    var child = node[name];
+    var path = prefix ? prefix + '.' + name : name;
+    if (child._key) {
+      // Leaf node — render config item
+      html += renderConfigItem(child._key, child._meta, depth);
+    } else {
+      // Branch node — collapsible group
+      var childKeys = Object.keys(child);
+      var leafCount = countLeaves(child);
+      var collapsed = forceOpen ? false : !!_cfgCollapsed[path];
+      var arrow = collapsed ? '▶' : '▼';
+      var indent = depth * 16;
+      html += '<div class="cfg-group" style="margin-bottom:2px">'
+        + '<div onclick="toggleCfgGroup(\'' + escAttr(path) + '\')" '
+        + 'style="display:flex;align-items:center;gap:6px;padding:6px 10px;margin-left:' + indent + 'px;'
+        + 'cursor:pointer;user-select:none;border-radius:6px;font-size:13px;font-weight:600;'
+        + 'color:var(--fg);transition:background .15s" '
+        + 'onmouseenter="this.style.background=\'var(--hover)\'" onmouseleave="this.style.background=\'none\'">'
+        + '<span style="font-size:10px;color:var(--dim);width:12px;text-align:center;flex-shrink:0">' + arrow + '</span>'
+        + '<span style="font-family:monospace">' + escHtml(name) + '</span>'
+        + '<span style="font-size:10px;color:var(--dim);font-weight:400">' + leafCount + '</span>'
+        + '</div>';
+      if (!collapsed) {
+        html += '<div class="cfg-children">'
+          + renderConfigTree(child, path, depth + 1, forceOpen)
+          + '</div>';
+      }
+      html += '</div>';
+    }
+  }
+  return html;
+}
+
+function countLeaves(node) {
+  var count = 0;
+  Object.keys(node).forEach(function(k) {
+    if (node[k]._key) count++;
+    else count += countLeaves(node[k]);
+  });
+  return count;
+}
+
+function toggleCfgGroup(path) {
+  _cfgCollapsed[path] = !_cfgCollapsed[path];
+  renderConfigList();
+}
+
+function renderConfigItem(key, meta, depth) {
+  var levelColors = { safe: 'var(--grn)', admin: 'var(--yel)', system: 'var(--red)' };
+  var lc = levelColors[meta.level] || 'var(--dim)';
+  var overrideBadge = meta.overridden
+    ? ' <span style="background:var(--ac);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">override</span>'
+    : '';
+  var revertBtn = meta.overridden
+    ? ' <button class="btn btn-ghost" style="font-size:10px;padding:2px 6px;color:var(--red)" onclick="revertConfig(\'' + escAttr(key) + '\')">Revert</button>'
+    : '';
+  var indent = (depth || 0) * 16;
+  var leafName = key.split('.').pop();
+
+  var inputHtml = renderConfigInput(key, meta);
+
+  return '<div class="card" style="margin-bottom:4px;padding:8px 12px;margin-left:' + indent + 'px" id="cfg-item-' + escAttr(key) + '">'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:150px">'
+    + '<div style="font-size:13px;font-weight:600;font-family:monospace;word-break:break-all">' + escHtml(leafName) + overrideBadge + '</div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-top:2px">' + escHtml(meta.desc || '') + '</div>'
+    + '<div style="font-size:10px;margin-top:2px"><span style="color:' + lc + '">' + escHtml(meta.level) + '</span>'
+    + ' · <span style="color:var(--dim)">' + escHtml(meta.type) + '</span></div>'
+    + '</div>'
+    + '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
+    + inputHtml + revertBtn
+    + '</div></div></div>';
+}
+
+function renderConfigInput(key, meta) {
+  var val = meta.value;
+  var ek = escAttr(key);
+  if (meta.type === 'boolean') {
+    var ch = val ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">'
+      + '<input type="checkbox" onchange="updateConfig(\'' + ek + '\', this.checked)"' + ch + '>'
+      + (val ? 'On' : 'Off') + '</label>';
+  }
+  if (meta.type === 'select' && meta.options) {
+    var opts = meta.options.map(function(o) {
+      var sel = (o === val) ? ' selected' : '';
+      return '<option value="' + escAttr(o) + '"' + sel + '>' + escHtml(o) + '</option>';
+    }).join('');
+    return '<select onchange="updateConfig(\'' + ek + '\', this.value)" style="padding:3px 6px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:12px">' + opts + '</select>';
+  }
+  if (meta.type === 'integer') {
+    return '<input type="number" value="' + (val !== null && val !== undefined ? val : '') + '" '
+      + 'onchange="updateConfig(\'' + ek + '\', parseInt(this.value))" '
+      + 'style="width:80px;padding:3px 6px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:12px;text-align:right">';
+  }
+  // string
+  return '<input type="text" value="' + escAttr(val !== null && val !== undefined ? val : '') + '" '
+    + 'onchange="updateConfig(\'' + ek + '\', this.value)" '
+    + 'style="width:160px;padding:3px 6px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg);font-size:12px">';
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+}
+
+function filterConfigUI() {
+  renderConfigList();
+}
+
+async function updateConfig(key, value) {
+  var status = document.getElementById('cfg-status');
+  status.innerHTML = '<span style="color:var(--dim);font-size:12px">Saving ' + escHtml(key) + '…</span>';
+  try {
+    var r = await api('config/update', { key: key, value: value });
+    if (r.error) { status.innerHTML = '<span style="color:var(--red);font-size:12px">' + escHtml(r.error) + '</span>'; return; }
+    status.innerHTML = '<span style="color:var(--grn);font-size:12px">✓ Saved ' + escHtml(key) + '</span>';
+    // Update local cache
+    if (_cfgData[key]) {
+      _cfgData[key].value = value;
+      _cfgData[key].overridden = true;
+    }
+    renderConfigList();
+    setTimeout(function() { status.innerHTML = ''; }, 3000);
+  } catch(e) {
+    status.innerHTML = '<span style="color:var(--red);font-size:12px">' + escHtml(e.message || 'Save failed') + '</span>';
+  }
+}
+
+async function revertConfig(key) {
+  if (!confirm('Revert ' + key + ' to default value?')) return;
+  var status = document.getElementById('cfg-status');
+  status.innerHTML = '<span style="color:var(--dim);font-size:12px">Reverting ' + escHtml(key) + '…</span>';
+  try {
+    var r = await api('config/delete', { key: key });
+    if (r.error) { status.innerHTML = '<span style="color:var(--red);font-size:12px">' + escHtml(r.error) + '</span>'; return; }
+    status.innerHTML = '<span style="color:var(--grn);font-size:12px">✓ Reverted ' + escHtml(key) + '</span>';
+    // Refresh full config
+    loadConfig();
+    setTimeout(function() { status.innerHTML = ''; }, 3000);
+  } catch(e) {
+    status.innerHTML = '<span style="color:var(--red);font-size:12px">' + escHtml(e.message || 'Revert failed') + '</span>';
+  }
+}
+
+async function setCustomConfig() {
+  var errEl = document.getElementById('cfg-custom-error');
+  errEl.style.display = 'none';
+  var key = document.getElementById('cfg-custom-key').value.trim();
+  var rawVal = document.getElementById('cfg-custom-value').value.trim();
+  if (!key) { errEl.textContent = 'Key is required'; errEl.style.display = ''; return; }
+  // Try to parse as JSON, fall back to string
+  var value;
+  try { value = JSON.parse(rawVal); } catch(e) { value = rawVal; }
+  try {
+    var r = await api('config/update', { key: key, value: value });
+    if (r.error) { errEl.textContent = r.error; errEl.style.display = ''; return; }
+    document.getElementById('cfg-custom-key').value = '';
+    document.getElementById('cfg-custom-value').value = '';
+    loadConfig();
+  } catch(e) {
+    errEl.textContent = e.message || 'Failed';
+    errEl.style.display = '';
+  }
+}
+
 // ── Users ──────────────────────────────────────────
 async function loadUsers() {
   var r = await api('users');
@@ -7532,6 +8819,7 @@ async function loadUsers() {
   el.innerHTML = r.users.map(function(u) {
     var roleBadge = u.role === 'owner' ? '<span style="color:var(--grn)">owner</span>'
       : u.role === 'admin' ? '<span style="color:var(--yel)">admin</span>'
+      : u.role === 'manager' ? '<span style="color:var(--ac)">manager</span>'
       : '<span style="color:var(--dim)">user</span>';
     var btns = '';
     if (u.role !== 'owner') {
@@ -7539,10 +8827,19 @@ async function loadUsers() {
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="resetUserPw(\'' + escHtml(u.username) + '\')">Reset PW</button>';
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="removeUser(\'' + escHtml(u.username) + '\')">Remove</button>';
     }
+    if (u.role === 'manager') {
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--ac)" onclick="editManagerScope(\'' + escHtml(u.username) + '\')">Scope</button>';
+    }
     var branches = u.branches && u.branches.length ? u.branches.join(', ') : '<span style="color:var(--dim)">none</span>';
+    var scopeInfo = '';
+    if (u.role === 'manager' && u.scope && u.scope.length) {
+      scopeInfo = ' · Scope: ' + u.scope.map(function(s) {
+        return '<span style="background:var(--ac);color:#fff;font-size:10px;padding:1px 5px;border-radius:6px">' + escHtml(s.type + ':' + (s.value || '*')) + '</span>';
+      }).join(' ');
+    }
     return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
       + '<div><strong>' + escHtml(u.username) + '</strong> ' + roleBadge
-      + '<div style="font-size:11px;color:var(--dim)">Created: ' + (u.created || '?') + ' · Branches: ' + branches + '</div></div>'
+      + '<div style="font-size:11px;color:var(--dim)">Created: ' + (u.created || '?') + ' · Branches: ' + branches + scopeInfo + '</div></div>'
       + '<div>' + btns + '</div></div></div>';
   }).join('');
   // Hide add form for non-admin
@@ -7565,7 +8862,7 @@ async function addUser() {
   loadUsers();
 }
 async function changeUserRole(username) {
-  var role = prompt('New role for ' + username + ' (admin or user):');
+  var role = prompt('New role for ' + username + ' (admin, manager, or user):');
   if (!role) return;
   var r = await api('users/update', {username: username, role: role});
   if (r.error) { alert(r.error); return; }
@@ -7585,28 +8882,256 @@ async function removeUser(username) {
   loadUsers();
 }
 
+async function editManagerScope(username) {
+  var scopeStr = prompt('Set scope for ' + username + '.\nFormat: type:value pairs, comma-separated.\nTypes: app, domain, all\nExamples: app:myapp.com, domain:example.com, all:*');
+  if (scopeStr === null) return;
+  var scope = [];
+  if (scopeStr.trim()) {
+    scope = scopeStr.split(',').map(function(s) {
+      var parts = s.trim().split(':');
+      return { type: parts[0].trim(), value: (parts[1] || '*').trim() };
+    });
+  }
+  var r = await api('users/update', { username: username, scope: scope });
+  if (r.error) { alert(r.error); return; }
+  loadUsers();
+}
+
 // ── Branches ───────────────────────────────────────
+var _accessBranch = null; // {appHost, name, access} for dialog
+
+function toggleCreateBranch() {
+  var el = document.getElementById('br-create-form');
+  el.classList.toggle('hidden');
+  if (!el.classList.contains('hidden')) document.getElementById('br-name').focus();
+}
+function toggleSection(id, titleEl) {
+  var el = document.getElementById(id);
+  el.classList.toggle('hidden');
+  var chev = titleEl.querySelector('.chevron');
+  if (chev) chev.classList.toggle('open');
+}
+function previewBranchUrl() {
+  var name = document.getElementById('br-name').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'');
+  var host = document.getElementById('br-app').value.trim() || 'myapp.com';
+  var el = document.getElementById('br-url-preview');
+  el.textContent = name ? name + '.' + host : '';
+}
+
 async function loadBranches() {
   var r = await api('branches');
   var el = document.getElementById('branches-list');
-  if (r.error) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">' + escHtml(r.error) + '</p></div>'; return; }
-  if (!r.branches || !r.branches.length) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">No branches created yet.</p></div>'; return; }
+  if (r.error) { el.innerHTML = '<div class="br-card"><p style="color:var(--dim)">' + escHtml(r.error) + '</p></div>'; return; }
+  if (!r.branches || !r.branches.length) {
+    el.innerHTML = '<div class="br-card" style="text-align:center;padding:32px 16px">'
+      + '<div style="font-size:28px;margin-bottom:8px;opacity:.5">&#128274;</div>'
+      + '<p style="color:var(--dim);margin-bottom:4px">No branches yet</p>'
+      + '<p style="color:var(--dim);font-size:12px">Create a branch to start working on an isolated copy of your app.</p></div>';
+    return;
+  }
   el.innerHTML = r.branches.map(function(b) {
-    var db = b.db && b.db.name ? b.db.name : '<span style="color:var(--dim)">none</span>';
-    var ek = b.key.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    var parts = b.key.split('/');
-    var btns = '<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="branchAccess(\'' + ek + '\')">Access</button>';
-    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="mergeBranch(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Merge</button>';
-    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--yel)" onclick="switchProd(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Switch Prod</button>';
-    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="deleteBranch(\'' + escHtml(b.appHost) + '\',\'' + escHtml(b.name) + '\')">Delete</button>';
-    return '<div class="card" style="margin-bottom:8px">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
-      + '<div><strong>' + escHtml(b.name) + '</strong> <span style="font-size:11px;color:var(--dim)">(' + escHtml(b.appHost) + ')</span>'
-      + '<div style="font-size:11px;color:var(--dim)">By: ' + escHtml(b.createdBy || '?') + ' · ' + (b.created || '') + ' · DB: ' + db + '</div></div>'
-      + '<div style="margin-top:4px">' + btns + '</div></div></div>';
+    var db = b.db && b.db.name ? escHtml(b.db.name) : '<span style="color:var(--dim)">no db</span>';
+    var subdomain = b.subdomain || b.name.toLowerCase();
+    var branchUrl = subdomain + '.' + b.appHost;
+    var ea = encodeURIComponent(b.appHost), en = encodeURIComponent(b.name);
+
+    // Access summary
+    var accessUsers = b.access ? Object.keys(b.access) : [];
+    var accessLabel = accessUsers.length ? accessUsers.length + ' user' + (accessUsers.length > 1 ? 's' : '') : 'no access';
+
+    // TLS status
+    var tlsBadge = '';
+    if (b.tls) {
+      if (b.tls.provisioned) {
+        var tlsColor = b.tls.needsRenewal ? 'var(--warn,#e6a700)' : 'var(--grn)';
+        var tlsLabel = b.tls.needsRenewal ? 'TLS renewing' : 'TLS &#10003;';
+        tlsBadge = '<span style="color:' + tlsColor + '">' + tlsLabel + '</span>';
+      } else if (b.tls.pending) {
+        tlsBadge = '<span style="color:var(--warn,#e6a700)">TLS pending&hellip;</span>';
+      } else {
+        tlsBadge = '<span style="color:var(--dim)">no TLS</span>';
+      }
+    }
+
+    return '<div class="br-card" id="br-card-' + en + '">'
+      + '<div class="br-header">'
+      + '<div class="br-info">'
+      +   '<div class="br-name"><span class="dot"></span>' + escHtml(b.name) + '</div>'
+      +   '<div class="br-url" id="br-url-' + en + '">'
+      +     '<a href="//' + escHtml(branchUrl) + '" target="_blank" title="Open branch">' + escHtml(branchUrl) + '</a>'
+      +     '<span class="br-edit-slug" title="Change subdomain" onclick="editSlug(\'' + ea + '\',\'' + en + '\',\'' + escHtml(subdomain) + '\')">&#9998;</span>'
+      +     '<span class="br-edit-slug" title="Copy URL" onclick="copyUrl(\'' + escHtml(branchUrl) + '\')">&#128203;</span>'
+      +   '</div>'
+      +   '<div class="br-meta">'
+      +     '<span>By ' + escHtml(b.createdBy || '?') + '</span>'
+      +     '<span>' + formatDate(b.created) + '</span>'
+      +     '<span>DB: ' + db + '</span>'
+      +     '<span>' + accessLabel + '</span>'
+      +     (tlsBadge ? '<span>' + tlsBadge + '</span>' : '')
+      +   '</div>'
+      + '</div>'
+      + '<div class="br-actions">'
+      +   '<button class="btn btn-grn btn-sm" onclick="openBranch(\'' + escHtml(branchUrl) + '\')">Open</button>'
+      +   '<button class="btn btn-ghost btn-sm" onclick="showAccessDialog(\'' + ea + '\',\'' + en + '\',' + escHtml(JSON.stringify(JSON.stringify(b.access||{}))) + ')">Access</button>'
+      +   '<button class="btn btn-ghost btn-sm" onclick="mergeBranch(\'' + ea + '\',\'' + en + '\')">Merge</button>'
+      +   '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteBranch(\'' + ea + '\',\'' + en + '\')">Delete</button>'
+      + '</div>'
+      + '</div></div>';
   }).join('');
   loadMergeRequests();
 }
+
+function formatDate(iso) {
+  if (!iso) return '';
+  try {
+    var d = new Date(iso);
+    var now = new Date();
+    var diff = now - d;
+    if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+    if (diff < 604800000) return Math.floor(diff/86400000) + 'd ago';
+    return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+  } catch(e) { return iso; }
+}
+
+function openBranch(url) {
+  window.open('//' + url, '_blank');
+}
+
+function copyUrl(url) {
+  navigator.clipboard.writeText(location.protocol + '//' + url).then(function() {
+    // Brief visual feedback — flash the copy icon
+    var msg = document.createElement('div');
+    msg.textContent = 'Copied!';
+    msg.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--sfc-solid);color:var(--grn);padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;z-index:200;border:1px solid var(--bdr);box-shadow:0 4px 12px rgba(0,0,0,.3)';
+    document.body.appendChild(msg);
+    setTimeout(function(){ msg.remove(); }, 1500);
+  });
+}
+
+function editSlug(appHost, branchName, currentSlug) {
+  appHost = decodeURIComponent(appHost);
+  branchName = decodeURIComponent(branchName);
+  var urlEl = document.getElementById('br-url-' + encodeURIComponent(branchName));
+  if (!urlEl) return;
+  urlEl.innerHTML = '<div class="br-slug-edit">'
+    + '<input type="text" id="slug-input" value="' + escHtml(currentSlug) + '" placeholder="subdomain">'
+    + '<span class="br-slug-suffix">.' + escHtml(appHost) + '</span>'
+    + '<button class="btn btn-primary btn-sm" onclick="saveSlug(\'' + encodeURIComponent(appHost) + '\',\'' + encodeURIComponent(branchName) + '\')">Save</button>'
+    + '<button class="btn btn-ghost btn-sm" onclick="loadBranches()">Cancel</button>'
+    + '</div>';
+  var inp = document.getElementById('slug-input');
+  inp.focus();
+  inp.select();
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') saveSlug(encodeURIComponent(appHost), encodeURIComponent(branchName));
+    if (e.key === 'Escape') loadBranches();
+  });
+}
+
+async function saveSlug(appHost, branchName) {
+  appHost = decodeURIComponent(appHost);
+  branchName = decodeURIComponent(branchName);
+  var val = document.getElementById('slug-input').value.trim().toLowerCase();
+  if (!val) { alert('Subdomain cannot be empty'); return; }
+  var r = await api('branches/subdomain', {appHost: appHost, branchName: branchName, subdomain: val});
+  if (r.error) { alert(r.error); return; }
+  loadBranches();
+}
+
+// ── Access dialog ──
+function showAccessDialog(appHost, branchName, accessJson) {
+  appHost = decodeURIComponent(appHost);
+  branchName = decodeURIComponent(branchName);
+  var access;
+  try { access = JSON.parse(accessJson); } catch(e) { access = {}; }
+  _accessBranch = {appHost: appHost, name: branchName, access: access};
+  document.getElementById('access-dialog-title').textContent = 'Access: ' + branchName;
+  renderAccessList();
+  document.getElementById('access-dialog').classList.remove('hidden');
+}
+
+function closeAccessDialog() {
+  document.getElementById('access-dialog').classList.add('hidden');
+  _accessBranch = null;
+}
+
+function renderAccessList() {
+  if (!_accessBranch) return;
+  var access = _accessBranch.access;
+  var users = Object.keys(access);
+  var html = '<div class="access-list">';
+  if (!users.length) {
+    html += '<p style="color:var(--dim);font-size:12px;padding:8px 0">No users have access to this branch.</p>';
+  } else {
+    users.forEach(function(u) {
+      var perms = access[u];
+      var brLevel = (typeof perms === 'string') ? perms : (perms.branch || 'view');
+      var fileLevel = (typeof perms === 'object') ? (perms.files || 'none') : 'none';
+      html += '<div class="access-row">'
+        + '<span class="access-user">' + escHtml(u) + '</span>'
+        + '<select onchange="updateAccessLevel(\'' + escHtml(u) + '\',\'branch\',this.value)">'
+        +   '<option value="view"' + (brLevel==='view'?' selected':'') + '>View</option>'
+        +   '<option value="edit"' + (brLevel==='edit'?' selected':'') + '>Edit</option>'
+        +   '<option value="admin"' + (brLevel==='admin'?' selected':'') + '>Admin</option>'
+        + '</select>'
+        + '<select onchange="updateAccessLevel(\'' + escHtml(u) + '\',\'files\',this.value)">'
+        +   '<option value="none"' + (fileLevel==='none'?' selected':'') + '>No files</option>'
+        +   '<option value="frontend"' + (fileLevel==='frontend'?' selected':'') + '>Frontend</option>'
+        +   '<option value="markup"' + (fileLevel==='markup'?' selected':'') + '>Markup</option>'
+        +   '<option value="all"' + (fileLevel==='all'?' selected':'') + '>All files</option>'
+        + '</select>'
+        + '<span class="access-remove" title="Remove" onclick="removeAccessUser(\'' + escHtml(u) + '\')">&times;</span>'
+        + '</div>';
+    });
+  }
+  html += '</div>';
+  html += '<div class="access-add">'
+    + '<input type="text" id="access-add-user" placeholder="Username">'
+    + '<select id="access-add-branch"><option value="view">View</option><option value="edit" selected>Edit</option><option value="admin">Admin</option></select>'
+    + '<select id="access-add-files"><option value="none">No files</option><option value="frontend" selected>Frontend</option><option value="markup">Markup</option><option value="all">All files</option></select>'
+    + '<button class="btn btn-ghost btn-sm" onclick="addAccessUser()">+ Add</button>'
+    + '</div>';
+  document.getElementById('access-dialog-body').innerHTML = html;
+}
+
+function updateAccessLevel(user, field, value) {
+  if (!_accessBranch) return;
+  var perms = _accessBranch.access[user];
+  if (typeof perms === 'string') perms = {branch: perms, files: 'none'};
+  perms[field] = value;
+  _accessBranch.access[user] = perms;
+}
+
+function removeAccessUser(user) {
+  if (!_accessBranch) return;
+  delete _accessBranch.access[user];
+  renderAccessList();
+}
+
+function addAccessUser() {
+  if (!_accessBranch) return;
+  var user = document.getElementById('access-add-user').value.trim();
+  if (!user) return;
+  var branch = document.getElementById('access-add-branch').value;
+  var files = document.getElementById('access-add-files').value;
+  _accessBranch.access[user] = {branch: branch, files: files};
+  document.getElementById('access-add-user').value = '';
+  renderAccessList();
+}
+
+async function saveAccess() {
+  if (!_accessBranch) return;
+  var r = await api('branches/access', {
+    appHost: _accessBranch.appHost,
+    branchName: _accessBranch.name,
+    access: _accessBranch.access
+  });
+  if (r.error) { alert(r.error); return; }
+  closeAccessDialog();
+  loadBranches();
+}
+
 async function createBranch() {
   var errEl = document.getElementById('br-error');
   errEl.style.display = 'none';
@@ -7616,39 +9141,31 @@ async function createBranch() {
   var r = await api('branches/create', {appHost: appHost, branchName: branchName});
   if (r.error) { errEl.textContent = r.error; errEl.style.display = 'block'; return; }
   document.getElementById('br-name').value = '';
+  document.getElementById('br-url-preview').textContent = '';
+  document.getElementById('br-create-form').classList.add('hidden');
   loadBranches();
 }
+
 async function deleteBranch(appHost, name) {
-  if (!confirm('Delete branch ' + name + '? This removes all branch files and cannot be undone.')) return;
+  appHost = decodeURIComponent(appHost);
+  name = decodeURIComponent(name);
+  if (!confirm('Delete branch "' + name + '"? This removes all branch files and cannot be undone.')) return;
   var r = await api('branches/delete', {appHost: appHost, branchName: name});
   if (r.error) { alert(r.error); return; }
   loadBranches();
 }
+
 async function mergeBranch(appHost, name) {
-  if (!confirm('Merge branch ' + name + ' into trunk? This copies all branch changes to the main app.')) return;
+  appHost = decodeURIComponent(appHost);
+  name = decodeURIComponent(name);
+  if (!confirm('Merge branch "' + name + '" into trunk? This copies all branch changes to the main app.')) return;
   var r = await api('branches/merge', {appHost: appHost, branchName: name});
   if (r.error) { alert(r.error); return; }
   var m = r.merged || {};
   alert('Merged: ' + (m.added||0) + ' added, ' + (m.changed||0) + ' changed, ' + (m.removed||0) + ' removed');
   loadBranches();
 }
-async function switchProd(appHost, name) {
-  if (!confirm('Switch production to branch ' + name + '? This merges all branch changes into the live app.')) return;
-  var r = await api('branches/switch-production', {appHost: appHost, branchName: name});
-  if (r.error) { alert(r.error); return; }
-  alert('Production switched to ' + name);
-  loadBranches();
-}
-async function branchAccess(branchKey) {
-  var parts = branchKey.split('/');
-  var appHost = parts[0], name = parts.slice(1).join('/');
-  var access = prompt('Access list as JSON, e.g. {"alice":{"branch":"edit","files":"frontend"}}');
-  if (!access) return;
-  try { access = JSON.parse(access); } catch(e) { alert('Invalid JSON'); return; }
-  var r = await api('branches/access', {appHost: appHost, branchName: name, access: access});
-  if (r.error) { alert(r.error); return; }
-  loadBranches();
-}
+
 async function saveBranchDbConfig() {
   var appHost = document.getElementById('br-db-app').value.trim();
   var cloneDb = document.getElementById('br-db-name').value.trim();
@@ -7665,6 +9182,7 @@ async function saveBranchDbConfig() {
   infoEl.textContent = 'Saved: ' + cloneDb;
   infoEl.style.color = 'var(--grn)';
 }
+
 async function loadMergeRequests() {
   var r = await api('branches/mergerequests', {});
   var el = document.getElementById('br-merge-requests');

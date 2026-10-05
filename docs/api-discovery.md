@@ -1,15 +1,198 @@
 ## 🔍 API Discovery
 
-The server auto-generates three discovery endpoints from its actual handlers and configuration. No manual documentation needed — add a handler file, the specs update automatically.
+The server auto-generates discovery endpoints from its actual handlers, panel API, and configuration. No manual documentation needed — add a handler file or panel endpoint, and every spec updates automatically.
 
-### `/.well-known/qbix.json` — Server manifest
+### Overview
 
-Qbix-native discovery. Returns the server's identity, fingerprint, installed plugins, and links to other specs.
+| Endpoint | Format | Primary consumers |
+|---|---|---|
+| `/.well-known/openapi.json` | OpenAPI 3.1 | Postman, Swagger UI, Redoc, ChatGPT |
+| `/.well-known/mcp.json` | MCP manifest | Claude, MCP-compatible tools |
+| `/mcp` | MCP protocol (Streamable HTTP) | Claude, MCP clients (live tool calls) |
+| `/llms.txt` | Plain text | LLM context windows, agent prompts |
+| `/.well-known/ai-plugin.json` | OpenAI plugin manifest | ChatGPT custom GPTs |
+| `/.well-known/qbix.json` | Qbix manifest | Federation between Qbix servers |
+| `/.well-known/openclaiming/...` | OpenClaim (signed JSON) | Identity verification |
+
+All discovery endpoints (except OpenClaiming) are generated from a single source of truth — the handler directory and `panelApiEndpoints()` in Panel.php — so they stay in sync automatically.
+
+### Authentication
+
+Discovery endpoints themselves are unauthenticated — anyone can read the specs. To **call** the APIs they describe, you need a Bearer token:
+
+**Session token** (short-lived, from login):
+```bash
+TOKEN=$(curl -s -X POST https://yoursite.com/Q/panel/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "owner", "password": "your-password"}' | jq -r .token)
+```
+
+**API token** (long-lived, for AI assistants and integrations):
+```bash
+curl -s -X POST https://yoursite.com/Q/panel/api/auth/token \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Claude Assistant", "expiryDays": 90}'
+```
+
+Both token types use the same `Authorization: Bearer <token>` header (or `X-Panel-Token` header). API tokens inherit the creating user's role and are stored in `local/panel.json`.
+
+See [Configuration — API Tokens](configuration.md#api-tokens) for token management (list, revoke).
+
+---
+
+### `/.well-known/openapi.json` — OpenAPI 3.1
+
+Standard API spec compatible with Swagger UI, Postman, Redoc, Insomnia, and any OpenAPI-compatible tool.
+
+The spec includes:
+
+- **App handler endpoints** — auto-discovered from the `handlers/` directory. Each handler becomes a documented path with its event name, tags, and schema.
+- **Built-in endpoints** — `/Q/health`, `/Q/event`
+- **Panel API endpoints** — 17+ endpoints organized into four tag groups:
+
+| Tag | Endpoints | Purpose |
+|---|---|---|
+| **Panel Auth** | login, logout, me, token, tokens, token/revoke | Authentication and API tokens |
+| **Panel Config** | config, config/update, config/delete, config/schema | Runtime configuration |
+| **Panel Users** | users/list, users/add, users/update, users/delete | User management |
+| **Panel Branches** | branches/list, branches/create, branches/delete, branches/subdomain, branches/access | Branch management |
+
+Usage:
+- Paste the URL into **Postman** → Import → complete API documentation
+- Point **Swagger UI** at it → interactive API explorer
+- Feed it to **Redoc** → polished reference docs
+
+---
+
+### `/.well-known/mcp.json` — MCP Manifest
+
+Static manifest that lets MCP-compatible tools discover the server's available tools. Each handler and panel endpoint becomes an MCP tool:
+
+**App handler tools** — named after the handler path (e.g., `chat_join`, `chat_message`):
+```json
+{
+    "tools": [
+        {"name": "health", "description": "Check server health and uptime"},
+        {"name": "event", "description": "Dispatch a Q::event() on this server"},
+        {"name": "chat_join", "description": "Dispatch event: chat/join"}
+    ]
+}
+```
+
+**Panel tools** — prefixed with `panel_` (e.g., `panel_config_get`, `panel_users_add`):
+```json
+{
+    "tools": [
+        {"name": "panel_login", "description": "Authenticate and get a session token"},
+        {"name": "panel_config_get", "description": "Get all config values"},
+        {"name": "panel_config_update", "description": "Set a config value"},
+        {"name": "panel_users_add", "description": "Create a new user"},
+        {"name": "panel_branch_list", "description": "List branches for an app host"},
+        {"name": "panel_branch_create", "description": "Create a new branch"}
+    ]
+}
+```
+
+**Branch collaboration tools** — for file-level operations on branches:
+```json
+{
+    "tools": [
+        {"name": "branch_list", "description": "List branches for an app host"},
+        {"name": "branch_create", "description": "Create a new branch"},
+        {"name": "file_list", "description": "List files in a branch directory"},
+        {"name": "file_read", "description": "Read a file from a branch"}
+    ]
+}
+```
+
+The manifest includes input schemas for each tool, so AI assistants know what parameters to pass.
+
+---
+
+### `/mcp` — MCP Protocol Endpoint
+
+The live MCP protocol endpoint. Unlike the static manifest at `/.well-known/mcp.json`, this is a working protocol endpoint that accepts tool calls via Streamable HTTP (JSON-RPC 2.0 over POST).
+
+**Transport:** Streamable HTTP — each request is a JSON-RPC 2.0 message sent as a POST body, with the response returned in the POST response.
+
+**Supported methods:**
+
+| Method | Purpose |
+|---|---|
+| `initialize` | Start a session, negotiate capabilities |
+| `tools/list` | List available tools (same as manifest) |
+| `tools/call` | Execute a tool and get results |
+
+**Example — list tools:**
+```bash
+curl -X POST https://yoursite.com/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+**Example — call a tool:**
+```bash
+curl -X POST https://yoursite.com/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "panel_config_get",
+      "arguments": {}
+    }
+  }'
+```
+
+**Connecting an AI assistant:** Point your MCP client at `https://yoursite.com/mcp` with a Bearer token. The assistant gets tools for everything: reading and editing files on branches, managing config, creating users, provisioning branches — all through the same permission model as human users.
+
+---
+
+### `/llms.txt` — LLM Context
+
+A plain-text summary designed to fit in an LLM's context window. Contains:
+
+- Server identity and version
+- Available tools grouped by category (branch operations, panel management)
+- Workflows — step-by-step instructions for common tasks like "edit code on a branch" or "configure the server"
+- Authentication instructions
+
+Useful for agent prompts and LLM system messages where a structured spec (OpenAPI/MCP) would be too verbose.
+
+---
+
+### `/.well-known/ai-plugin.json` — OpenAI Plugin Manifest
+
+An OpenAI-compatible plugin manifest for ChatGPT custom GPTs and other tools that use the plugin ecosystem:
+
+```json
+{
+    "schema_version": "v1",
+    "name_for_human": "Qbix Server",
+    "name_for_model": "qbix_server",
+    "description_for_human": "Manage branches, files, config, and users on a Qbix Server",
+    "description_for_model": "Qbix Server instance at yoursite.com. Provides branch-based collaboration...",
+    "auth": {"type": "service_http", "authorization_type": "bearer"},
+    "api": {"type": "openapi", "url": "https://yoursite.com/.well-known/openapi.json"}
+}
+```
+
+The `description_for_model` field gives AI assistants context about how to use the server — always create or select a branch before making changes, use panel tools for configuration, etc.
+
+---
+
+### `/.well-known/qbix.json` — Server Manifest
+
+Qbix-native discovery. Returns the server's identity, fingerprint, installed plugins, and links to other specs:
 
 ```json
 {
     "server": "Qbix Server",
-    "version": "1.0.0",
+    "version": "3.1.0",
     "fingerprint": "4af468e461fc2022...",
     "endpoints": {
         "event": "/Q/event",
@@ -26,46 +209,28 @@ Qbix-native discovery. Returns the server's identity, fingerprint, installed plu
 
 Other Qbix servers use this for federation — pin the fingerprint, discover endpoints, forward events.
 
-### `/.well-known/openapi.json` — OpenAPI 3.1
-
-Standard API spec compatible with Swagger UI, Postman, Redoc, Insomnia, and any OpenAPI-compatible tool.
-
-- Paste the URL into **Postman** → Import → complete API documentation
-- Point **Swagger UI** at it → interactive API explorer
-- Feed it to **Redoc** → polished reference docs
-
-The spec includes built-in endpoints (`/Q/health`, `/Q/event`) and auto-discovers handlers from the `handlers/` directory. Each handler becomes a documented path with its event name, tags, and schema.
-
-### `/.well-known/mcp.json` — MCP (Model Context Protocol)
-
-Lets AI tools (Claude, GPT, Cursor, etc.) discover and call this server's APIs as tools. Each handler becomes an MCP tool:
-
-```json
-{
-    "tools": [
-        {"name": "health", "description": "Check server health and uptime"},
-        {"name": "event", "description": "Dispatch a Q::event() on this server"},
-        {"name": "chat_join", "description": "Dispatch event: chat/join"},
-        {"name": "chat_message", "description": "Dispatch event: chat/message"}
-    ]
-}
-```
-
-An AI assistant connected to your Qbix server can call your handlers directly — no glue code, no adapters.
+---
 
 ### Compatibility matrix
 
 | Tool | Endpoint | How |
 |---|---|---|
-| Postman | `/.well-known/openapi.json` | Import → Collections |
-| Swagger UI | `/.well-known/openapi.json` | Point URL → interactive docs |
-| Redoc | `/.well-known/openapi.json` | Static reference docs |
-| Claude / AI | `/.well-known/mcp.json` | MCP server discovery |
-| Other Qbix | `/.well-known/qbix.json` | Federation + fingerprint pinning |
-| curl | `/Q/health` | `curl https://host/Q/health` |
-| Monitoring | `/Q/health` | Uptime checks, Prometheus, etc. |
+| **Claude** | `/mcp` | MCP protocol — direct tool calls |
+| **Claude** (discovery) | `/.well-known/mcp.json` | MCP manifest — tool discovery |
+| **ChatGPT** | `/.well-known/ai-plugin.json` | OpenAI plugin manifest |
+| **ChatGPT** | `/.well-known/openapi.json` | OpenAPI spec for custom GPTs |
+| **Cursor / Copilot** | `/.well-known/openapi.json` | OpenAPI-based tool use |
+| **Any MCP client** | `/mcp` | Streamable HTTP transport |
+| **Postman** | `/.well-known/openapi.json` | Import → Collections |
+| **Swagger UI** | `/.well-known/openapi.json` | Interactive API explorer |
+| **Redoc** | `/.well-known/openapi.json` | Static reference docs |
+| **Other Qbix servers** | `/.well-known/qbix.json` | Federation + fingerprint pinning |
+| **LLM agents** | `/llms.txt` | Context window / system prompt |
+| **curl / monitoring** | `/Q/health` | `curl https://host/Q/health` |
 
-All three endpoints are configurable. Set `Q.federation.advertise: false` to disable, or selectively hide apps and plugins.
+All discovery endpoints are configurable. Set `Q.federation.advertise: false` to disable, or selectively hide apps and plugins.
+
+---
 
 ### `/.well-known/openclaiming/{hostname}/server.json` — OpenClaiming
 
@@ -78,7 +243,7 @@ Every Qbix server auto-generates a signed [OpenClaim](https://openclaiming.org) 
     "stm": {
         "type": "server",
         "software": "Qbix Server",
-        "version": "1.0.0",
+        "version": "3.1.0",
         "fingerprint": "4af468e461fc2022...",
         "endpoints": {
             "event": "/Q/event",
@@ -187,4 +352,3 @@ All the server's features — response cache, X-Accel-Redirect, component cache 
 
 ---
 [← Back to README](../README.md)
-

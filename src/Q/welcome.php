@@ -53,10 +53,11 @@ p code{background:var(--code-bg);padding:1px 5px;border-radius:3px;color:var(--c
   <p>Your server is running. Now build something.</p>
   <div class="v">PHP <?= PHP_VERSION ?> · PID <?= getmypid() ?></div>
   <div class="links">
+    <a href="/Q/docs#STARTING.md">🚀 Get Started</a>
+    <a href="/Q/panel">⚙️ Control Panel</a>
     <a href="/Q/dashboard">📊 Dashboard</a>
-    <a href="/Q/health">💚 Health</a>
-    <a href="/Q/panel">⚙️ Panel</a>
-    <a href="https://github.com/Qbix/webserver">📖 GitHub</a>
+    <a href="/Q/docs">📖 Docs</a>
+    <a href="https://github.com/Qbix/webserver">🔗 GitHub</a>
   </div>
 </div>
 
@@ -165,9 +166,7 @@ socket.emit('chat/message', {text: 'Hello!'});
 &lt;/script&gt;</code></pre>
 
 <div class="note">
-  <strong>Get started:</strong> Create <code>web/index.html</code> to replace this page.
-  Use <code>--workers=40</code> for production. HTTPS starts automatically on port 443
-  when certificates are present.
+  <strong>Next:</strong> Open the <a href="/Q/panel">Control Panel</a> to set your password, add users, and configure the server. Create <code>web/index.html</code> to replace this page. Read the <a href="/Q/docs#STARTING.md">Getting Started guide</a> for the full walkthrough.
 </div>
 
 </div>

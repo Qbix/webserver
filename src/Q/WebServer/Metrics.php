@@ -578,211 +578,99 @@ class Q_WebServer_Metrics
 	/**
 	 * Flush just the clickstream and page buffers to SQLite
 	 * (without closing the minute stats).
-	 *
-	 * Uses SQLite syntax compatible with old SQLite versions (including 3.7.x).
 	 */
 	private static function flushClickstream()
 	{
 		if (!self::$db) return;
-
-		// ── Flow transitions ──
 		if (!empty(self::$flowBuffer)) {
 			try {
-				self::$db->exec('BEGIN');
-
-				$update = self::$db->prepare(
-					'UPDATE flow
-					SET count = count + 1
-					WHERE from_path = :f AND to_path = :t'
+				$stmt = self::$db->prepare(
+					'INSERT INTO flow (from_path, to_path, count) VALUES (:f, :t, 1)
+					 ON CONFLICT(from_path, to_path) DO UPDATE SET count = count + 1'
 				);
-
-				$insert = self::$db->prepare(
-					'INSERT OR IGNORE INTO flow
-					(from_path, to_path, count)
-					VALUES (:f, :t, 1)'
-				);
-
-				if ($update && $insert) {
-					foreach (self::$flowBuffer as $f) {
-						$update->bindValue(':f', $f['from']);
-						$update->bindValue(':t', $f['to']);
-						$update->execute();
-						$update->reset();
-
-						if (self::$db->changes() === 0) {
-							$insert->bindValue(':f', $f['from']);
-							$insert->bindValue(':t', $f['to']);
-							$insert->execute();
-							$insert->reset();
-						}
-					}
+				foreach (self::$flowBuffer as $f) {
+					$stmt->bindValue(':f', $f['from']);
+					$stmt->bindValue(':t', $f['to']);
+					$stmt->execute();
+					$stmt->reset();
 				}
-
-				self::$db->exec('COMMIT');
-			} catch (\Throwable $e) {
-				@self::$db->exec('ROLLBACK');
-			}
-
+			} catch (\Exception $e) {}
 			self::$flowBuffer = [];
 		}
-
-		// ── Per-page statistics ──
 		if (!empty(self::$pageHits)) {
 			try {
-				self::$db->exec('BEGIN');
-
 				$now = date('c');
-
-				/*
-				* Important: calculate the new weighted average using the OLD
-				* value of hits. SQLite evaluates the RHS expressions before
-				* assigning the updated values.
-				*/
-				$update = self::$db->prepare(
-					'UPDATE page_stats SET
-						avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
-						hits = hits + :h,
-						unique_sessions = unique_sessions + :u,
-						last_hit = :t
-					WHERE path = :p'
+				$stmt = self::$db->prepare(
+					'INSERT INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
+					 VALUES (:p, :h, :u, :a, :t)
+					 ON CONFLICT(path) DO UPDATE SET
+					   hits = hits + :h,
+					   unique_sessions = unique_sessions + :u,
+					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
+					   last_hit = :t'
 				);
-
-				$insert = self::$db->prepare(
-					'INSERT OR IGNORE INTO page_stats
-					(path, hits, unique_sessions, avg_ms, last_hit)
-					VALUES (:p, :h, :u, :a, :t)'
-				);
-
-				if ($update && $insert) {
-					foreach (self::$pageHits as $path => $data) {
-						$hits = $data['hits'];
-						$unique = count($data['sessions']);
-						$avg = $hits > 0
-							? $data['totalMs'] / $hits
-							: 0;
-
-						$update->bindValue(':p', $path);
-						$update->bindValue(':h', $hits, SQLITE3_INTEGER);
-						$update->bindValue(':u', $unique, SQLITE3_INTEGER);
-						$update->bindValue(':a', $avg);
-						$update->bindValue(':t', $now);
-						$update->execute();
-						$update->reset();
-
-						if (self::$db->changes() === 0) {
-							$insert->bindValue(':p', $path);
-							$insert->bindValue(':h', $hits, SQLITE3_INTEGER);
-							$insert->bindValue(':u', $unique, SQLITE3_INTEGER);
-							$insert->bindValue(':a', $avg);
-							$insert->bindValue(':t', $now);
-							$insert->execute();
-							$insert->reset();
-						}
-					}
+				foreach (self::$pageHits as $path => $data) {
+					$stmt->bindValue(':p', $path);
+					$stmt->bindValue(':h', $data['hits']);
+					$stmt->bindValue(':u', count($data['sessions']));
+					$stmt->bindValue(':a', $data['hits'] > 0 ? $data['totalMs'] / $data['hits'] : 0);
+					$stmt->bindValue(':t', $now);
+					$stmt->execute();
+					$stmt->reset();
 				}
-
-				self::$db->exec('COMMIT');
-			} catch (\Throwable $e) {
-				@self::$db->exec('ROLLBACK');
-			}
-
+			} catch (\Exception $e) {}
 			self::$pageHits = [];
 		}
-
-		// ── Individual request records ──
+		// Flush individual requests for analytics
 		if (!empty(self::$requestBuffer)) {
 			try {
-				self::$db->exec('BEGIN');
-
 				$stmt = self::$db->prepare(
-					'INSERT INTO requests
-					(ts, session_id, path, prev_path, status, duration_ms,
-					ip, host, platform, browser, language)
-					VALUES
-					(:ts, :sid, :path, :prev, :status, :dur,
-					:ip, :host, :plat, :br, :lang)'
+					'INSERT INTO requests (ts, session_id, path, prev_path, status, duration_ms, ip, host, platform, browser, language)
+					 VALUES (:ts, :sid, :path, :prev, :status, :dur, :ip, :host, :plat, :br, :lang)'
 				);
-
-				if ($stmt) {
-					foreach (self::$requestBuffer as $r) {
-						$stmt->bindValue(':ts', $r['ts'], SQLITE3_INTEGER);
-						$stmt->bindValue(':sid', $r['sessionId']);
-						$stmt->bindValue(':path', $r['path']);
-						$stmt->bindValue(':prev', $r['prevPath']);
-						$stmt->bindValue(':status', $r['status'], SQLITE3_INTEGER);
-						$stmt->bindValue(':dur', $r['durationMs']);
-						$stmt->bindValue(':ip', $r['ip']);
-						$stmt->bindValue(':host', $r['host']);
-						$stmt->bindValue(':plat', $r['platform']);
-						$stmt->bindValue(':br', $r['browser']);
-						$stmt->bindValue(':lang', $r['lang']);
-						$stmt->execute();
-						$stmt->reset();
-					}
+				foreach (self::$requestBuffer as $r) {
+					$stmt->bindValue(':ts', $r['ts'], SQLITE3_INTEGER);
+					$stmt->bindValue(':sid', $r['sessionId']);
+					$stmt->bindValue(':path', $r['path']);
+					$stmt->bindValue(':prev', $r['prevPath']);
+					$stmt->bindValue(':status', $r['status'], SQLITE3_INTEGER);
+					$stmt->bindValue(':dur', $r['durationMs']);
+					$stmt->bindValue(':ip', $r['ip']);
+					$stmt->bindValue(':host', $r['host']);
+					$stmt->bindValue(':plat', $r['platform']);
+					$stmt->bindValue(':br', $r['browser']);
+					$stmt->bindValue(':lang', $r['lang']);
+					$stmt->execute();
+					$stmt->reset();
 				}
-
-				self::$db->exec('COMMIT');
-			} catch (\Throwable $e) {
-				@self::$db->exec('ROLLBACK');
-			}
-
+			} catch (\Exception $e) {}
 			self::$requestBuffer = [];
 		}
-
-		// ── Session summaries ──
+		// Flush session metadata
 		if (!empty(self::$sessionUpdates)) {
 			try {
-				self::$db->exec('BEGIN');
-
-				$update = self::$db->prepare(
-					'UPDATE sessions SET
-						last_seen = CASE
-							WHEN last_seen > :last THEN last_seen
-							ELSE :last
-						END,
-						page_count = page_count + :cnt
-					WHERE session_id = :sid'
+				$stmt = self::$db->prepare(
+					'INSERT INTO sessions (session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path)
+					 VALUES (:sid, :first, :last, :ip, :host, :plat, :br, :lang, :cnt, :entry)
+					 ON CONFLICT(session_id) DO UPDATE SET
+					   last_seen = MAX(last_seen, :last),
+					   page_count = page_count + :cnt'
 				);
-
-				$insert = self::$db->prepare(
-					'INSERT OR IGNORE INTO sessions
-					(session_id, first_seen, last_seen, ip, host,
-					platform, browser, language, page_count, entry_path)
-					VALUES
-					(:sid, :first, :last, :ip, :host,
-					:plat, :br, :lang, :cnt, :entry)'
-				);
-
-				if ($update && $insert) {
-					foreach (self::$sessionUpdates as $sid => $s) {
-						$update->bindValue(':sid', $sid);
-						$update->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
-						$update->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
-						$update->execute();
-						$update->reset();
-
-						if (self::$db->changes() === 0) {
-							$insert->bindValue(':sid', $sid);
-							$insert->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
-							$insert->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
-							$insert->bindValue(':ip', $s['ip']);
-							$insert->bindValue(':host', $s['host']);
-							$insert->bindValue(':plat', $s['platform']);
-							$insert->bindValue(':br', $s['browser']);
-							$insert->bindValue(':lang', $s['lang']);
-							$insert->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
-							$insert->bindValue(':entry', $s['entryPath']);
-							$insert->execute();
-							$insert->reset();
-						}
-					}
+				foreach (self::$sessionUpdates as $sid => $s) {
+					$stmt->bindValue(':sid', $sid);
+					$stmt->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
+					$stmt->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
+					$stmt->bindValue(':ip', $s['ip']);
+					$stmt->bindValue(':host', $s['host']);
+					$stmt->bindValue(':plat', $s['platform']);
+					$stmt->bindValue(':br', $s['browser']);
+					$stmt->bindValue(':lang', $s['lang']);
+					$stmt->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
+					$stmt->bindValue(':entry', $s['entryPath']);
+					$stmt->execute();
+					$stmt->reset();
 				}
-
-				self::$db->exec('COMMIT');
-			} catch (\Throwable $e) {
-				@self::$db->exec('ROLLBACK');
-			}
-
+			} catch (\Exception $e) {}
 			self::$sessionUpdates = [];
 		}
 	}
@@ -1124,13 +1012,14 @@ class Q_WebServer_Metrics
 		self::buildAnalyticsWhere($filters, $where, $params);
 		$whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
-		$row = self::$db->querySingle(
-			"SELECT COUNT(*) AS page_views,
+		// Use prepared statement for aggregate query so filter params get bound
+		$sql = "SELECT COUNT(*) AS page_views,
 					COUNT(DISTINCT session_id) AS sessions,
 					COUNT(DISTINCT ip) AS unique_ips,
 					AVG(duration_ms) AS avg_ms
-			 FROM requests $whereClause", true
-		);
+			 FROM requests $whereClause";
+		$rows = self::analyticsQuery($sql, $params);
+		$row = $rows ? $rows[0] : [];
 
 		// Top pages
 		$sql = "SELECT path, COUNT(*) AS hits FROM requests $whereClause GROUP BY path ORDER BY hits DESC LIMIT 10";
@@ -1144,8 +1033,9 @@ class Q_WebServer_Metrics
 		$sql = "SELECT browser, COUNT(*) AS count FROM requests $whereClause GROUP BY browser ORDER BY count DESC";
 		$topBrowsers = self::analyticsQuery($sql, $params);
 
-		// Top languages
-		$sql = "SELECT language, COUNT(*) AS count FROM requests $whereClause AND language IS NOT NULL GROUP BY language ORDER BY count DESC LIMIT 10";
+		// Top languages — add language IS NOT NULL as a filter condition, not bare AND
+		$langWhere = $where ? $whereClause . ' AND language IS NOT NULL' : 'WHERE language IS NOT NULL';
+		$sql = "SELECT language, COUNT(*) AS count FROM requests $langWhere GROUP BY language ORDER BY count DESC LIMIT 10";
 		$topLanguages = self::analyticsQuery($sql, $params);
 
 		// Available hosts (for app filter)

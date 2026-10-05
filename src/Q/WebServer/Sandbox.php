@@ -183,6 +183,16 @@ class Q_WebServer_Sandbox
 			}
 		}
 
+		// When running from a PHAR, the autoloader needs to read class
+		// files from inside the archive. Without this, any class load
+		// after sandbox activation triggers an open_basedir violation.
+		if (class_exists('Phar', false)) {
+			$pharPath = \Phar::running(false);
+			if ($pharPath && !in_array($pharPath, $paths, true)) {
+				$paths[] = $pharPath;
+			}
+		}
+
 		// Always allow the system temp dir (sessions, file uploads, etc.)
 		$tmp = sys_get_temp_dir();
 		if ($tmp) {

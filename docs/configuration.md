@@ -50,6 +50,57 @@ Create `config/server.json` next to your `web/` directory, or pass `--config=pat
 | `webserver.cgi.patterns` | [] | Regex patterns for scripts that use php-cgi (legacy compatibility) |
 | `webserver.cgi.binary` | auto | Path to php-cgi binary (auto-detected if not set) |
 
+### Control Panel Config Editor
+
+The control panel at `/Q/panel` includes a Config tab that lets you view and modify all configuration at runtime without editing JSON files. The editor presents config keys in a hierarchical tree organized by namespace, with expand/collapse, search, level filtering, and an overrides-only view.
+
+Changes made through the panel are applied live to the running server and persisted in `local/panel.json` under `configOverrides`. They survive server restarts and take precedence over file-based config.
+
+Each key has an access level that determines who can modify it:
+- **safe** — any authenticated user
+- **admin** — admin and owner only
+- **system** — owner only (e.g. `port`)
+
+Admins and owners can also set arbitrary config keys beyond the built-in schema via the "Set Custom Config Key" form.
+
+### API Tokens
+
+For AI assistants and integrations that need persistent access to the panel API, create long-lived API tokens instead of using session-based login:
+
+```bash
+# Create a token (returns the full token — save it, it won't be shown again)
+curl -X POST https://yoursite.com/Q/api/auth/token \
+  -H "Authorization: Bearer <session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "Claude Assistant", "expiryDays": 90}'
+
+# List active tokens (shows prefix only)
+curl https://yoursite.com/Q/api/auth/tokens \
+  -H "Authorization: Bearer <session-token>"
+
+# Revoke a token by prefix
+curl -X POST https://yoursite.com/Q/api/auth/token/revoke \
+  -H "Authorization: Bearer <session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix": "a1b2c3d4"}'
+```
+
+Tokens are stored in `local/panel.json` under `apiTokens`. They use the same Bearer authentication as session tokens and inherit the creating user's role.
+
+### Panel API Discovery
+
+The full panel API is discoverable at well-known endpoints for AI assistant integration:
+
+| Endpoint | Format | Use case |
+|---|---|---|
+| `/.well-known/openapi.json` | OpenAPI 3.0 | ChatGPT, Copilot, general REST clients |
+| `/.well-known/mcp.json` | MCP manifest | Claude, MCP-compatible assistants |
+| `/mcp` | MCP protocol | Direct MCP tool calls via Streamable HTTP |
+| `/llms.txt` | Plain text | LLM context windows, agent prompts |
+| `/.well-known/ai-plugin.json` | OpenAI plugin | ChatGPT plugin ecosystem |
+
+All discovery endpoints are generated from a single source of truth and stay in sync automatically.
+
 ### Virtual hosts
 
 Serve multiple domains from one server. Each host can have its own document root:

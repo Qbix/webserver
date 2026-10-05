@@ -597,7 +597,7 @@ The server maintains branch state in `data/branches.json` (or configurable path)
 
 1. `Q_WebServer_Branch.php` — branch manager class. Methods: `create($appHost, $branchName)`, `delete($appHost, $branchName)`, `list($appHost)`, `resolve($host, $headers)`. Manages the state file.
 2. Q_Branch integration — create CoW directory from the app's document root.
-3. Database cloning — `cloneDatabase($adapter, $sourceDb, $targetDb, $adminCredentials)`. Start with SQLite (trivial), then MySQL, then Postgres.
+3. Database cloning — `Db_Branch::fork($source, $target, $config, $dbms)` dispatches to `Db_Branch_Sqlite`, `Db_Branch_Mysql`, or `Db_Branch_Postgres` adapter subclasses. Each adapter has `fork()` and `drop()` methods. All use raw PDO (no Platform `Db` dependency).
 4. Subdomain and cookie/header routing in `handleRequest()` vhost resolution.
 
 ### Phase 2: Credential injection

@@ -246,7 +246,18 @@ if ($opts['app']) {
 		);
 		$serverSrcDir = __DIR__ . DIRECTORY_SEPARATOR . 'src'
 			. DIRECTORY_SEPARATOR . 'Q' . DIRECTORY_SEPARATOR;
-		spl_autoload_register(function ($className) use ($webserverOwnedClasses, $serverSrcDir) {
+		$serverSrcBase = __DIR__ . DIRECTORY_SEPARATOR . 'src'
+			. DIRECTORY_SEPARATOR;
+		spl_autoload_register(function ($className) use ($webserverOwnedClasses, $serverSrcDir, $serverSrcBase) {
+			// Db_Branch (no Q_ prefix) — lives in src/Db/Branch.php
+			if (strpos($className, 'Db_') === 0) {
+				$rel = str_replace('_', DIRECTORY_SEPARATOR, $className) . '.php';
+				$file = $serverSrcBase . $rel;
+				if (file_exists($file)) {
+					require_once $file;
+				}
+				return;
+			}
 			$ours = in_array($className, $webserverOwnedClasses, true)
 				|| strpos($className, 'Q_WebServer_') === 0;
 			if (!$ours) {

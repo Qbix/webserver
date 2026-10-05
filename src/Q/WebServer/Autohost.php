@@ -448,7 +448,7 @@ class Q_WebServer_Autohost
 		$renewed = 0;
 		$errors = [];
 		foreach (scandir($certDir) as $d) {
-			if ($d === '.' || $d === '..' || $d === 'account.pem') continue;
+			if ($d === '.' || $d === '..' || $d === 'account.pem' || $d === '.pending') continue;
 			$hostDir = $certDir . '/' . $d;
 			if (!is_dir($hostDir)) continue;
 			$certPath = $hostDir . '/fullchain.pem';
@@ -459,6 +459,10 @@ class Q_WebServer_Autohost
 			if (!empty($result['success'])) {
 				$renewed++;
 				self::log("Renewed: $d");
+				// Re-register in SNI map so new connections use the fresh cert
+				if (class_exists('Q_WebServer', false)) {
+					Q_WebServer::registerDomainCert($d, $result['cert'], $result['key']);
+				}
 			} else {
 				$errors[] = $d . ': ' . ($result['error'] ?? 'unknown');
 				self::log("Renewal failed: $d — " . ($result['error'] ?? 'unknown'));

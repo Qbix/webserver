@@ -228,12 +228,10 @@ class Q_WebServer
 		$socketPath = Q_Config::get('Q', 'webserver', 'socket', null);
 
 		// TCP listener — always bind unless port is explicitly 0
-		if ($port > 0) {
-			self::$socket = stream_socket_server(
-				"tcp://{$host}:{$port}", $errno, $errstr,
-				STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
-			);
-		}
+		self::$socket = stream_socket_server(
+			"tcp://{$host}:{$port}", $errno, $errstr,
+			STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
+		);
 		if (!self::$socket) {
 			throw new Exception("Could not bind to {$host}:{$port} — $errstr");
 		}
@@ -344,6 +342,33 @@ class Q_WebServer
 					fwrite(STDERR, "  [ACME] ✗ Failed for {$domainName}: {$result['error']}\n");
 				}
 			}
+		}
+
+		// ── Auto-TLS for branch subdomains ──────────────────
+		// Provision certs for any branch subdomains that don't have one yet.
+		// This runs in the parent process where $pendingChallenges is accessible.
+		if ($acmeEmail && class_exists('Q_WebServer_Branch', false)
+			|| class_exists('Q_WebServer_Branch')
+		) {
+			self::provisionBranchCerts($certDir, $acmeEmail, $acmeStaging, $host, $httpsPort);
+		}
+
+		// ── Pending branch cert timer (30s) ─────────────────
+		// Workers write marker files when a branch is created or renamed.
+		// The parent picks them up here and provisions certs.
+		if ($acmeEmail) {
+			$_certDir = $certDir;
+			$_acmeEmail = $acmeEmail;
+			$_acmeStaging = $acmeStaging;
+			$_host = $host;
+			$_httpsPort = $httpsPort;
+			Q_Evented::repeat(30, function ()
+				use ($_certDir, $_acmeEmail, $_acmeStaging, $_host, $_httpsPort)
+			{
+				self::checkPendingBranchCerts(
+					$_certDir, $_acmeEmail, $_acmeStaging, $_host, $_httpsPort
+				);
+			});
 		}
 
 		// ── Preload classes (before forking) ─────────────
@@ -1242,6 +1267,13 @@ class Q_WebServer
 			}
 		}
 
+		// LLM discovery endpoint
+		if ($path === '/llms.txt' || $path === '/.well-known/llm.txt') {
+			return array('status' => 200, 'body' => self::serveLlmsTxt($parsed),
+				'headers' => array('Content-Type' => 'text/plain; charset=utf-8',
+					'Access-Control-Allow-Origin' => '*'));
+		}
+
 		// MCP streamable HTTP transport endpoint
 		if ($path === '/mcp') {
 			require_once __DIR__ . '/WebServer/MCP.php';
@@ -1638,6 +1670,16 @@ class Q_WebServer
 		$method = $parsed['method'];
 		$path = $parsed['path'];
 
+		// Clear the stream wrapper's per-request stat cache so that
+		// file_exists() reflects the current filesystem state.
+		// Panel and branch resolution happen outside the worker loop,
+		// so they need this cleared here.
+		if (class_exists('Q_WebServer_CompatFileWrapper', false)
+			&& method_exists('Q_WebServer_CompatFileWrapper', 'clearStatCache')
+		) {
+			Q_WebServer_CompatFileWrapper::clearStatCache();
+		}
+
 		// Store request headers for ClientMetrics Sec-Fetch-Dest check
 		if (class_exists('Q_WebServer_ClientMetrics', false)) {
 			Q_WebServer_ClientMetrics::setRequestHeaders($parsed['headers'] ?? array());
@@ -1815,6 +1857,8 @@ class Q_WebServer
 				$wkResponse = self::wellKnownMCP($parsed);
 			} elseif (strpos($wellKnown, 'openclaiming/') === 0) {
 				$wkResponse = self::wellKnownOpenClaiming($parsed, $wellKnown);
+			} elseif ($wellKnown === 'ai-plugin.json') {
+				$wkResponse = self::wellKnownAIPlugin($parsed);
 			} elseif ($wellKnown === 'openai-apps-challenge') {
 				$token = Q_Config::get('Q', 'mcp', 'openai', 'verificationToken', '');
 				$wkResponse = array('status' => 200, 'body' => $token,
@@ -1829,6 +1873,15 @@ class Q_WebServer
 				return false;
 			}
 			// Fall through for other .well-known files (apple-app-site-association, acme, etc.)
+		}
+
+		// LLM discovery endpoint
+		if ($path === '/llms.txt' || $path === '/.well-known/llm.txt') {
+			$body = self::serveLlmsTxt($parsed);
+			self::sendResponse($client, 200, $body,
+				'text/plain; charset=utf-8',
+				array('Access-Control-Allow-Origin' => '*'));
+			return false;
 		}
 
 		// MCP streamable HTTP transport endpoint
@@ -1848,9 +1901,14 @@ class Q_WebServer
 			require_once __DIR__ . '/WebServer/MCP.php';
 			$endpoint = substr($path, strlen('/api/branch/'));
 			$toolMap = array(
+				'list' => 'branch_list',
+				'create' => 'branch_create',
 				'export' => 'branch_export',
 				'push' => 'branch_push',
+				'patch' => 'branch_patch',
 				'request-merge' => 'branch_request_merge',
+				'files' => 'file_list',
+				'read' => 'file_read',
 			);
 			if (isset($toolMap[$endpoint])) {
 				$body = $parsed['body'] ?? '';
@@ -4707,12 +4765,14 @@ main hr{border:none;border-top:1px solid #30363d;margin:24px 0}
 <script>
 var docTitles = {
   "README.md": "Overview",
+  "STARTING.md": "Getting Started",
   "why.md": "Why Not php-fpm?",
   "headers.md": "Server Headers",
   "http.md": "HTTP Mode",
   "websocket.md": "WebSocket & Rooms",
   "routing.md": "Routing",
   "framework.md": "PHP Framework",
+  "FRAMEWORKS.md": "Supported Frameworks",
   "configuration.md": "Configuration",
   "running.md": "Running & Building",
   "architecture.md": "Architecture",
@@ -4723,6 +4783,9 @@ var docTitles = {
   "mobile.md": "iOS & Android",
   "app-mode.md": "--app Mode & SAPI",
   "dashboard.md": "Dashboard & Panel",
+  "COLLABORATION.md": "AI Collaboration",
+  "METRICS.md": "Client Metrics",
+  "AUTOHOST.md": "Auto-Hosting",
   "deploy.md": "Deploy & Federation",
   "api-discovery.md": "API Discovery",
   "compatibility.md": "Compatibility",
@@ -4739,9 +4802,9 @@ async function init() {
   var nav = document.getElementById("nav-links");
   var html = "";
   if (r.hasReadme) html += \'<a href="#README.md" onclick="load(\\\'README.md\\\');return false">Overview</a>\';
-  var sections = {"Getting Started":["why.md","running.md","configuration.md"],
-    "Features":["headers.md","static-files.md","images.md","http.md","websocket.md","routing.md","framework.md","Mesh.md","sync.md","mobile.md"],
-    "Operations":["architecture.md","dashboard.md","deploy.md","api-discovery.md"],
+  var sections = {"Getting Started":["STARTING.md","why.md","running.md","configuration.md"],
+    "Features":["headers.md","static-files.md","images.md","http.md","websocket.md","routing.md","framework.md","FRAMEWORKS.md","Mesh.md","sync.md","mobile.md"],
+    "Operations":["architecture.md","dashboard.md","COLLABORATION.md","METRICS.md","AUTOHOST.md","deploy.md","api-discovery.md"],
     "Reference":["compatibility.md","app-mode.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
   for (var sec in sections) {
     html += "<h2>"+sec+"</h2>";
@@ -5075,6 +5138,130 @@ init();
 			);
 		}
 	}
+
+	/**
+	 * Provision TLS certificates for all existing branch subdomains that
+	 * don't have a valid cert yet.  Called once at startup.
+	 *
+	 * @param string $certDir  Base cert directory (e.g. "local/certs")
+	 * @param string $email    ACME contact email
+	 * @param bool   $staging  Use LE staging environment
+	 * @param string $host     Bind address for TLS listener
+	 * @param int    $httpsPort
+	 */
+	private static function provisionBranchCerts($certDir, $email, $staging, $host, $httpsPort)
+	{
+		$branches = Q_WebServer_Branch::listBranches();
+		if (empty($branches)) return;
+
+		foreach ($branches as $branchKey => $record) {
+			$subdomain = $record['subdomain'] ?? null;
+			$appHost = $record['appHost'] ?? null;
+			if (!$subdomain || !$appHost) continue;
+
+			$fqdn = $subdomain . '.' . $appHost;
+			$certPath = rtrim($certDir, '/') . '/' . $fqdn . '/fullchain.pem';
+			$keyPath  = rtrim($certDir, '/') . '/' . $fqdn . '/privkey.pem';
+
+			// Skip if cert exists and is not due for renewal
+			if (!Q_WebServer_Acme::needsRenewal($certPath)) {
+				// Register existing cert in SNI map
+				self::registerDomainCert($fqdn, $certPath, $keyPath);
+				continue;
+			}
+
+			$action = is_file($certPath) ? 'Renewing' : 'Provisioning';
+			fwrite(STDERR, "  [ACME] {$action} branch cert for {$fqdn}...\n");
+
+			$result = Q_WebServer_Acme::provision([$fqdn], $certDir, $email, $staging);
+			if ($result['success']) {
+				fwrite(STDERR, "  [ACME] ✓ Branch cert ready for {$fqdn}\n");
+				self::registerDomainCert($fqdn, $result['cert'], $result['key']);
+				// Start TLS if it wasn't running yet
+				if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
+					Q_WebServer_Certs::init($fqdn);
+					self::$httpsPort = $httpsPort ?: 443;
+					self::startTls($host, self::$httpsPort);
+				}
+			} else {
+				fwrite(STDERR, "  [ACME] ✗ Branch cert failed for {$fqdn}: {$result['error']}\n");
+			}
+		}
+	}
+
+	/**
+	 * Check for pending branch cert marker files and provision certs.
+	 * Called on a 30-second timer from the parent event loop.
+	 *
+	 * Workers write marker files to $certDir/.pending/ when a branch is
+	 * created or its subdomain is changed.  This method reads them,
+	 * provisions the cert via ACME HTTP-01, registers it in the SNI map,
+	 * and removes the marker.
+	 *
+	 * @param string $certDir
+	 * @param string $email
+	 * @param bool   $staging
+	 * @param string $host
+	 * @param int    $httpsPort
+	 */
+	private static function checkPendingBranchCerts($certDir, $email, $staging, $host, $httpsPort)
+	{
+		$pendingDir = rtrim($certDir, '/') . '/.pending';
+		if (!is_dir($pendingDir)) return;
+
+		$markers = @scandir($pendingDir);
+		if (!$markers) return;
+
+		foreach ($markers as $marker) {
+			if ($marker === '.' || $marker === '..') continue;
+			$markerPath = $pendingDir . '/' . $marker;
+			if (!is_file($markerPath)) continue;
+
+			$fqdn = trim(explode("\n", file_get_contents($markerPath))[0]);
+			if (!$fqdn) {
+				@unlink($markerPath);
+				continue;
+			}
+
+			$certPath = rtrim($certDir, '/') . '/' . $fqdn . '/fullchain.pem';
+
+			// Skip if cert already exists and is valid
+			if (!Q_WebServer_Acme::needsRenewal($certPath)) {
+				$keyPath = rtrim($certDir, '/') . '/' . $fqdn . '/privkey.pem';
+				self::registerDomainCert($fqdn, $certPath, $keyPath);
+				@unlink($markerPath);
+				continue;
+			}
+
+			fwrite(STDERR, "  [ACME] Provisioning branch cert for {$fqdn}...\n");
+			$result = Q_WebServer_Acme::provision([$fqdn], $certDir, $email, $staging);
+
+			if ($result['success']) {
+				fwrite(STDERR, "  [ACME] ✓ Branch cert ready for {$fqdn}\n");
+				self::registerDomainCert($fqdn, $result['cert'], $result['key']);
+				@unlink($markerPath);
+				// Start TLS if it wasn't running yet
+				if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
+					Q_WebServer_Certs::init($fqdn);
+					self::$httpsPort = $httpsPort ?: 443;
+					self::startTls($host, self::$httpsPort);
+				}
+			} else {
+				fwrite(STDERR, "  [ACME] ✗ Branch cert failed for {$fqdn}: {$result['error']}\n");
+				// Retry up to 5 times, then give up
+				$contents = file_get_contents($markerPath);
+				$lines = explode("\n", $contents);
+				$retries = isset($lines[2]) ? (int) $lines[2] + 1 : 1;
+				if ($retries >= 5) {
+					fwrite(STDERR, "  [ACME] Giving up on {$fqdn} after 5 attempts\n");
+					@unlink($markerPath);
+				} else {
+					file_put_contents($markerPath, $fqdn . "\n" . gmdate('Y-m-d\TH:i:s\Z') . "\n" . $retries);
+				}
+			}
+		}
+	}
+
 	private static $httpsPort = 0;
 	static $clients = array();
 	static $clientWatchers = array();
@@ -5753,6 +5940,86 @@ init();
 		);
 
 		// Branch collaboration API paths
+		$spec['paths']['/api/branch/list'] = array('post' => array(
+			'summary' => 'List branches for an app host',
+			'operationId' => 'branch_list',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost'),
+					'properties' => array(
+						'appHost' => array('type' => 'string', 'description' => 'App hostname'),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'List of branches with names, dates, subdomains'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['paths']['/api/branch/create'] = array('post' => array(
+			'summary' => 'Create a new copy-on-write branch',
+			'operationId' => 'branch_create',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost', 'branchName'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'subdomain' => array('type' => 'string'),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'New branch record'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['paths']['/api/branch/files'] = array('post' => array(
+			'summary' => 'List files in a branch or trunk directory',
+			'operationId' => 'file_list',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'path' => array('type' => 'string', 'description' => 'Directory path (omit for root)'),
+						'recursive' => array('type' => 'boolean'),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'File listing with paths, sizes, types'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
+		$spec['paths']['/api/branch/read'] = array('post' => array(
+			'summary' => 'Read a single file from a branch or trunk',
+			'operationId' => 'file_read',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost', 'path'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'path' => array('type' => 'string'),
+						'encoding' => array('type' => 'string', 'enum' => array('utf8', 'base64')),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'File content with metadata'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
 		$spec['paths']['/api/branch/export'] = array('post' => array(
 			'summary' => 'Export branch or trunk as an archive with credentials scrubbed',
 			'operationId' => 'branch_export',
@@ -5801,6 +6068,27 @@ init();
 			),
 			'security' => array(array('bearerAuth' => array())),
 		));
+		$spec['paths']['/api/branch/patch'] = array('post' => array(
+			'summary' => 'Apply a unified diff (patch) to a branch',
+			'operationId' => 'branch_patch',
+			'tags' => array('Branches'),
+			'requestBody' => array('required' => true, 'content' => array(
+				'application/json' => array('schema' => array(
+					'type' => 'object',
+					'required' => array('appHost', 'branchName', 'patch'),
+					'properties' => array(
+						'appHost' => array('type' => 'string'),
+						'branchName' => array('type' => 'string'),
+						'patch' => array('type' => 'string', 'description' => 'Unified diff content'),
+						'commitMessage' => array('type' => 'string', 'description' => 'If provided and VCS available, creates a commit'),
+					),
+				)),
+			)),
+			'responses' => array(
+				'200' => array('description' => 'Patch result with applied/rejected hunks'),
+			),
+			'security' => array(array('bearerAuth' => array())),
+		));
 		$spec['paths']['/api/branch/request-merge'] = array('post' => array(
 			'summary' => 'Request a branch be merged back to trunk',
 			'operationId' => 'branch_request_merge',
@@ -5823,6 +6111,63 @@ init();
 			'security' => array(array('bearerAuth' => array())),
 		));
 		$spec['tags'][] = array('name' => 'Branches', 'description' => 'Branch collaboration API for AI agents and REST consumers');
+
+		// Panel API endpoints — config, users, branches, auth
+		require_once __DIR__ . '/WebServer/Panel.php';
+		$panelEndpoints = Q_WebServer_Panel::panelApiEndpoints();
+		$panelTags = array();
+		foreach ($panelEndpoints as $ep) {
+			$tag = $ep['tag'];
+			$panelTags[$tag] = true;
+			$properties = array();
+			$required = array();
+			foreach ($ep['params'] as $name => $p) {
+				$prop = array('description' => $p['description'] ?? '');
+				if (isset($p['type'])) $prop['type'] = $p['type'];
+				$properties[$name] = $prop;
+				if (!empty($p['required'])) $required[] = $name;
+			}
+			$schema = array('type' => 'object');
+			if ($properties) $schema['properties'] = $properties;
+			if ($required) $schema['required'] = $required;
+
+			$operation = array(
+				'summary' => $ep['summary'],
+				'operationId' => $ep['id'],
+				'tags' => array($tag),
+			);
+			if ($ep['description']) {
+				$operation['description'] = $ep['description'];
+			}
+			$httpMethod = strtolower($ep['method']);
+			if ($httpMethod === 'post' && $properties) {
+				$operation['requestBody'] = array(
+					'content' => array('application/json' => array('schema' => $schema)),
+				);
+			}
+			$operation['responses'] = array(
+				'200' => array('description' => 'Success'),
+				'401' => array('description' => 'Authentication required'),
+			);
+			if (empty($ep['noAuth'])) {
+				$operation['security'] = array(array('bearerAuth' => array()));
+			}
+			$spec['paths'][$ep['path']] = array($httpMethod => $operation);
+		}
+		foreach (array_keys($panelTags) as $tag) {
+			$spec['tags'][] = array('name' => $tag, 'description' => 'Server control panel — ' . strtolower(str_replace('Panel ', '', $tag)) . ' management');
+		}
+
+		// Add securitySchemes for bearer auth
+		$spec['components'] = array(
+			'securitySchemes' => array(
+				'bearerAuth' => array(
+					'type' => 'http',
+					'scheme' => 'bearer',
+					'description' => 'Session token from /Q/api/auth/login or long-lived API token from /Q/api/auth/token',
+				),
+			),
+		);
 
 		// Add app-defined routes from handlers/ directory, parsed from PHPDoc
 		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
@@ -5904,61 +6249,59 @@ init();
 			'description' => 'Check server health and uptime',
 			'inputSchema' => array('type' => 'object', 'properties' => new \stdClass()),
 		);
+		// Branch collaboration tools
 		$tools[] = array(
-			'name' => 'event',
-			'description' => 'Dispatch a Q::event() on this server',
-			'inputSchema' => array(
-				'type' => 'object',
-				'required' => array('event'),
+			'name' => 'branch_export',
+			'description' => 'Export a branch or trunk as an archive with credentials scrubbed',
+			'inputSchema' => array('type' => 'object', 'required' => array('appHost'),
 				'properties' => array(
-					'event' => array('type' => 'string', 'description' => 'Event name (e.g. Users/login)'),
-					'params' => array('type' => 'object', 'description' => 'Event parameters'),
-				),
-			),
+					'appHost' => array('type' => 'string', 'description' => 'App hostname'),
+					'branchName' => array('type' => 'string', 'description' => 'Branch name (omit for trunk)'),
+					'format' => array('type' => 'string', 'enum' => array('tar.gz', 'zip')),
+				)),
+		);
+		$tools[] = array(
+			'name' => 'branch_push',
+			'description' => 'Push file changes to a branch',
+			'inputSchema' => array('type' => 'object', 'required' => array('appHost', 'branchName', 'files'),
+				'properties' => array(
+					'appHost' => array('type' => 'string'),
+					'branchName' => array('type' => 'string'),
+					'files' => array('type' => 'array', 'items' => array('type' => 'object',
+						'required' => array('path', 'content'),
+						'properties' => array(
+							'path' => array('type' => 'string'),
+							'content' => array('type' => 'string'),
+							'encoding' => array('type' => 'string', 'enum' => array('base64', 'utf8')),
+						))),
+				)),
+		);
+		$tools[] = array(
+			'name' => 'branch_patch',
+			'description' => 'Apply a unified diff (patch) to a branch',
+			'inputSchema' => array('type' => 'object', 'required' => array('appHost', 'branchName', 'patch'),
+				'properties' => array(
+					'appHost' => array('type' => 'string'),
+					'branchName' => array('type' => 'string'),
+					'patch' => array('type' => 'string', 'description' => 'Unified diff content'),
+					'commitMessage' => array('type' => 'string'),
+				)),
+		);
+		$tools[] = array(
+			'name' => 'branch_request_merge',
+			'description' => 'Request a branch be merged back to trunk',
+			'inputSchema' => array('type' => 'object', 'required' => array('appHost', 'branchName'),
+				'properties' => array(
+					'appHost' => array('type' => 'string'),
+					'branchName' => array('type' => 'string'),
+					'title' => array('type' => 'string'),
+					'description' => array('type' => 'string'),
+				)),
 		);
 
-		// Add handler-based tools with PHPDoc metadata
-		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(self::$rootDir)) . DS . 'handlers';
-		if (is_dir($handlersDir)) {
-			$hiddenPatterns = Q_Config::get('Q', 'api', 'discover', 'hidden', array());
-			$it = new RecursiveIteratorIterator(
-				new RecursiveDirectoryIterator($handlersDir, RecursiveDirectoryIterator::SKIP_DOTS)
-			);
-			foreach ($it as $file) {
-				if ($file->getExtension() !== 'php') continue;
-				$rel = str_replace(DS, '/', substr($file->getPathname(), strlen($handlersDir) + 1));
-				$eventName = str_replace('.php', '', $rel);
-				$doc = self::parseHandlerDoc($file->getPathname());
-
-				// Skip private/internal handlers
-				if (!empty($doc['private'])) continue;
-				if (self::isHandlerHidden($eventName, $hiddenPatterns)) continue;
-
-				$properties = array();
-				$required = array();
-				foreach ($doc['params'] as $p) {
-					$prop = array('description' => $p['description']);
-					if ($p['type']) $prop['type'] = self::phpTypeToJsonSchema($p['type']);
-					$properties[$p['name']] = $prop;
-					if (!$p['optional']) $required[] = $p['name'];
-				}
-
-				$schema = array('type' => 'object');
-				if ($properties) $schema['properties'] = $properties;
-				if ($required) $schema['required'] = $required;
-
-				$description = $doc['summary'] ?: "Dispatch event: $eventName";
-				if ($doc['description']) {
-					$description .= ' — ' . $doc['description'];
-				}
-
-				$tools[] = array(
-					'name' => str_replace('/', '_', $eventName),
-					'description' => $description,
-					'inputSchema' => $schema,
-				);
-			}
-		}
+		// Delegate to MCP::discoverTools() — single source of truth for tool discovery
+		require_once __DIR__ . '/WebServer/MCP.php';
+		$tools = Q_WebServer_MCP::discoverTools($parsed);
 
 		$manifest = array(
 			'schema_version' => '2025-01-01',
@@ -5981,6 +6324,141 @@ init();
 			'body' => json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
 			'headers' => array('Content-Type' => 'application/json',
 				'Access-Control-Allow-Origin' => '*'));
+	}
+
+	/**
+	 * OpenAI plugin manifest for custom GPT actions.
+	 * Allows ChatGPT custom GPTs to discover and call this server's APIs.
+	 */
+	static function wellKnownAIPlugin($parsed)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$appName = Q_Config::get('Q', 'app', $host);
+
+		$manifest = array(
+			'schema_version' => 'v1',
+			'name_for_human' => ($appName ?: 'Qbix Server') . ' on ' . $host,
+			'name_for_model' => str_replace(array('.', '-'), '_', $host),
+			'description_for_human' => 'Edit and manage this website through AI-powered tools.',
+			'description_for_model' => 'Qbix Server instance at ' . $host . '. '
+				. 'Provides branch-based collaboration: list and create branches, '
+				. 'browse and read files, push changes, apply diffs, and request merges. '
+				. 'Branches are copy-on-write overlays of the trunk (production). '
+				. 'Always create or select a branch before making changes. '
+				. 'Also provides a panel API for site configuration (get/set config keys, '
+				. 'manage users and roles, manage branch subdomains and access controls). '
+				. 'Use panel_login or a long-lived API token to authenticate panel calls.',
+			'auth' => array(
+				'type' => 'service_http',
+				'authorization_type' => 'bearer',
+				'verification_tokens' => array(
+					'openai' => Q_Config::get('Q', 'mcp', 'openai', 'verificationToken', ''),
+				),
+			),
+			'api' => array(
+				'type' => 'openapi',
+				'url' => 'https://' . $host . '/.well-known/openapi.json',
+			),
+			'logo_url' => 'https://' . $host . '/favicon.ico',
+			'contact_email' => Q_Config::get('Q', 'mcp', 'contactEmail', 'admin@' . $host),
+			'legal_info_url' => 'https://' . $host . '/terms',
+		);
+
+		return array('status' => 200,
+			'body' => json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			'headers' => array('Content-Type' => 'application/json',
+				'Access-Control-Allow-Origin' => '*'));
+	}
+
+	/**
+	 * Serve /llms.txt — a plaintext file describing this server for LLM agents.
+	 * See https://llmstxt.org for the emerging convention.
+	 */
+	static function serveLlmsTxt($parsed)
+	{
+		$host = $parsed['headers']['host'] ?? 'localhost';
+		$appName = Q_Config::get('Q', 'app', $host);
+
+		$lines = array();
+		$lines[] = '# ' . ($appName ?: 'Qbix Server') . ' on ' . $host;
+		$lines[] = '';
+		$lines[] = '> This site is powered by Qbix Server and exposes an MCP (Model Context Protocol) endpoint for AI assistants to read and edit its content through branches.';
+		$lines[] = '';
+		$lines[] = '## Connect';
+		$lines[] = '';
+		$lines[] = 'MCP endpoint: https://' . $host . '/mcp';
+		$lines[] = 'Transport: Streamable HTTP (JSON-RPC 2.0 over POST)';
+		$lines[] = 'Protocol version: 2025-03-26';
+		$lines[] = 'Authentication: Bearer token in Authorization header';
+		$lines[] = '';
+		$lines[] = '## Available Tools';
+		$lines[] = '';
+		$lines[] = '- **branch_list**: List all branches for an app';
+		$lines[] = '- **branch_create**: Create a new copy-on-write branch';
+		$lines[] = '- **file_list**: Browse files in a branch or trunk';
+		$lines[] = '- **file_read**: Read a single file (UTF-8 or base64)';
+		$lines[] = '- **branch_export**: Export a branch as a tar.gz or zip archive';
+		$lines[] = '- **branch_push**: Push individual file changes to a branch';
+		$lines[] = '- **branch_patch**: Apply a unified diff to a branch (with optional VCS commit)';
+		$lines[] = '- **branch_request_merge**: Request a branch be merged back to trunk';
+		$lines[] = '- **health**: Check server health and uptime';
+		$lines[] = '';
+		$lines[] = '## Panel API Tools';
+		$lines[] = '';
+		$lines[] = 'The server control panel is also accessible via API, enabling AI assistants to help users configure their sites:';
+		$lines[] = '';
+		$lines[] = '### Authentication';
+		$lines[] = '- **panel_login**: Authenticate with username/password, get a bearer token';
+		$lines[] = '- **panel_token_create**: Create a long-lived API token for integrations';
+		$lines[] = '- **panel_auth_me**: Get current user info and role';
+		$lines[] = '';
+		$lines[] = '### Configuration';
+		$lines[] = '- **panel_config_get**: Get all server config values';
+		$lines[] = '- **panel_config_update**: Set a config value (validates type and role)';
+		$lines[] = '- **panel_config_delete**: Revert a config override to default';
+		$lines[] = '- **panel_config_schema**: Get full config schema with types, levels, descriptions';
+		$lines[] = '';
+		$lines[] = '### User Management';
+		$lines[] = '- **panel_users_list**: List panel users with roles';
+		$lines[] = '- **panel_users_add**: Create a new user (role hierarchy enforced)';
+		$lines[] = '- **panel_users_update**: Change role, scope, or password';
+		$lines[] = '';
+		$lines[] = '### Branch Management';
+		$lines[] = '- **panel_branches_list**: List branches with subdomains and TLS status';
+		$lines[] = '- **panel_branches_create**: Create a branch with subdomain';
+		$lines[] = '- **panel_branches_delete**: Remove a branch';
+		$lines[] = '- **panel_branches_subdomain**: Get or set a branch\'s subdomain';
+		$lines[] = '- **panel_branches_access**: Per-user branch and file permissions';
+		$lines[] = '- **panel_branches_lockdown**: Default file permission tier and deny paths';
+		$lines[] = '';
+		$lines[] = '## Workflow';
+		$lines[] = '';
+		$lines[] = '### Code Editing';
+		$lines[] = '1. Connect to /mcp and send `initialize`';
+		$lines[] = '2. Call `branch_list` to see existing branches, or `branch_create` to make a new one';
+		$lines[] = '3. Use `file_list` and `file_read` to explore the codebase';
+		$lines[] = '4. Make changes with `branch_push` (individual files) or `branch_patch` (unified diffs)';
+		$lines[] = '5. Call `branch_request_merge` when ready to merge to production';
+		$lines[] = '';
+		$lines[] = '### Site Configuration';
+		$lines[] = '1. Authenticate with `panel_login` or use a pre-created API token';
+		$lines[] = '2. Call `panel_config_schema` to discover available settings';
+		$lines[] = '3. Use `panel_config_get` to see current values';
+		$lines[] = '4. Apply changes with `panel_config_update`';
+		$lines[] = '';
+		$lines[] = '## Discovery';
+		$lines[] = '';
+		$lines[] = '- MCP manifest: https://' . $host . '/.well-known/mcp.json';
+		$lines[] = '- OpenAPI spec: https://' . $host . '/.well-known/openapi.json';
+		$lines[] = '- OpenAI plugin: https://' . $host . '/.well-known/ai-plugin.json';
+		$lines[] = '';
+		$lines[] = '## REST API';
+		$lines[] = '';
+		$lines[] = 'Branch tools are available at /api/branch/{action} via POST with JSON body.';
+		$lines[] = 'Panel tools are available at /Q/api/{route} via POST with JSON body and Bearer token.';
+		$lines[] = '';
+
+		return implode("\n", $lines);
 	}
 
 	/**

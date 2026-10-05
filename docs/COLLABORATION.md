@@ -111,6 +111,142 @@ If the file exists, a well-behaved AI assistant reads it before starting work. I
 - **Patch validation is all-or-nothing.** A patch that touches any denied path is fully rejected, not partially applied.
 - **VCS history is local.** Git or mercurial repos in branch directories don't push anywhere unless explicitly configured. The history stays on the server by default.
 
+## Branch subdomain routing and TLS
+
+Each branch is accessible at `subdomain.apphost.com`. The subdomain defaults to the DNS-sanitized branch name and can be changed via the Panel API (`POST /Q/panel/api/branches/subdomain`) or the control panel UI. Subdomains are unique within each app.
+
+Branch routing checks the incoming `Host` header. When the host matches `<slug>.<apphost>`, the request is routed to that branch's copy-on-write directory and database.
+
+### Automatic TLS provisioning
+
+When `Q.webserver.tls.acmeEmail` is configured, the server provisions a Let's Encrypt certificate for each branch subdomain automatically using HTTP-01 challenges. Prerequisites:
+
+1. A wildcard DNS A record pointing `*.yourapp.com` to the server's IP
+2. Port 80 reachable from the internet (for ACME validation)
+3. `Q.webserver.tls.acmeEmail` set in your server config
+
+No DNS provider API is needed. The server handles challenge responses internally.
+
+**Timing:** Certs are provisioned at startup for all existing branches. When a new branch is created (or its subdomain is changed), the cert is provisioned within 30 seconds via a polling timer in the parent process.
+
+**Renewal:** The 12-hour cert renewal timer covers branch subdomain certs alongside primary domain certs. Certs are renewed when they have fewer than 30 days remaining.
+
+**Rate limits:** Let's Encrypt allows 50 certificates per registered domain per week. Set `Q.webserver.tls.acmeStaging: true` to use the staging environment during development.
+
+### Per-branch access control
+
+Each branch has an access map: `{username: {branch: "view"|"edit"|"admin", files: "none"|"frontend"|"markup"|"all"}}`. The `branch` permission controls what the user can do with the branch (view, push changes, or configure it). The `files` permission controls which file types they can push, using the same tier system as default lockdown.
+
+Admins manage access through the control panel's access dialog or via `POST /Q/panel/api/branches/access`.
+
+## Branch credential isolation
+
+Branches run against development credentials, never production ones. When the server creates a branch, it scrubs sensitive values from config files and replaces them with `{{PLACEHOLDER}}` tokens. At runtime, a stream wrapper transparently injects the real development values before the app reads its config — the branch code never sees production credentials on disk.
+
+### How it works
+
+1. **Scrubbing** happens during branch creation and export. The server detects credentials using four methods: known key names from the framework preset (e.g. `DB_PASSWORD` for Laravel, `AUTH_KEY` for WordPress), keyword matching on key names (password, secret, token, apikey, etc.), known API key prefixes (`sk_live_`, `AKIA`, `ghp_`, `sk-`), and Shannon entropy analysis for high-randomness strings. Detected values are replaced with `{{KEY_NAME}}` tokens.
+
+2. **Injection** happens at runtime via a PHP stream wrapper that intercepts file reads. When a branch worker reads a `.php`, `.env`, `.json`, `.yaml`, `.yml`, `.ini`, `.xml`, or `.conf` file containing `{{placeholder}}` patterns, the wrapper substitutes real values from the branch's credential store before returning the content.
+
+### Configuring dev credentials
+
+Set `Q.webserver.branches.credentials` in your server config with the development values that all branches should use:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "branches": {
+                "credentials": {
+                    "REDIS_HOST": "127.0.0.1",
+                    "REDIS_DB": "10",
+                    "MAIL_HOST": "sandbox.smtp.mailtrap.io",
+                    "MAIL_PORT": "2525",
+                    "MAIL_USERNAME": "your-mailtrap-user",
+                    "MAIL_PASSWORD": "your-mailtrap-pass",
+                    "STRIPE_KEY": "sk_test_...",
+                    "STRIPE_SECRET": "sk_test_...",
+                    "AWS_BUCKET": "myapp-dev-uploads"
+                }
+            }
+        }
+    }
+}
+```
+
+These shared dev credentials apply to every branch. The admin configures them once; there is no per-branch credential management.
+
+### Database credentials are auto-generated
+
+Database credentials are the one exception. Each branch gets its own cloned database (the name is auto-generated as `<host>_<branch>`), so the server generates per-branch DB credential keys automatically and merges them into the shared credentials. The auto-generated keys cover both `.env`-style names and framework-specific config paths:
+
+| Key | Example value | Used by |
+|---|---|---|
+| `DB_DATABASE`, `DB_NAME` | `example_com_feature_x` | Laravel, generic .env |
+| `DB_HOST` | `localhost` | Laravel, generic .env |
+| `DB_PORT` | `3306` | Laravel, generic .env |
+| `DB_USERNAME`, `DB_USER` | `br_example_com_feat_a1b2c3` | Laravel, WordPress, generic .env |
+| `DB_PASSWORD` | `(auto-generated per branch)` | Laravel, generic .env |
+| `DATABASE_URL` | `mysql://root:pass@localhost:3306/example_com_feature_x` | Symfony |
+| `Q.database.main.name` | `example_com_feature_x` | Qbix |
+| `Q.database.main.host` | `localhost` | Qbix |
+| `databases.default.default.database` | `example_com_feature_x` | Drupal |
+| `Datasources.default.database` | `example_com_feature_x` | CakePHP |
+| `components.db.dsn` | `mysql:host=localhost;port=3306;dbname=...` | Yii |
+| `database.default.database` | `example_com_feature_x` | CodeIgniter |
+
+The framework is auto-detected from the host's `preset` setting. If a key appears in both the shared credentials and the auto-generated DB keys, the auto-generated value wins (since the branch has its own database, it must use its own database name).
+
+### What to put in dev credentials
+
+The goal is to prevent branches from touching production services. Typical entries:
+
+- **Email**: Point to a sandbox SMTP service (Mailtrap, Mailhog) so branch code cannot send real email
+- **Payment processing**: Use test-mode keys (Stripe `sk_test_`, PayPal sandbox) so branches cannot charge real cards
+- **Object storage**: A separate dev bucket or path prefix so branch uploads don't mix with production
+- **Cache / Redis**: A different Redis database number or a key prefix so branch cache doesn't pollute production
+- **Search**: A dev index name for Elasticsearch, Meilisearch, or Algolia
+- **Push notifications**: Dev/sandbox credentials so branches don't notify real users
+- **API keys for external services**: Dev-tier keys with lower rate limits and no production data access
+
+Any key name that matches a `{{PLACEHOLDER}}` token in the branch's config files will be substituted. The key names are framework-agnostic — they just need to match what the scrubber replaced. You can add custom keys for any service your app uses.
+
+### Database cloning
+
+The server supports three database adapters for branch cloning:
+
+| Adapter | Method | Speed | Config key |
+|---|---|---|---|
+| **SQLite** | File copy | Instant for small DBs | `branches.db.adapter: "sqlite"` |
+| **MySQL / MariaDB** | PDO table-by-table copy (or `mysqldump` CLI fallback) | Seconds to minutes | `branches.db.adapter: "mysql"` |
+| **PostgreSQL** | `CREATE DATABASE ... TEMPLATE` | Fast (Postgres-native CoW) | `branches.db.adapter: "postgres"` |
+
+Configure the database adapter and connection in `Q.webserver.branches.db`:
+
+```json
+{
+    "Q": {
+        "webserver": {
+            "branches": {
+                "db": {
+                    "adapter": "mysql",
+                    "host": "localhost",
+                    "user": "root",
+                    "password": "your-db-password"
+                }
+            }
+        }
+    }
+}
+```
+
+The source database is auto-detected from the app's config files using the framework preset. Each branch gets a cloned copy named `<host>_<branch>`. The clone is dropped when the branch is deleted.
+
+#### Per-branch database user isolation
+
+Each cloned database gets its own dedicated database user (MySQL: `br_<dbname>_<suffix>`) or role (PostgreSQL) with privileges scoped only to that branch's database. A compromised branch cannot access the source database, other branches' databases, or system databases. The per-branch credentials are auto-generated and injected transparently — no admin configuration required. Admin credentials are stored separately and used only for cleanup when the branch is dropped.
+
 ## Example: Claude edits a Laravel app
 
 ```

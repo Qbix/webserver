@@ -462,6 +462,24 @@ class Q_WebServer_Branch
 		// Clone the database (if configured)
 		$dbInfo = self::cloneDatabase($appHost, $hostConfig, $branchName);
 
+		// Build credentials map: shared dev credentials from config,
+		// overridden by auto-generated per-branch values (e.g. DB name).
+		// These get injected into {{placeholder}} tokens at runtime.
+		$credentials = Q_Config::get(
+			'Q', 'webserver', 'branches', 'credentials', array()
+		);
+		if ($dbInfo) {
+			$dbCreds = self::dbCredentialKeys($dbInfo, $hostConfig);
+			$credentials = array_merge($credentials, $dbCreds);
+		}
+
+		// Scrub config files in the CoW directory: replace trunk
+		// credential values with {{KEY}} placeholders that the stream
+		// wrapper will fill at runtime via injectCredentials().
+		if ($credentials) {
+			self::scrubCoWConfigs($branchRoot, $appRoot, $credentials, $hostConfig);
+		}
+
 		// Apply default lockdown. The defaults set the floor —
 		// explicit options can only RELAX restrictions for specific
 		// users, never weaken the base sandbox.
@@ -486,13 +504,31 @@ class Q_WebServer_Branch
 			));
 		}
 
+		// Determine subdomain slug.  Defaults to the branch name
+		// (already DNS-safe from validation above).  Can be overridden
+		// via options or changed later via setSubdomain().
+		$subdomain = $options['subdomain'] ?? strtolower($branchName);
+		$subdomain = preg_replace('/[^a-z0-9-]/', '-', $subdomain);
+		$subdomain = trim($subdomain, '-');
+		if ($subdomain === '') {
+			$subdomain = strtolower($branchName);
+		}
+		// Ensure uniqueness within this app
+		$existingOwner = self::findBranchBySubdomain($appHost, $subdomain);
+		if ($existingOwner) {
+			// Append random suffix to make it unique
+			$subdomain .= '-' . substr(bin2hex(random_bytes(4)), 0, 8);
+		}
+
 		// Build the branch record
 		$record = array(
 			'uid' => $uid,
 			'root' => $branchRoot,
 			'appRoot' => $appRoot,
 			'appHost' => $appHost,
+			'subdomain' => $subdomain,
 			'db' => $dbInfo,
+			'credentials' => $credentials,
 			'created' => gmdate('Y-m-d\TH:i:s\Z'),
 			'createdBy' => $options['createdBy'] ?? null,
 			'access' => $access,
@@ -504,6 +540,9 @@ class Q_WebServer_Branch
 		self::$state['branches'][$branchKey] = $record;
 		self::saveState();
 		clearstatcache();
+
+		// Signal the parent process to provision a TLS cert for this subdomain
+		self::requestCertProvision($subdomain . '.' . $appHost);
 
 		return $record;
 	}
@@ -589,6 +628,73 @@ class Q_WebServer_Branch
 		if (!self::$state) self::loadState();
 		$branchKey = $appHost . '/' . $branchName;
 		return self::$state['branches'][$branchKey] ?? null;
+	}
+
+	/**
+	 * Find which branch owns a given subdomain slug for an app.
+	 *
+	 * @method findBranchBySubdomain
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $subdomain
+	 * @return {string|null}  Branch key (appHost/branchName) or null
+	 */
+	static function findBranchBySubdomain($appHost, $subdomain)
+	{
+		if (!self::$state) self::loadState();
+		$prefix = $appHost . '/';
+		foreach (self::$state['branches'] as $key => $record) {
+			if (strpos($key, $prefix) !== 0) continue;
+			$slug = $record['subdomain'] ?? null;
+			// Legacy branches without a subdomain field: match on branch name
+			if ($slug === null) {
+				$slug = strtolower(substr($key, strlen($prefix)));
+			}
+			if ($slug === $subdomain) {
+				return $key;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Set a branch's subdomain slug.  Validates uniqueness within the app.
+	 *
+	 * @method setSubdomain
+	 * @static
+	 * @param {string} $appHost
+	 * @param {string} $branchName
+	 * @param {string} $subdomain  The desired slug (lowercase, alphanumeric + hyphens)
+	 * @return {true|string}  true on success, error string on failure
+	 */
+	static function setSubdomain($appHost, $branchName, $subdomain)
+	{
+		if (!self::$state) self::loadState();
+
+		$branchKey = $appHost . '/' . $branchName;
+		if (!isset(self::$state['branches'][$branchKey])) {
+			return 'Branch not found: ' . $branchKey;
+		}
+
+		// Validate format: lowercase alphanumeric + hyphens, 1-63 chars (DNS label limit)
+		$subdomain = strtolower(trim($subdomain));
+		if (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/', $subdomain)) {
+			return 'Invalid subdomain: must be 1-63 lowercase alphanumeric characters or hyphens, cannot start/end with a hyphen';
+		}
+
+		// Check uniqueness
+		$owner = self::findBranchBySubdomain($appHost, $subdomain);
+		if ($owner && $owner !== $branchKey) {
+			return 'Subdomain already in use by branch: ' . $owner;
+		}
+
+		self::$state['branches'][$branchKey]['subdomain'] = $subdomain;
+		self::saveState();
+
+		// Signal the parent process to provision a TLS cert for the new subdomain
+		self::requestCertProvision($subdomain . '.' . $appHost);
+
+		return true;
 	}
 
 	/**
@@ -816,11 +922,14 @@ class Q_WebServer_Branch
 			$directConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
 		}
 
-		// 2. Check subdomain routing: branch-name.app-host
+		// 2. Check subdomain routing: subdomain.app-host
+		//    Matches on the branch's `subdomain` field (which defaults
+		//    to the branch name).  This allows vanity slugs like
+		//    staging.myapp.com to route to a branch named "staging-v2".
 		if (!$directConfig) {
 			$dot = strpos($host, '.');
 			if ($dot !== false) {
-				$subdomain = substr($host, 0, $dot);
+				$subdomain = strtolower(substr($host, 0, $dot));
 				$parentHost = substr($host, $dot + 1);
 
 				// Check if parentHost is a known app
@@ -830,9 +939,11 @@ class Q_WebServer_Branch
 				}
 
 				if ($parentConfig) {
-					$branchKey = $parentHost . '/' . $subdomain;
-					if (isset(self::$state['branches'][$branchKey])) {
-						self::$current = $subdomain;
+					// Search by subdomain field (covers vanity slugs)
+					$branchKey = self::findBranchBySubdomain($parentHost, $subdomain);
+					if ($branchKey && isset(self::$state['branches'][$branchKey])) {
+						$name = substr($branchKey, strlen($parentHost) + 1);
+						self::$current = $name;
 						self::$currentRecord = self::$state['branches'][$branchKey];
 						return self::$currentRecord;
 					}
@@ -896,6 +1007,9 @@ class Q_WebServer_Branch
 	 */
 	static function getBranchPermission($branchRecord, $user)
 	{
+		// Panel sessions always have admin access to all branches
+		if ($user === 'panel') return 'admin';
+
 		$access = $branchRecord['access'] ?? array();
 
 		// Check user-specific entry first
@@ -929,6 +1043,9 @@ class Q_WebServer_Branch
 	 */
 	static function getFileTier($branchRecord, $user)
 	{
+		// Panel sessions always have full code access
+		if ($user === 'panel') return 'code';
+
 		$access = $branchRecord['access'] ?? array();
 		$entry = $access[$user] ?? ($access['*'] ?? null);
 
@@ -1324,6 +1441,356 @@ class Q_WebServer_Branch
 		);
 	}
 
+	// ─── CoW config scrubbing ──────────────────────────────────────
+
+	/**
+	 * Scrub config files in a CoW branch directory so that trunk
+	 * credential values are replaced with {{KEY}} placeholders.
+	 *
+	 * Called after createCoW() and after the credentials map is built.
+	 * For each config file (identified by preset patterns or common
+	 * extensions), breaks the symlink and writes a copy with DB
+	 * credential values replaced by placeholders that match the keys
+	 * in the branch credentials map.
+	 *
+	 * Uses value-based matching: parses each config file, walks the
+	 * tree to find keys whose names indicate DB credentials (password,
+	 * username, host, name/database), then replaces those values with
+	 * the corresponding {{CREDENTIAL_KEY}} placeholder.
+	 *
+	 * @method scrubCoWConfigs
+	 * @static
+	 * @param {string} $branchRoot  Absolute path to the branch CoW root
+	 * @param {string} $appRoot  Absolute path to the trunk app root
+	 * @param {array} $credentials  The branch credential map (KEY => value)
+	 * @param {array} $hostConfig  The host config array
+	 * @return {array} List of files that were scrubbed
+	 */
+	static function scrubCoWConfigs($branchRoot, $appRoot, $credentials, $hostConfig)
+	{
+		if (empty($credentials)) return array();
+
+		$preset = $hostConfig['preset'] ?? null;
+		$presetInfo = $preset ? self::getFrameworkPreset($preset) : null;
+
+		$configFormat = null;
+		$configPatterns = array();
+
+		if ($presetInfo) {
+			$configFormat = $presetInfo['configFormat'] ?? null;
+			$configPatterns = $presetInfo['configFiles'] ?? array();
+		}
+
+		// Fallback: scan for common config file extensions
+		if (empty($configPatterns)) {
+			$configPatterns = array(
+				'*.json', '*.yaml', '*.yml',
+				'config/*.json', 'config/*.yaml', 'config/*.yml',
+				'config/**/*.json', 'config/**/*.yaml', 'config/**/*.yml',
+			);
+		}
+
+		// Build the reverse credential-key map: concept => credential key
+		// We map config key-name patterns to credential map keys
+		$credKeyMap = self::buildCredentialKeyMap($credentials);
+
+		// Scan branch directory for config files
+		$scrubbed = array();
+		$branchRoot = rtrim($branchRoot, '/');
+		$files = self::scanDirRecursive($branchRoot);
+
+		foreach ($files as $absPath) {
+			$relPath = substr($absPath, strlen($branchRoot) + 1);
+
+			// Check if this file matches any config pattern
+			$isConfig = false;
+			foreach ($configPatterns as $pattern) {
+				if (self::globMatch($relPath, $pattern)) {
+					$isConfig = true;
+					break;
+				}
+			}
+			if (!$isConfig) continue;
+
+			// Must be a symlink (CoW) — real files were already modified.
+			// Use readlink() instead of is_link() because PHP's is_link()
+			// goes through the stream wrapper which may return wrong
+			// results during branch creation (same-request stat cache).
+			// Fall back to shell test -L if readlink also fails.
+			$linkTarget = @readlink($absPath);
+			if ($linkTarget === false) {
+				$shellResult = @exec("test -L " . escapeshellarg($absPath) . " && echo LINK || echo FILE");
+				if ($shellResult !== 'LINK') continue;
+			}
+
+			// Determine format from extension if not set by preset
+			$ext = strtolower(pathinfo($relPath, PATHINFO_EXTENSION));
+			$format = $configFormat;
+			if (!$format) {
+				if ($ext === 'json') $format = 'json';
+				elseif ($ext === 'yaml' || $ext === 'yml') $format = 'yaml';
+				else continue; // skip non-parseable formats
+			}
+
+			// Read the content (follows symlink to trunk)
+			$content = file_get_contents($absPath);
+			if ($content === false || $content === '') continue;
+
+			$parsed = self::parseConfigContent($content, $format);
+			if ($parsed === null) continue;
+
+			// Walk the parsed config and replace credential values
+			$result = self::replaceCredentialValues($parsed, $credKeyMap);
+			if (empty($result['replaced'])) continue;
+
+			// Re-encode
+			if ($format === 'json') {
+				$output = json_encode(
+					$result['config'],
+					JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+				);
+			} elseif ($format === 'yaml') {
+				if (function_exists('yaml_emit')) {
+					$output = yaml_emit($result['config']);
+				} else {
+					// Fallback: string replacement on original content
+					$output = $content;
+					foreach ($result['replaced'] as $r) {
+						if ($r['original'] !== '') {
+							$output = str_replace($r['original'], $r['placeholder'], $output);
+						}
+					}
+				}
+			} else {
+				continue;
+			}
+
+			// Break symlink and write scrubbed content
+			$target = readlink($absPath);
+			unlink($absPath);
+			file_put_contents($absPath, $output);
+
+			$scrubbed[] = array(
+				'file' => $relPath,
+				'replaced' => count($result['replaced']),
+				'placeholders' => $result['replaced'],
+			);
+		}
+
+		return $scrubbed;
+	}
+
+	/**
+	 * Build a map from DB credential concepts to credential-map keys.
+	 *
+	 * Inspects the credential map to determine which keys are available
+	 * for each concept (dbname, dbhost, dbuser, dbpass, dbport).
+	 * Returns a map: concept => credentialKey.
+	 *
+	 * @method buildCredentialKeyMap
+	 * @static
+	 * @private
+	 * @param {array} $credentials  The branch credential map
+	 * @return {array}  concept => credentialKey
+	 */
+	private static function buildCredentialKeyMap($credentials)
+	{
+		$map = array();
+
+		// Prefer the most common key names
+		// DB name
+		if (isset($credentials['DB_NAME'])) {
+			$map['dbname'] = 'DB_NAME';
+		} elseif (isset($credentials['DB_DATABASE'])) {
+			$map['dbname'] = 'DB_DATABASE';
+		}
+		// DB host
+		if (isset($credentials['DB_HOST'])) {
+			$map['dbhost'] = 'DB_HOST';
+		}
+		// DB username
+		if (isset($credentials['DB_USERNAME'])) {
+			$map['dbuser'] = 'DB_USERNAME';
+		} elseif (isset($credentials['DB_USER'])) {
+			$map['dbuser'] = 'DB_USER';
+		}
+		// DB password
+		if (isset($credentials['DB_PASSWORD'])) {
+			$map['dbpass'] = 'DB_PASSWORD';
+		}
+		// DB port
+		if (isset($credentials['DB_PORT'])) {
+			$map['dbport'] = 'DB_PORT';
+		}
+
+		return $map;
+	}
+
+	/**
+	 * Walk a parsed config tree, replacing DB credential values with
+	 * {{KEY}} placeholders based on key-name heuristics.
+	 *
+	 * @method replaceCredentialValues
+	 * @static
+	 * @private
+	 * @param {array} $config  Parsed config tree
+	 * @param {array} $credKeyMap  concept => credentialKey map
+	 * @param {string} $prefix  Internal recursion prefix
+	 * @return {array} ['config' => modified tree, 'replaced' => [...]]
+	 */
+	private static function replaceCredentialValues($config, $credKeyMap, $prefix = '')
+	{
+		$replaced = array();
+		$result = array();
+
+		foreach ($config as $key => $value) {
+			$path = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+
+			if (is_array($value)) {
+				$sub = self::replaceCredentialValues($value, $credKeyMap, $path);
+				$result[$key] = $sub['config'];
+				$replaced = array_merge($replaced, $sub['replaced']);
+			} elseif (is_string($value)) {
+				$concept = self::detectCredentialConcept($path, $key);
+				if ($concept && isset($credKeyMap[$concept])) {
+					$credKey = $credKeyMap[$concept];
+					$placeholder = '{{' . $credKey . '}}';
+					$result[$key] = $placeholder;
+					$replaced[] = array(
+						'path' => $path,
+						'concept' => $concept,
+						'credentialKey' => $credKey,
+						'placeholder' => $placeholder,
+						'original' => $value,
+					);
+				} else {
+					$result[$key] = $value;
+				}
+			} else {
+				$result[$key] = $value;
+			}
+		}
+
+		return array('config' => $result, 'replaced' => $replaced);
+	}
+
+	/**
+	 * Detect what DB credential concept a config key path represents.
+	 *
+	 * Returns a concept string ('dbname', 'dbhost', 'dbuser', 'dbpass',
+	 * 'dbport') or null if the key doesn't look like a DB credential.
+	 *
+	 * @method detectCredentialConcept
+	 * @static
+	 * @private
+	 * @param {string} $path  Full dotted key path (e.g. "database.password")
+	 * @param {string} $key  The immediate key name
+	 * @return {string|null}
+	 */
+	private static function detectCredentialConcept($path, $key)
+	{
+		$lowerKey = strtolower((string) $key);
+		$lowerPath = strtolower($path);
+
+		// Password variants
+		if (in_array($lowerKey, array('password', 'passwd', 'pass', 'db_password'))) {
+			return 'dbpass';
+		}
+
+		// Username variants
+		if (in_array($lowerKey, array('username', 'user', 'db_username', 'db_user'))) {
+			return 'dbuser';
+		}
+
+		// Host variants
+		if (in_array($lowerKey, array('host', 'hostname', 'db_host', 'server'))) {
+			// Only if under a db-like parent
+			if (self::pathLooksDbRelated($lowerPath)) {
+				return 'dbhost';
+			}
+		}
+
+		// Port — only under a db-like parent
+		if ($lowerKey === 'port' || $lowerKey === 'db_port') {
+			if (self::pathLooksDbRelated($lowerPath)) {
+				return 'dbport';
+			}
+		}
+
+		// Database name variants
+		if (in_array($lowerKey, array('database', 'dbname', 'db_name', 'db_database', 'db'))) {
+			return 'dbname';
+		}
+		// "name" is ambiguous — only treat as dbname if under a db-like parent
+		if ($lowerKey === 'name' && self::pathLooksDbRelated($lowerPath)) {
+			return 'dbname';
+		}
+
+		return null;
+	}
+
+	/**
+	 * Check whether a dotted config path looks like it's under a
+	 * database-related parent key.
+	 *
+	 * @method pathLooksDbRelated
+	 * @static
+	 * @private
+	 * @param {string} $lowerPath  Lowercased dotted path
+	 * @return {boolean}
+	 */
+	private static function pathLooksDbRelated($lowerPath)
+	{
+		$dbParents = array(
+			'database', 'db', 'databases', 'datasource', 'datasources',
+			'connection', 'connections', 'dbal', 'pdo', 'mysql', 'pgsql',
+			'postgres', 'postgresql', 'sqlite', 'mariadb',
+		);
+		$parts = explode('.', $lowerPath);
+		// Check all parts except the last (which is the key itself)
+		array_pop($parts);
+		foreach ($parts as $part) {
+			if (in_array($part, $dbParents)) return true;
+			// Also check if any part contains "db" or "database"
+			if (strpos($part, 'database') !== false) return true;
+			if (strpos($part, 'datasource') !== false) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Recursively scan a directory for files, following symlinks.
+	 *
+	 * @method scanDirRecursive
+	 * @static
+	 * @private
+	 * @param {string} $dir
+	 * @return {array}  List of absolute file paths
+	 */
+	private static function scanDirRecursive($dir)
+	{
+		$files = array();
+		$entries = @scandir($dir);
+		if ($entries === false) return $files;
+
+		foreach ($entries as $entry) {
+			if ($entry === '.' || $entry === '..') continue;
+			$path = $dir . '/' . $entry;
+
+			if (is_link($path) && is_dir(readlink($path))) {
+				// Symlinked directory (e.g. node_modules) — skip
+				continue;
+			}
+
+			if (is_dir($path)) {
+				$files = array_merge($files, self::scanDirRecursive($path));
+			} else {
+				$files[] = $path;
+			}
+		}
+		return $files;
+	}
+
 	// ─── Copy-on-Write directory ────────────────────────────────────
 
 	/**
@@ -1438,21 +1905,13 @@ class Q_WebServer_Branch
 		$safeBranch = preg_replace('/[^a-zA-Z0-9]/', '_', $branchName);
 		$targetDb = $safeHost . '_' . $safeBranch;
 
-		switch ($adapter) {
-			case 'sqlite':
-				return self::cloneSqlite($sourceDb, $targetDb, $branchName);
-
-			case 'mysql':
-				return self::cloneMysql($sourceDb, $targetDb, $branchDbConfig);
-
-			case 'postgres':
-			case 'pgsql':
-				return self::clonePostgres($sourceDb, $targetDb, $branchDbConfig);
-
-			default:
-				error_log("Q_WebServer_Branch: unsupported db adapter: $adapter");
-				return null;
+		// For SQLite, the target is a file path, not a database name
+		if ($adapter === 'sqlite') {
+			$targetDir = dirname($sourceDb);
+			$targetDb = $targetDir . '/branch_' . $branchName . '.sqlite';
 		}
+
+		return Db_Branch::fork($sourceDb, $targetDb, $branchDbConfig, $adapter);
 	}
 
 	/**
@@ -1499,157 +1958,24 @@ class Q_WebServer_Branch
 	}
 
 	/**
-	 * Clone an SQLite database file.
-	 * @method cloneSqlite
-	 * @static
-	 * @private
+	 * Drop a forked database and clean up resources.
+	 * Delegates to Db_Branch::drop().
+	 * @see Db_Branch::drop()
 	 */
-	private static function cloneSqlite($sourceFile, $targetName, $branchName)
+	static function dropDatabase($dbInfo)
 	{
-		// Use lstat instead of is_file — stat() returns stale results
-		// on overlay/container filesystems even after clearstatcache()
-		$st = @lstat($sourceFile);
-		if (!$st || ($st['mode'] & 0100000) === 0) {
-			error_log("Q_WebServer_Branch: SQLite source not found: $sourceFile");
-			return null;
-		}
-
-		$targetDir = dirname($sourceFile);
-		$targetFile = $targetDir . '/branch_' . $branchName . '.sqlite';
-
-		if (!copy($sourceFile, $targetFile)) {
-			error_log("Q_WebServer_Branch: failed to copy SQLite: $sourceFile → $targetFile");
-			return null;
-		}
-
-		return array(
-			'adapter' => 'sqlite',
-			'name' => $targetFile,
-			'sourceFile' => $sourceFile,
-		);
+		Db_Branch::drop($dbInfo);
 	}
 
 	/**
-	 * Clone a MySQL database using mysqldump.
-	 * @method cloneMysql
-	 * @static
-	 * @private
+	 * Build credential injection keys for a forked database.
+	 * Delegates to Db_Branch::credentialKeys().
+	 * @see Db_Branch::credentialKeys()
 	 */
-	private static function cloneMysql($sourceDb, $targetDb, $dbConfig)
+	private static function dbCredentialKeys($dbInfo, $hostConfig)
 	{
-		$host = $dbConfig['host'] ?? 'localhost';
-		$user = $dbConfig['user'] ?? 'root';
-		$pass = $dbConfig['password'] ?? '';
-
-		$passArg = $pass !== '' ? '-p' . escapeshellarg($pass) : '';
-		$hostArg = escapeshellarg($host);
-		$userArg = escapeshellarg($user);
-		$sourceArg = escapeshellarg($sourceDb);
-		$targetArg = escapeshellarg($targetDb);
-
-		// Create target database
-		$cmd = "mysql -h $hostArg -u $userArg $passArg -e "
-			. escapeshellarg("CREATE DATABASE IF NOT EXISTS $targetDb");
-		exec($cmd, $output, $exitCode);
-		if ($exitCode !== 0) {
-			error_log("Q_WebServer_Branch: failed to create MySQL database: $targetDb");
-			return null;
-		}
-
-		// Dump and restore
-		$cmd = "mysqldump --single-transaction -h $hostArg -u $userArg $passArg $sourceArg"
-			. " | mysql -h $hostArg -u $userArg $passArg $targetArg";
-		exec($cmd, $output, $exitCode);
-		if ($exitCode !== 0) {
-			error_log("Q_WebServer_Branch: mysqldump failed for $sourceDb → $targetDb");
-			return null;
-		}
-
-		return array(
-			'adapter' => 'mysql',
-			'name' => $targetDb,
-			'host' => $host,
-			'sourceDb' => $sourceDb,
-		);
-	}
-
-	/**
-	 * Clone a PostgreSQL database using CREATE DATABASE ... TEMPLATE.
-	 * @method clonePostgres
-	 * @static
-	 * @private
-	 */
-	private static function clonePostgres($sourceDb, $targetDb, $dbConfig)
-	{
-		$host = $dbConfig['host'] ?? 'localhost';
-		$user = $dbConfig['user'] ?? 'postgres';
-		$pass = $dbConfig['password'] ?? '';
-		$port = $dbConfig['port'] ?? '5432';
-
-		$env = $pass !== '' ? "PGPASSWORD=" . escapeshellarg($pass) . " " : "";
-		$cmd = "{$env}psql -h " . escapeshellarg($host)
-			. " -p " . escapeshellarg($port)
-			. " -U " . escapeshellarg($user)
-			. " -c " . escapeshellarg(
-				"CREATE DATABASE \"$targetDb\" TEMPLATE \"$sourceDb\""
-			);
-		exec($cmd, $output, $exitCode);
-		if ($exitCode !== 0) {
-			error_log("Q_WebServer_Branch: failed to clone Postgres: $sourceDb → $targetDb");
-			return null;
-		}
-
-		return array(
-			'adapter' => 'postgres',
-			'name' => $targetDb,
-			'host' => $host,
-			'port' => $port,
-			'sourceDb' => $sourceDb,
-		);
-	}
-
-	/**
-	 * Drop a cloned database.
-	 * @method dropDatabase
-	 * @static
-	 * @private
-	 */
-	private static function dropDatabase($dbInfo)
-	{
-		$adapter = $dbInfo['adapter'] ?? '';
-		switch ($adapter) {
-			case 'sqlite':
-				if (!empty($dbInfo['name']) && is_file($dbInfo['name'])) {
-					@unlink($dbInfo['name']);
-				}
-				break;
-
-			case 'mysql':
-				$cfg = Q_Config::get('Q', 'webserver', 'branches', 'db', array());
-				$host = $cfg['host'] ?? 'localhost';
-				$user = $cfg['user'] ?? 'root';
-				$pass = $cfg['password'] ?? '';
-				$passArg = $pass !== '' ? '-p' . escapeshellarg($pass) : '';
-				$cmd = "mysql -h " . escapeshellarg($host)
-					. " -u " . escapeshellarg($user) . " $passArg"
-					. " -e " . escapeshellarg("DROP DATABASE IF EXISTS " . $dbInfo['name']);
-				exec($cmd);
-				break;
-
-			case 'postgres':
-				$cfg = Q_Config::get('Q', 'webserver', 'branches', 'db', array());
-				$host = $cfg['host'] ?? 'localhost';
-				$user = $cfg['user'] ?? 'postgres';
-				$pass = $cfg['password'] ?? '';
-				$port = $cfg['port'] ?? '5432';
-				$env = $pass !== '' ? "PGPASSWORD=" . escapeshellarg($pass) . " " : "";
-				$cmd = "{$env}psql -h " . escapeshellarg($host)
-					. " -p " . escapeshellarg($port)
-					. " -U " . escapeshellarg($user)
-					. " -c " . escapeshellarg("DROP DATABASE IF EXISTS \"" . $dbInfo['name'] . "\"");
-				exec($cmd);
-				break;
-		}
+		$preset = $hostConfig['preset'] ?? null;
+		return Db_Branch::credentialKeys($dbInfo, $preset);
 	}
 
 	// ─── UID management ─────────────────────────────────────────────
@@ -3456,6 +3782,297 @@ class Q_WebServer_Branch
 			'path' => $meta['path'],
 			'name' => $meta['name'],
 		);
+	}
+
+	/**
+	 * Write a pending-cert marker file so the parent process knows to
+	 * provision a TLS certificate for a branch subdomain.  The parent's
+	 * _branchCertCheck timer picks these up every 30 seconds.
+	 *
+	 * @method requestCertProvision
+	 * @static
+	 * @param {string} $fqdn  Fully qualified domain name, e.g. "feature.myapp.com"
+	 */
+	static function requestCertProvision($fqdn)
+	{
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$pendingDir = rtrim($certDir, '/') . '/.pending';
+		@mkdir($pendingDir, 0700, true);
+		// Write the FQDN into a marker file named after the domain
+		$markerPath = $pendingDir . '/' . $fqdn;
+		file_put_contents($markerPath, $fqdn . "\n" . gmdate('Y-m-d\TH:i:s\Z'));
+	}
+
+	/**
+	 * API: List branches for an app host.
+	 *
+	 * @method apiBranchList
+	 * @static
+	 * @param {array} $params  appHost (required)
+	 * @param {array} $authResult  from authenticateForBranch()
+	 * @return {array}  branches array or error
+	 */
+	static function apiBranchList($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+
+		$all = self::listBranches($appHost);
+		$branches = array();
+		foreach ($all as $key => $rec) {
+			$name = substr($key, strlen($appHost) + 1);
+			$entry = array(
+				'name' => $name,
+				'created' => $rec['created'] ?? null,
+				'createdBy' => $rec['createdBy'] ?? null,
+				'subdomain' => $rec['subdomain'] ?? null,
+			);
+			// Detect VCS in the branch root
+			if (!empty($rec['root']) && is_dir($rec['root'])) {
+				if (is_dir($rec['root'] . '/.git')) {
+					$entry['vcs'] = 'git';
+				} elseif (is_dir($rec['root'] . '/.hg')) {
+					$entry['vcs'] = 'hg';
+				}
+			}
+			$branches[] = $entry;
+		}
+
+		return array('branches' => $branches);
+	}
+
+	/**
+	 * API: Create a new branch.
+	 *
+	 * @method apiBranchCreate
+	 * @static
+	 * @param {array} $params  appHost, branchName (required), subdomain (optional)
+	 * @param {array} $authResult  from authenticateForBranch()
+	 * @return {array}  new branch record or error
+	 */
+	static function apiBranchCreate($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? '';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if (!$branchName) {
+			return array('error' => 'branchName is required');
+		}
+
+		$options = array();
+		if (!empty($authResult['username'])) {
+			$options['createdBy'] = $authResult['username'];
+		}
+		if (isset($params['subdomain'])) {
+			$options['subdomain'] = $params['subdomain'];
+		}
+
+		$result = self::create($appHost, $branchName, $options);
+		if (is_string($result)) {
+			return array('error' => $result);
+		}
+
+		return array(
+			'branch' => $branchName,
+			'root' => $result['root'] ?? null,
+			'subdomain' => $result['subdomain'] ?? null,
+			'created' => $result['created'] ?? null,
+		);
+	}
+
+	/**
+	 * API: List files in a branch or trunk directory.
+	 *
+	 * @method apiFileList
+	 * @static
+	 * @param {array} $params  appHost (required), branchName (optional), path (optional), recursive (optional)
+	 * @param {array} $authResult  from authenticateForBranch()
+	 * @return {array}  files array or error
+	 */
+	static function apiFileList($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? null;
+		$relPath = $params['path'] ?? '';
+		$recursive = !empty($params['recursive']);
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+
+		// Resolve root
+		$root = null;
+		if ($branchName) {
+			if (!self::$state) self::loadState();
+			$key = $appHost . '/' . $branchName;
+			$branch = self::$state['branches'][$key] ?? null;
+			if (!$branch) {
+				return array('error' => "Branch not found: $branchName");
+			}
+			$root = $branch['root'];
+		} else {
+			$root = Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', null);
+			if (!$root) {
+				return array('error' => "No root configured for host: $appHost");
+			}
+		}
+
+		// Sanitize path — prevent traversal
+		$relPath = ltrim($relPath, '/');
+		if (strpos($relPath, '..') !== false) {
+			return array('error' => 'Path traversal not allowed');
+		}
+
+		$dir = $root;
+		if ($relPath !== '') {
+			$dir = $root . '/' . $relPath;
+		}
+
+		if (!is_dir($dir)) {
+			return array('error' => "Directory not found: $relPath");
+		}
+
+		$files = array();
+		$maxFiles = 500; // prevent huge listings
+
+		if ($recursive) {
+			$it = new \RecursiveIteratorIterator(
+				new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
+				\RecursiveIteratorIterator::SELF_FIRST
+			);
+			foreach ($it as $item) {
+				if (count($files) >= $maxFiles) break;
+				$itemRel = substr($item->getPathname(), strlen($root) + 1);
+				// Skip hidden dirs like .git
+				if (preg_match('#(^|/)\.#', $itemRel)) continue;
+				$files[] = array(
+					'path' => $itemRel,
+					'type' => $item->isDir() ? 'directory' : 'file',
+					'size' => $item->isDir() ? null : $item->getSize(),
+					'modified' => date('c', $item->getMTime()),
+				);
+			}
+		} else {
+			$entries = @scandir($dir);
+			if ($entries === false) {
+				return array('error' => "Cannot read directory: $relPath");
+			}
+			foreach ($entries as $entry) {
+				if ($entry === '.' || $entry === '..') continue;
+				if ($entry[0] === '.') continue; // skip hidden
+				if (count($files) >= $maxFiles) break;
+				$fullPath = $dir . '/' . $entry;
+				$itemRel = ($relPath !== '' ? $relPath . '/' : '') . $entry;
+				$files[] = array(
+					'path' => $itemRel,
+					'type' => is_dir($fullPath) ? 'directory' : 'file',
+					'size' => is_dir($fullPath) ? null : filesize($fullPath),
+					'modified' => date('c', filemtime($fullPath)),
+				);
+			}
+		}
+
+		return array('files' => $files);
+	}
+
+	/**
+	 * API: Read a single file from a branch or trunk.
+	 *
+	 * @method apiFileRead
+	 * @static
+	 * @param {array} $params  appHost (required), path (required), branchName (optional), encoding (optional: utf8|base64)
+	 * @param {array} $authResult  from authenticateForBranch()
+	 * @return {array}  file content or error
+	 */
+	static function apiFileRead($params, $authResult)
+	{
+		$appHost = $params['appHost'] ?? '';
+		$branchName = $params['branchName'] ?? null;
+		$relPath = $params['path'] ?? '';
+		$encoding = $params['encoding'] ?? 'utf8';
+
+		if (!$appHost) {
+			return array('error' => 'appHost is required');
+		}
+		if ($relPath === '') {
+			return array('error' => 'path is required');
+		}
+
+		// Resolve root
+		$root = null;
+		if ($branchName) {
+			if (!self::$state) self::loadState();
+			$key = $appHost . '/' . $branchName;
+			$branch = self::$state['branches'][$key] ?? null;
+			if (!$branch) {
+				return array('error' => "Branch not found: $branchName");
+			}
+			$root = $branch['root'];
+		} else {
+			$root = Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', null);
+			if (!$root) {
+				return array('error' => "No root configured for host: $appHost");
+			}
+		}
+
+		// Sanitize path
+		$relPath = ltrim($relPath, '/');
+		if (strpos($relPath, '..') !== false) {
+			return array('error' => 'Path traversal not allowed');
+		}
+
+		$fullPath = $root . '/' . $relPath;
+
+		// Block sensitive paths
+		$blocked = array('config/', '.env', '.git/', '.hg/', 'local/');
+		foreach ($blocked as $prefix) {
+			if (strpos($relPath, $prefix) === 0 || $relPath === rtrim($prefix, '/')) {
+				return array('error' => "Access denied: $relPath");
+			}
+		}
+
+		if (!is_file($fullPath)) {
+			return array('error' => "File not found: $relPath");
+		}
+
+		// Size limit: 2 MB for reads
+		$size = filesize($fullPath);
+		if ($size > 2 * 1024 * 1024) {
+			return array('error' => "File too large to read ($size bytes). Use branch_export for large files.");
+		}
+
+		$content = file_get_contents($fullPath);
+		if ($content === false) {
+			return array('error' => "Cannot read file: $relPath");
+		}
+
+		$result = array(
+			'path' => $relPath,
+			'size' => $size,
+			'modified' => date('c', filemtime($fullPath)),
+		);
+
+		if ($encoding === 'base64') {
+			$result['content'] = base64_encode($content);
+			$result['encoding'] = 'base64';
+		} else {
+			// Check if content is valid UTF-8
+			if (mb_check_encoding($content, 'UTF-8')) {
+				$result['content'] = $content;
+				$result['encoding'] = 'utf8';
+			} else {
+				// Binary file — return as base64
+				$result['content'] = base64_encode($content);
+				$result['encoding'] = 'base64';
+			}
+		}
+
+		return $result;
 	}
 
 }

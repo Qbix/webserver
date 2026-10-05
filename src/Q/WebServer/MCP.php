@@ -130,7 +130,7 @@ class Q_WebServer_MCP
 			'protocolVersion' => self::PROTOCOL_VERSION,
 			'serverInfo' => array(
 				'name' => 'qbix-server',
-				'version' => '3.0.0'
+				'version' => '3.1.0'
 			),
 			'capabilities' => array(
 				'tools' => new \stdClass(),
@@ -163,8 +163,16 @@ class Q_WebServer_MCP
 		}
 
 		// Branch collaboration tools
-		if (in_array($toolName, array('branch_export', 'branch_push', 'branch_patch', 'branch_request_merge'))) {
+		$branchTools = array('branch_list', 'branch_create', 'branch_export',
+			'branch_push', 'branch_patch', 'branch_request_merge',
+			'file_list', 'file_read');
+		if (in_array($toolName, $branchTools)) {
 			return self::handleBranchTool($toolName, $arguments, $parsed);
+		}
+
+		// Panel API tools — route panel_* calls to the panel API
+		if (strpos($toolName, 'panel_') === 0) {
+			return self::handlePanelTool($toolName, $arguments, $parsed);
 		}
 
 		// Map tool name back to event name:
@@ -225,6 +233,125 @@ class Q_WebServer_MCP
 				'destructiveHint' => false,
 				'openWorldHint' => false
 			)
+		);
+
+		// Branch discovery tools
+		$tools[] = array(
+			'name' => 'branch_list',
+			'description' => 'List all branches for an app host. Returns branch names, creation times, subdomains, and VCS status.',
+			'inputSchema' => array(
+				'type' => 'object',
+				'properties' => array(
+					'appHost' => array(
+						'type' => 'string',
+						'description' => 'The app hostname (e.g. myapp.example.com)',
+					),
+				),
+				'required' => array('appHost'),
+			),
+			'annotations' => array(
+				'title' => 'Branch List',
+				'readOnlyHint' => true,
+				'destructiveHint' => false,
+				'openWorldHint' => false,
+			),
+		);
+
+		$tools[] = array(
+			'name' => 'branch_create',
+			'description' => 'Create a new copy-on-write branch of the trunk. The branch gets its own directory, database clone, and optional subdomain.',
+			'inputSchema' => array(
+				'type' => 'object',
+				'properties' => array(
+					'appHost' => array(
+						'type' => 'string',
+						'description' => 'The app hostname',
+					),
+					'branchName' => array(
+						'type' => 'string',
+						'description' => 'Name for the new branch (alphanumeric, hyphens, underscores)',
+					),
+					'subdomain' => array(
+						'type' => 'string',
+						'description' => 'Custom subdomain slug (defaults to branch name)',
+					),
+				),
+				'required' => array('appHost', 'branchName'),
+			),
+			'annotations' => array(
+				'title' => 'Branch Create',
+				'readOnlyHint' => false,
+				'destructiveHint' => false,
+				'openWorldHint' => false,
+			),
+		);
+
+		// File browsing tools
+		$tools[] = array(
+			'name' => 'file_list',
+			'description' => 'List files and directories in a branch or trunk. Returns paths, sizes, types, and modification times. Use this to explore the codebase before reading or editing files.',
+			'inputSchema' => array(
+				'type' => 'object',
+				'properties' => array(
+					'appHost' => array(
+						'type' => 'string',
+						'description' => 'The app hostname',
+					),
+					'branchName' => array(
+						'type' => 'string',
+						'description' => 'Branch name (omit for trunk)',
+					),
+					'path' => array(
+						'type' => 'string',
+						'description' => 'Directory path relative to root (omit for root directory)',
+					),
+					'recursive' => array(
+						'type' => 'boolean',
+						'description' => 'If true, list files recursively (max 500 entries)',
+					),
+				),
+				'required' => array('appHost'),
+			),
+			'annotations' => array(
+				'title' => 'File List',
+				'readOnlyHint' => true,
+				'destructiveHint' => false,
+				'openWorldHint' => false,
+			),
+		);
+
+		$tools[] = array(
+			'name' => 'file_read',
+			'description' => 'Read the contents of a single file from a branch or trunk. Returns UTF-8 text content, or base64 for binary files. Config and dotfiles are blocked. Max 2 MB.',
+			'inputSchema' => array(
+				'type' => 'object',
+				'properties' => array(
+					'appHost' => array(
+						'type' => 'string',
+						'description' => 'The app hostname',
+					),
+					'branchName' => array(
+						'type' => 'string',
+						'description' => 'Branch name (omit for trunk)',
+					),
+					'path' => array(
+						'type' => 'string',
+						'description' => 'File path relative to root',
+					),
+					'encoding' => array(
+						'type' => 'string',
+						'enum' => array('utf8', 'base64'),
+						'description' => 'Response encoding (default: utf8, falls back to base64 for binary)',
+					),
+				),
+				'required' => array('appHost', 'path'),
+			),
+			'annotations' => array(
+				'title' => 'File Read',
+				'readOnlyHint' => true,
+				'destructiveHint' => false,
+				'openWorldHint' => false,
+			),
 		);
 
 		// Branch collaboration tools
@@ -372,6 +499,40 @@ class Q_WebServer_MCP
 			),
 		);
 
+		// Panel API tools — config, users, branches, auth
+		require_once __DIR__ . '/Panel.php';
+		$panelEndpoints = Q_WebServer_Panel::panelApiEndpoints();
+		foreach ($panelEndpoints as $ep) {
+			$properties = array();
+			$required = array();
+			foreach ($ep['params'] as $name => $p) {
+				$prop = array('description' => $p['description'] ?? '');
+				if (isset($p['type'])) $prop['type'] = $p['type'];
+				$properties[$name] = $prop;
+				if (!empty($p['required'])) $required[] = $name;
+			}
+			$schema = array('type' => 'object');
+			if ($properties) {
+				$schema['properties'] = $properties;
+			} else {
+				$schema['properties'] = new \stdClass();
+			}
+			if ($required) $schema['required'] = $required;
+
+			$tools[] = array(
+				'name' => $ep['id'],
+				'description' => $ep['summary'] . '. ' . $ep['description']
+					. ' [' . $ep['method'] . ' ' . $ep['path'] . ']',
+				'inputSchema' => $schema,
+				'annotations' => array(
+					'title' => $ep['summary'],
+					'readOnlyHint' => !empty($ep['readOnly']),
+					'destructiveHint' => false,
+					'openWorldHint' => false,
+				),
+			);
+		}
+
 		$handlersDir = (defined('APP_DIR') ? APP_DIR : dirname(Q_WebServer::$rootDir))
 			. DIRECTORY_SEPARATOR . 'handlers';
 		if (!is_dir($handlersDir)) {
@@ -499,6 +660,11 @@ class Q_WebServer_MCP
 		}
 
 		if ($qToken) {
+			$apiKeys = isset($apiKeys) ? $apiKeys
+				: Q_Config::get('Q', 'mcp', 'apiKeys', array());
+			if ($apiKeys && !in_array($qToken, $apiKeys)) {
+				throw new \Exception('Invalid X-Q-Token');
+			}
 			return;
 		}
 
@@ -582,34 +748,60 @@ class Q_WebServer_MCP
 			return self::toolResult('Error: appHost is required', true);
 		}
 
-		// Resolve the branch record for authentication
-		$branchRecord = null;
-		if ($branchName) {
-			$branchRecord = Q_WebServer_Branch::get($appHost, $branchName);
-			if (!$branchRecord) {
-				return self::toolResult("Error: Branch not found: $branchName", true);
-			}
-			$branchRecord['appHost'] = $appHost;
-		} else {
-			// Trunk access — build a minimal branch record for auth
-			$branchRecord = array(
-				'root' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', ''),
-				'appHost' => $appHost,
-				'access' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'access', array()),
-				'tokens' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'tokens', array()),
-			);
-		}
+		// Tools that don't target a specific branch use global MCP auth only.
+		// Tools that modify a branch require branch-level auth for tier/permissions.
+		$globalOnly = array('branch_list', 'branch_create');
+		$readTools = array('file_list', 'file_read');
 
-		// Authenticate
-		$headers = $parsed['headers'] ?? array();
-		$cookies = $parsed['cookies'] ?? array();
-		$authResult = Q_WebServer_Branch::authenticateForBranch($branchRecord, $headers, $cookies);
-		if (!$authResult) {
-			return self::toolResult('Error: Authentication failed or access denied', true);
+		if (in_array($toolName, $globalOnly)) {
+			// Global MCP auth (Bearer token or X-Q-Token)
+			self::authenticate($parsed);
+			$authResult = array('username' => null, 'fileTier' => 'code');
+		} elseif (in_array($toolName, $readTools) && !$branchName) {
+			// Reading trunk — global auth is sufficient
+			self::authenticate($parsed);
+			$authResult = array('username' => null, 'fileTier' => 'code');
+		} else {
+			// Branch-specific tools require branch-level auth
+			$branchRecord = null;
+			if ($branchName) {
+				$branchRecord = Q_WebServer_Branch::get($appHost, $branchName);
+				if (!$branchRecord) {
+					return self::toolResult("Error: Branch not found: $branchName", true);
+				}
+				$branchRecord['appHost'] = $appHost;
+			} else {
+				// Trunk access — build a minimal branch record for auth
+				$branchRecord = array(
+					'root' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'root', ''),
+					'appHost' => $appHost,
+					'access' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'access', array()),
+					'tokens' => Q_Config::get('Q', 'webserver', 'hosts', $appHost, 'tokens', array()),
+				);
+			}
+
+			$headers = $parsed['headers'] ?? array();
+			$cookies = $parsed['cookies'] ?? array();
+			$authResult = Q_WebServer_Branch::authenticateForBranch($branchRecord, $headers, $cookies);
+			if (!$authResult) {
+				return self::toolResult('Error: Authentication failed or access denied', true);
+			}
 		}
 
 		try {
 			switch ($toolName) {
+				case 'branch_list':
+					$result = Q_WebServer_Branch::apiBranchList($arguments, $authResult);
+					break;
+				case 'branch_create':
+					$result = Q_WebServer_Branch::apiBranchCreate($arguments, $authResult);
+					break;
+				case 'file_list':
+					$result = Q_WebServer_Branch::apiFileList($arguments, $authResult);
+					break;
+				case 'file_read':
+					$result = Q_WebServer_Branch::apiFileRead($arguments, $authResult);
+					break;
 				case 'branch_export':
 					$result = Q_WebServer_Branch::apiExport($arguments, $authResult);
 					break;
@@ -634,6 +826,71 @@ class Q_WebServer_MCP
 		}
 
 		return self::toolResult(json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+	}
+
+	/**
+	 * Handle panel API tool calls from MCP.
+	 * Routes panel_* tool names to the corresponding Panel API endpoints.
+	 */
+	static function handlePanelTool($toolName, $arguments, $parsed)
+	{
+		require_once __DIR__ . '/Panel.php';
+
+		// Find the matching endpoint definition
+		$endpoints = Q_WebServer_Panel::panelApiEndpoints();
+		$ep = null;
+		foreach ($endpoints as $e) {
+			if ($e['id'] === $toolName) {
+				$ep = $e;
+				break;
+			}
+		}
+		if (!$ep) {
+			return self::toolResult("Error: Unknown panel tool: $toolName", true);
+		}
+
+		// Login endpoint doesn't require auth
+		if (empty($ep['noAuth'])) {
+			self::authenticate($parsed);
+		}
+
+		// Build a fake parsed request to pass to Panel::handleApi
+		$route = ltrim(str_replace('/Q/api/', '', $ep['path']), '/');
+		$fakeParsed = $parsed;
+		$fakeParsed['body'] = json_encode($arguments);
+		$fakeParsed['path'] = $ep['path'];
+
+		// For auth routes, use handleAuthApi path
+		if ($route === 'auth/login') {
+			// Auth login is handled separately in Panel::handle()
+			// We need to call it directly
+			$result = self::callPanelRoute($route, $fakeParsed);
+		} else {
+			$result = self::callPanelRoute($route, $fakeParsed);
+		}
+
+		return self::toolResult(
+			json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+			!empty($result['error'])
+		);
+	}
+
+	/**
+	 * Call a panel API route and return its result.
+	 */
+	private static function callPanelRoute($route, $parsed)
+	{
+		$parsed['path'] = '/Q/api/' . $route;
+
+		// Auth routes are handled by handleAuthApi (private), use reflection
+		if ($route === 'auth/login' || $route === 'auth/setup') {
+			$method = new \ReflectionMethod('Q_WebServer_Panel', 'handleAuthApi');
+			$method->setAccessible(true);
+			return $method->invoke(null, $route, $parsed);
+		}
+
+		// handleApi is public static — call directly
+		return Q_WebServer_Panel::handleApi($parsed['path'], $parsed);
 	}
 
 	static function corsResponse($status, $body)

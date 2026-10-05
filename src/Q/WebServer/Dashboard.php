@@ -439,7 +439,8 @@ h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--ac);display:flex
 h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--grn);animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .sub{font-size:12px;color:var(--dim);margin-bottom:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+.grid{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px;justify-content:center}
+.grid .card{flex:1 1 130px;max-width:220px;min-width:120px}
 .card{background:var(--sfc);border:1px solid var(--bdr);border-radius:8px;padding:14px}
 .card .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}
 .card .v{font-size:22px;font-weight:700;line-height:1.2}
@@ -489,14 +490,14 @@ transition:background .1s}
 <div class="card"><div class="l">Total requests</div><div class="v" id="sr">0</div><div class="s" id="srps">0 avg req/s</div></div>
 <div class="card"><div class="l">Current RPS</div><div class="v" id="crps" style="color:var(--cyn)">0</div><div class="s">last 5 sec</div></div>
 <div class="card"><div class="l">Avg response</div><div class="v" id="avg">0<span style="font-size:12px;font-weight:400">ms</span></div><div class="s">slowest: <span id="slow">0ms</span></div></div>
-<div class="card"><div class="l">Parent Memory</div><div class="v" id="sm">\u2014</div><div class="s">peak <span id="smp">\u2014</span></div></div>
-<div class="card"><div class="l">Workers</div><div class="v" id="sw">\u2014</div><div class="s" id="phpn">0 PHP / 0 static</div></div>
-<div class="card"><div class="l">System RAM</div><div class="v" id="sysram">\u2014</div><div class="s" id="sysram-detail">\u2014</div></div>
-<div class="card"><div class="l">Worker Memory (COW)</div><div class="v" id="cow-total">\u2014</div><div class="s" id="cow-detail">\u2014</div></div>
+<div class="card"><div class="l">Parent Memory</div><div class="v" id="sm">&mdash;</div><div class="s">peak <span id="smp">&mdash;</span></div></div>
+<div class="card"><div class="l">Workers</div><div class="v" id="sw">&mdash;</div><div class="s" id="phpn">0 PHP / 0 static</div></div>
+<div class="card"><div class="l">System RAM</div><div class="v" id="sysram">&mdash;</div><div class="s" id="sysram-detail">&mdash;</div></div>
+<div class="card"><div class="l">Worker Memory (COW)</div><div class="v" id="cow-total">&mdash;</div><div class="s" id="cow-detail">&mdash;</div></div>
 <div class="card"><div class="l">WebSocket</div><div class="v" id="wsc" style="color:var(--pur)">0</div><div class="s"><span id="wsr">0</span> rooms</div></div>
-<div class="card"><div class="l">Data out</div><div class="v" id="bout">0</div><div class="s"><span id="conn">0</span> conn \u00B7 <span id="ka">0</span> keep-alive</div></div>
+<div class="card"><div class="l">Data out</div><div class="v" id="bout">0</div><div class="s"><span id="conn">0</span> conn &middot; <span id="ka">0</span> keep-alive</div></div>
 <div class="card"><div class="l">Status codes</div><div class="v" style="font-size:12px;line-height:1.8">
-<span class="s2" id="s2">0</span> ok \u00B7 <span class="s3" id="s3">0</span> redir \u00B7 <span class="s4" id="s4">0</span> 4xx \u00B7 <span class="s5" id="s5">0</span> 5xx</div></div>
+<span class="s2" id="s2">0</span> ok &middot; <span class="s3" id="s3">0</span> redir &middot; <span class="s4" id="s4">0</span> 4xx &middot; <span class="s5" id="s5">0</span> 5xx</div></div>
 </div>
 
 <div class="panel" style="margin-bottom:16px"><div class="ph">Throughput <span style="font-size:11px;color:var(--dim)">last 60s</span></div>
@@ -515,8 +516,8 @@ transition:background .1s}
 <select id="sid-filter" onchange="filterSession()" title="Filter by session" class="ph-sel">
 <option value="">All sessions</option>
 </select>
-<button class="ph-btn" id="btn-pause" onclick="togglePause()" title="Pause/resume">\u23F8</button>
-<button class="ph-btn" onclick="clearLog()" title="Clear log">\u2715</button>
+<button class="ph-btn" id="btn-pause" onclick="togglePause()" title="Pause/resume">&#9646;&#9646;</button>
+<button class="ph-btn" onclick="clearLog()" title="Clear log">&times;</button>
 </div></div>
 <div class="log-wrap" id="log-wrap"><div id="log"></div></div></div>
 
@@ -578,7 +579,11 @@ if(s.workerStats){
   var avgKb=ws.count>0?Math.round(totalKb/ws.count):0;
   var fpmEquiv=ws.count*50;
   el('cow-total',fmtMem(totalKb*1024));
-  el('cow-detail',ws.idle+'/'+ws.count+' idle \u00B7 avg '+fmtMem(avgKb*1024)+'/worker \u00B7 fpm would use ~'+fpmEquiv+'MB');
+  var cowParts=[];
+  cowParts.push(ws.idle+'/'+ws.count+' idle');
+  if(avgKb>0)cowParts.push(fmtMem(avgKb*1024)+' avg/worker');
+  cowParts.push('php-fpm equiv \u2248'+fpmEquiv+'MB');
+  el('cow-detail',cowParts.join(' \u00B7 '));
   var ce=document.getElementById('cow-total');
   if(ce)ce.style.color='var(--grn)';
 }else if(s.forkMode){
@@ -654,7 +659,7 @@ return '<span class="lk">'+k+'</span><span class="lt">'+e.time+'</span><span cla
 function togglePause(){
 paused=!paused;
 var btn=document.getElementById('btn-pause');
-btn.textContent=paused?'\u25B6':'\u23F8';
+btn.innerHTML=paused?'&#9654;':'&#9646;&#9646;';
 btn.classList.toggle('active',paused);
 btn.title=paused?'Resume':'Pause';
 }

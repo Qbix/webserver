@@ -2132,6 +2132,158 @@ class Q_WebServer_CompatFileWrapper
 		self::$trunkRoot = rtrim($branchRecord['appRoot'] ?? '', '/');
 		self::$branchRecord = $branchRecord;
 		self::$branchCredentials = $credentials;
+		self::registerApcuShims();
+	}
+
+	/** @var bool Whether APCu shim functions have been defined */
+	private static $apcuShimsRegistered = false;
+
+	/**
+	 * Register no-op APCu shim functions that behave as if APCu is
+	 * not installed. Called once from setBranchContext(). The stream
+	 * wrapper rewrites apcu_* calls to _qbix_apcu_* in PHP files
+	 * loaded from branch directories, so the app's framework hits
+	 * these shims instead of real APCu — preventing cross-branch
+	 * cache leakage through shared memory.
+	 *
+	 * Each shim returns exactly what the real function returns when
+	 * APCu is disabled or missing, so any code path (whether it
+	 * checks apcu_enabled() first or calls apcu_fetch directly)
+	 * follows its natural "no APCu" fallback.
+	 *
+	 * @method registerApcuShims
+	 * @static
+	 * @private
+	 */
+	private static function registerApcuShims()
+	{
+		if (self::$apcuShimsRegistered) return;
+		self::$apcuShimsRegistered = true;
+
+		// apcu_enabled() → false
+		if (!function_exists('_qbix_apcu_enabled')) {
+			function _qbix_apcu_enabled() { return false; }
+		}
+		// apcu_fetch($key, &$success) → false, success=false
+		if (!function_exists('_qbix_apcu_fetch')) {
+			function _qbix_apcu_fetch($key, &$success = null) {
+				$success = false;
+				return false;
+			}
+		}
+		// apcu_store($key, $value, $ttl) → false (store failed)
+		if (!function_exists('_qbix_apcu_store')) {
+			function _qbix_apcu_store($key, $value = null, $ttl = 0) {
+				return false;
+			}
+		}
+		// apcu_delete($key) → false
+		if (!function_exists('_qbix_apcu_delete')) {
+			function _qbix_apcu_delete($key) { return false; }
+		}
+		// apcu_exists($key) → false
+		if (!function_exists('_qbix_apcu_exists')) {
+			function _qbix_apcu_exists($key) { return false; }
+		}
+		// apcu_clear_cache() → false
+		if (!function_exists('_qbix_apcu_clear_cache')) {
+			function _qbix_apcu_clear_cache() { return false; }
+		}
+		// apcu_add($key, $value, $ttl) → false
+		if (!function_exists('_qbix_apcu_add')) {
+			function _qbix_apcu_add($key, $value = null, $ttl = 0) {
+				return false;
+			}
+		}
+		// apcu_inc($key, $step, &$success) → false
+		if (!function_exists('_qbix_apcu_inc')) {
+			function _qbix_apcu_inc($key, $step = 1, &$success = null) {
+				$success = false;
+				return false;
+			}
+		}
+		// apcu_dec($key, $step, &$success) → false
+		if (!function_exists('_qbix_apcu_dec')) {
+			function _qbix_apcu_dec($key, $step = 1, &$success = null) {
+				$success = false;
+				return false;
+			}
+		}
+		// apcu_cas($key, $old, $new) → false
+		if (!function_exists('_qbix_apcu_cas')) {
+			function _qbix_apcu_cas($key, $old, $new) { return false; }
+		}
+		// apcu_entry($key, $callback, $ttl) → just call the callback
+		if (!function_exists('_qbix_apcu_entry')) {
+			function _qbix_apcu_entry($key, $callback, $ttl = 0) {
+				return $callback($key);
+			}
+		}
+		// apcu_cache_info($limited) → empty array
+		if (!function_exists('_qbix_apcu_cache_info')) {
+			function _qbix_apcu_cache_info($limited = false) {
+				return array();
+			}
+		}
+		// apcu_sma_info($limited) → empty array
+		if (!function_exists('_qbix_apcu_sma_info')) {
+			function _qbix_apcu_sma_info($limited = false) {
+				return array();
+			}
+		}
+		// apcu_key_info($key) → null
+		if (!function_exists('_qbix_apcu_key_info')) {
+			function _qbix_apcu_key_info($key) { return null; }
+		}
+	}
+
+	/**
+	 * Rewrite APCu function calls in PHP source so they hit the
+	 * no-op shim functions instead of real APCu shared memory.
+	 *
+	 * Only applied to PHP files loaded from branch directories.
+	 * Replaces both bare calls (apcu_fetch) and fully-qualified
+	 * calls (\apcu_fetch). Avoids replacing inside string literals
+	 * or comments by using a token-aware approach: only T_STRING
+	 * tokens matching apcu_* are rewritten.
+	 *
+	 * @method shimApcuCalls
+	 * @static
+	 * @private
+	 * @param {string} $source  PHP source code
+	 * @return {string} Rewritten source
+	 */
+	private static function shimApcuCalls($source)
+	{
+		// Quick check — skip tokenizing if no apcu_ calls present
+		if (stripos($source, 'apcu_') === false) return $source;
+
+		$tokens = token_get_all($source);
+		$count = count($tokens);
+		$out = '';
+		$changed = false;
+
+		for ($i = 0; $i < $count; $i++) {
+			$token = $tokens[$i];
+
+			if (!is_array($token)) {
+				$out .= $token;
+				continue;
+			}
+
+			// Rewrite T_STRING tokens that are apcu_* function names
+			if ($token[0] === T_STRING
+				&& strncasecmp($token[1], 'apcu_', 5) === 0
+			) {
+				$out .= '_qbix_' . $token[1];
+				$changed = true;
+				continue;
+			}
+
+			$out .= $token[1];
+		}
+
+		return $changed ? $out : $source;
 	}
 
 	/**
@@ -2338,6 +2490,25 @@ class Q_WebServer_CompatFileWrapper
 
 		$isReading = ($mode === 'r' || $mode === 'rb');
 
+		// ── Trunk-to-branch path remapping ─────────────────────
+		// When a branch is active, PHP scripts are symlinks into the
+		// trunk directory, so __DIR__ resolves to the trunk root.
+		// A file_get_contents(__DIR__ . '/config.json') hits the trunk
+		// path, bypassing branch credential injection. Remap trunk
+		// paths to their branch CoW copies when one exists.
+		if (self::$branchRoot && self::$trunkRoot
+			&& strpos($realPath, self::$trunkRoot . '/') === 0
+		) {
+			$relPath = substr($realPath, strlen(self::$trunkRoot));
+			$branchPath = self::$branchRoot . $relPath;
+			self::unwrap();
+			$branchFileExists = file_exists($branchPath) && !is_link($branchPath);
+			self::rewrap();
+			if ($branchFileExists) {
+				$realPath = $branchPath;
+			}
+		}
+
 		// ── Branch write checks (CoW + permission) ─────────────
 		// Any write-mode open inside a branch needs permission checking
 		// and CoW symlink breaking before the write can proceed.
@@ -2391,28 +2562,45 @@ class Q_WebServer_CompatFileWrapper
 			&& self::isInBranch($realPath)
 			&& preg_match('/\.(php|env|json|ya?ml|ini|xml|conf)$/i', $realPath);
 
+		// ── APCu shimming for branch PHP files ─────────────────
+		// Branch workers must not use real APCu (shared memory),
+		// because cached config values from one branch could leak
+		// to another. We rewrite apcu_* calls to _qbix_apcu_* shims
+		// that behave as if APCu is not installed.
+		$shouldShimApcu = $isReading
+			&& self::$branchRoot
+			&& self::isInBranch($realPath)
+			&& preg_match('/\.php$/i', $realPath);
+
 		if ($shouldTransform) {
 			// Check in-memory cache — covers both transforms and sentinels.
 			$cached = Q_WebServer_Compat::getCachedTransform($realPath);
 			if ($cached !== null) {
 				if ($cached === false) {
-					// Sentinel: this file doesn't need transforms.
-					if ($shouldInjectCreds) {
-						// Still need to check for credential placeholders
+					// Sentinel: this file doesn't need compat transforms.
+					// May still need credential injection or APCu shimming.
+					if ($shouldInjectCreds || $shouldShimApcu) {
 						self::unwrap();
 						$source = file_get_contents($realPath);
 						self::rewrap();
-						if ($source !== false
-							&& strpos($source, '{{') !== false
-						) {
-							$this->buffer = self::injectCredentials($source);
-							$this->position = 0;
-							$this->transformed = true;
-							$opened_path = $realPath;
-							return true;
+						if ($source !== false) {
+							$content = $source;
+							if ($shouldShimApcu) {
+								$content = self::shimApcuCalls($content);
+							}
+							if ($shouldInjectCreds && strpos($content, '{{') !== false) {
+								$content = self::injectCredentials($content);
+							}
+							if ($content !== $source) {
+								$this->buffer = $content;
+								$this->position = 0;
+								$this->transformed = true;
+								$opened_path = $realPath;
+								return true;
+							}
 						}
 					}
-					// Open it normally — no tokenization, no transform.
+					// Open it normally — no transforms needed.
 					self::unwrap();
 					$this->handle = fopen($realPath, $mode);
 					self::rewrap();
@@ -2420,6 +2608,9 @@ class Q_WebServer_CompatFileWrapper
 				}
 				// Cached transform — serve from memory
 				$content = $cached;
+				if ($shouldShimApcu) {
+					$content = self::shimApcuCalls($content);
+				}
 				if ($shouldInjectCreds && strpos($content, '{{') !== false) {
 					$content = self::injectCredentials($content);
 				}
@@ -2449,6 +2640,9 @@ class Q_WebServer_CompatFileWrapper
 				$transformed = Q_WebServer_Compat::transformSource($source, $realPath);
 				if ($transformed !== $source) {
 					$content = $transformed;
+					if ($shouldShimApcu) {
+						$content = self::shimApcuCalls($content);
+					}
 					if ($shouldInjectCreds && strpos($content, '{{') !== false) {
 						$content = self::injectCredentials($content);
 					}
@@ -2459,26 +2653,47 @@ class Q_WebServer_CompatFileWrapper
 					$opened_path = $realPath;
 					return true;
 				}
-				// No PHP changes — but might still need credential injection
-				if ($shouldInjectCreds && strpos($source, '{{') !== false) {
-					$this->buffer = self::injectCredentials($source);
+				// No compat changes — but might still need APCu shim
+				// or credential injection
+				if ($shouldShimApcu || $shouldInjectCreds) {
+					$content = $source;
+					if ($shouldShimApcu) {
+						$content = self::shimApcuCalls($content);
+					}
+					if ($shouldInjectCreds && strpos($content, '{{') !== false) {
+						$content = self::injectCredentials($content);
+					}
+					if ($content !== $source) {
+						$this->buffer = $content;
+						$this->position = 0;
+						$this->transformed = true;
+						self::rewrap();
+						$opened_path = $realPath;
+						return true;
+					}
+				}
+			}
+		} elseif (($shouldInjectCreds || $shouldShimApcu) && is_file($realPath)) {
+			// Branch file that didn't go through the transform path —
+			// either a non-PHP config file needing credential injection,
+			// or a PHP file needing APCu shimming when Compat is disabled.
+			$source = file_get_contents($realPath);
+			if ($source !== false) {
+				$content = $source;
+				if ($shouldShimApcu) {
+					$content = self::shimApcuCalls($content);
+				}
+				if ($shouldInjectCreds && strpos($content, '{{') !== false) {
+					$content = self::injectCredentials($content);
+				}
+				if ($content !== $source) {
+					$this->buffer = $content;
 					$this->position = 0;
 					$this->transformed = true;
 					self::rewrap();
 					$opened_path = $realPath;
 					return true;
 				}
-			}
-		} elseif ($shouldInjectCreds && is_file($realPath)) {
-			// Non-PHP config file in a branch — check for credential placeholders
-			$source = file_get_contents($realPath);
-			if ($source !== false && strpos($source, '{{') !== false) {
-				$this->buffer = self::injectCredentials($source);
-				$this->position = 0;
-				$this->transformed = true;
-				self::rewrap();
-				$opened_path = $realPath;
-				return true;
 			}
 		}
 
