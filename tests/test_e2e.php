@@ -30,7 +30,26 @@ if (!class_exists('Q_Config', false)) {
 			$args = func_get_args();
 			$default = array_pop($args);
 			$key = implode('.', $args);
-			return self::$overrides[$key] ?? $default;
+			if (array_key_exists($key, self::$overrides)) {
+				return self::$overrides[$key];
+			}
+			// Try prefix lookups: if 'a.b.c' was set as array,
+			// get('a','b','c','d', $default) should return $arr['d']
+			for ($i = count($args) - 1; $i >= 1; $i--) {
+				$prefix = implode('.', array_slice($args, 0, $i));
+				if (array_key_exists($prefix, self::$overrides)
+					&& is_array(self::$overrides[$prefix])) {
+					$val = self::$overrides[$prefix];
+					for ($j = $i; $j < count($args); $j++) {
+						if (!is_array($val) || !array_key_exists($args[$j], $val)) {
+							return $default;
+						}
+						$val = $val[$args[$j]];
+					}
+					return $val;
+				}
+			}
+			return $default;
 		}
 		static function clear() {
 			self::$overrides = array();
@@ -674,6 +693,139 @@ $notification = array(
 $result = Q_WebServer_MCP::handle(mcpParsed($notification));
 ok($result['status'] === 204 || $result['body'] === '', 'MCP notification returns 204/empty');
 
+// 4j. branch_list tool
+$req = mcpRequest('tools/call', array(
+	'name' => 'branch_list',
+	'arguments' => array('appHost' => 'myapp.test'),
+), 20);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$branchListResult = json_decode($resp['result']['content'][0]['text'], true);
+ok(!empty($branchListResult['branches']), 'branch_list returns branches');
+$foundAlice = false;
+foreach ($branchListResult['branches'] as $b) {
+	if ($b['name'] === 'alice') $foundAlice = true;
+}
+ok($foundAlice, 'branch_list includes alice branch');
+
+// 4k. branch_create tool
+$req = mcpRequest('tools/call', array(
+	'name' => 'branch_create',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'branchName' => 'ai-test-branch',
+	),
+), 21);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$createResult = json_decode($resp['result']['content'][0]['text'], true);
+ok(!empty($createResult['branch']) && $createResult['branch'] === 'ai-test-branch',
+	'branch_create creates new branch');
+
+// Verify it shows up in branch_list
+$req = mcpRequest('tools/call', array(
+	'name' => 'branch_list',
+	'arguments' => array('appHost' => 'myapp.test'),
+), 22);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$listResult = json_decode($resp['result']['content'][0]['text'], true);
+$foundNew = false;
+foreach ($listResult['branches'] as $b) {
+	if ($b['name'] === 'ai-test-branch') $foundNew = true;
+}
+ok($foundNew, 'Newly created branch appears in branch_list');
+
+// 4l. file_list tool — list trunk root
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_list',
+	'arguments' => array('appHost' => 'myapp.test'),
+), 23);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$fileListResult = json_decode($resp['result']['content'][0]['text'], true);
+ok(!empty($fileListResult['files']), 'file_list returns files from trunk');
+
+// 4m. file_list tool — list branch directory
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_list',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'branchName' => 'alice',
+	),
+), 24);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$branchFileList = json_decode($resp['result']['content'][0]['text'], true);
+ok(!empty($branchFileList['files']), 'file_list returns files from branch');
+
+// 4n. file_list — path traversal blocked
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_list',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'path' => '../../etc',
+	),
+), 25);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+ok(!empty($resp['result']['isError']), 'file_list blocks path traversal');
+
+// 4o. file_read tool — read a known file
+// First, write a test file to trunk
+$testContent = '<h1>Hello from trunk</h1>';
+file_put_contents($trunkDir . '/test_read.html', $testContent);
+
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_read',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'path' => 'test_read.html',
+	),
+), 26);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$readResult = json_decode($resp['result']['content'][0]['text'], true);
+ok($readResult['content'] === $testContent, 'file_read returns correct content');
+ok($readResult['encoding'] === 'utf8', 'file_read returns utf8 encoding for text');
+
+// 4p. file_read — sensitive paths blocked
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_read',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'path' => 'config/app.json',
+	),
+), 27);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+ok(!empty($resp['result']['isError']), 'file_read blocks config/ paths');
+
+// 4q. file_read — path traversal blocked
+$req = mcpRequest('tools/call', array(
+	'name' => 'file_read',
+	'arguments' => array(
+		'appHost' => 'myapp.test',
+		'path' => '../../../etc/passwd',
+	),
+), 28);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+ok(!empty($resp['result']['isError']), 'file_read blocks path traversal');
+
+// 4r. tools/list now includes new tools
+$req = mcpRequest('tools/list', array(), 29);
+$result = Q_WebServer_MCP::handle(mcpParsed($req));
+$resp = json_decode($result['body'], true);
+$toolNames = array_column($resp['result']['tools'], 'name');
+ok(in_array('branch_list', $toolNames), 'tools/list includes branch_list');
+ok(in_array('branch_create', $toolNames), 'tools/list includes branch_create');
+ok(in_array('file_list', $toolNames), 'tools/list includes file_list');
+ok(in_array('file_read', $toolNames), 'tools/list includes file_read');
+
+// Clean up the test branch
+Q_WebServer_Branch::delete('myapp.test', 'ai-test-branch');
+@unlink($trunkDir . '/test_read.html');
 
 // ═══════════════════════════════════════════════════════════════
 // Section 5: Admin Merge Review and Production Switch
@@ -983,7 +1135,30 @@ $badParsed = array(
 $result = Q_WebServer_MCP::handle($badParsed);
 ok($result['status'] === 400, 'MCP rejects malformed JSON');
 
-// 9g. Change password
+// 9g. MCP X-Q-Token with invalid token is rejected
+$xqParsed = array(
+	'method' => 'POST',
+	'uri' => '/mcp',
+	'path' => '/mcp',
+	'query' => '',
+	'body' => json_encode(mcpRequest('tools/call', array(
+		'name' => 'branch_export',
+		'arguments' => array('appHost' => 'myapp.test'),
+	), 30)),
+	'headers' => array(
+		'host' => 'myapp.test',
+		'content-type' => 'application/json',
+		'x-q-token' => 'bogus-token',
+	),
+	'rawHeaders' => array(),
+	'cookies' => array(),
+);
+$result = Q_WebServer_MCP::handle($xqParsed);
+$resp = json_decode($result['body'], true);
+$hasError = !empty($resp['error']) || !empty($resp['result']['isError']);
+ok($hasError, 'MCP rejects invalid X-Q-Token');
+
+// 9h. Change password
 $result = callApi('users/update', array(
 	'username' => 'bob',
 	'password' => 'new-bob-pass-789',

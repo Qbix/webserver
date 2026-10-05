@@ -183,7 +183,7 @@ There are two ways to change settings:
 
 Panel overrides take precedence over file-based config.
 
-Key settings to know about:
+Key settings to know about (see also the relay config below):
 
 | Setting | What it does |
 |---|---|
@@ -195,8 +195,42 @@ Key settings to know about:
 
 See [Configuration](configuration.md) for the complete reference.
 
-## 8. Next steps
+## 8. Add email & SMS
 
+Qbix Server includes a built-in relay for outbound and inbound email and SMS. Add a provider config to `server.json` and the relay starts automatically:
+
+```json
+{
+  "Q": {
+    "relay": {
+      "smtp": {
+        "host": "smtp-relay.gmail.com",
+        "port": 587
+      },
+      "mobile": {
+        "provider": "twilio",
+        "accountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "authToken": "your_auth_token",
+        "fromNumber": "+15551234567"
+      }
+    }
+  }
+}
+```
+
+The relay runs as a sibling process alongside the web server — one command starts everything. It handles:
+
+- **Outbound email** through any SMTP provider (Gmail/Google Workspace, SES, SendGrid, Mailgun)
+- **Inbound email** via a built-in SMTP listener (port 2525) with MIME parsing and threading
+- **SMS** via Twilio (send, receive, webhook validation)
+- **Digest batching** to prevent notification floods
+- **Rate limiting** with a token bucket and circuit breaker
+
+See [Email & SMS Relay](RELAY.md) for provider-specific setup guides (including Google Workspace with user avatars, SES, SendGrid), database tables, Platform integration, and the full configuration reference.
+
+## 9. Next steps
+
+- [Email & SMS Relay](RELAY.md) — provider setup, inbound email, SMS, Platform integration
 - [Dashboard & Panel](dashboard.md) — live metrics, request log, WebSocket monitoring
 - [Client Metrics](METRICS.md) — opt-in client-side telemetry (scroll depth, media tracking, SPA navigation)
 - [Deploy & Federation](deploy.md) — reverse proxy setup, federation between servers

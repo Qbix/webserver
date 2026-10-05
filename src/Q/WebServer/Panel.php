@@ -38,10 +38,10 @@ class Q_WebServer_Panel
 	{
 		$path = $parsed['path'];
 
-		// SECURITY: Panel is restricted to localhost by default.
-		// Set Q.panel.remote = true in config to allow remote access.
+		// Panel is accessible remotely by default so new users can set up
+		// from any device. Set Q.panel.remote = false to restrict to localhost.
 		if (strpos($path, '/Q/panel') === 0 || strpos($path, '/Q/api/') === 0) {
-			$allowRemote = Q_Config::get('Q', 'panel', 'remote', false);
+			$allowRemote = Q_Config::get('Q', 'panel', 'remote', true);
 			if (!$allowRemote) {
 				$ip = $parsed['clientIp'] ?? $parsed['_remoteAddr'] ?? '';
 				if ($ip !== '127.0.0.1' && $ip !== '::1' && $ip !== '') {
@@ -700,6 +700,36 @@ class Q_WebServer_Panel
 						'headers' => $cmHeaders ?: null
 					);
 				}
+				if (strpos($route, 'email-tracking') === 0) {
+					$etFile = dirname(__DIR__) . '/Relay/Db.php';
+					if (!is_file($etFile)) {
+						return array('status' => 404, 'body' => json_encode(array('error' => 'Relay not available')),
+							'headers' => array('Content-Type' => 'application/json'));
+					}
+					require_once $etFile;
+					Q_Relay_Db::init();
+					$etSub = substr($route, 14); // strip "email-tracking"
+					$etSub = ltrim($etSub, '/');
+					$qs = array();
+					if (!empty($parsed['query'])) {
+						if (is_string($parsed['query'])) parse_str($parsed['query'], $qs);
+						else $qs = $parsed['query'];
+					}
+					if ($etSub === '' || $etSub === 'summary') {
+						$since = $qs['since'] ?? null;
+						$result = Q_Relay_Db::emailTrackingSummary($since);
+						return array('status' => 200, 'body' => json_encode($result),
+							'headers' => array('Content-Type' => 'application/json'));
+					}
+					if ($etSub === 'flow') {
+						$since = $qs['since'] ?? null;
+						$result = Q_Relay_Db::emailFlowData($since);
+						return array('status' => 200, 'body' => json_encode($result),
+							'headers' => array('Content-Type' => 'application/json'));
+					}
+					return array('status' => 404, 'body' => json_encode(array('error' => 'Unknown email-tracking endpoint')),
+						'headers' => array('Content-Type' => 'application/json'));
+				}
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
 	}
@@ -1004,6 +1034,9 @@ class Q_WebServer_Panel
 				'created' => $urec['created'] ?? null,
 				'branches' => $urec['branches'] ?? array(),
 			);
+			if (!empty($urec['email'])) {
+				$rec['email'] = $urec['email'];
+			}
 			if (!empty($urec['scope'])) {
 				$rec['scope'] = $urec['scope'];
 			}
@@ -1066,6 +1099,14 @@ class Q_WebServer_Panel
 			'created' => time(),
 			'branches' => $body['branches'] ?? array(),
 		);
+
+		// Optional email address
+		if (!empty($body['email'])) {
+			$email = trim($body['email']);
+			if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+				$userRec['email'] = $email;
+			}
+		}
 
 		// Manager scope: which apps/domains they manage
 		if ($role === 'manager' && !empty($body['scope'])) {
@@ -1146,6 +1187,18 @@ class Q_WebServer_Panel
 		// Update branch access list
 		if (isset($body['branches'])) {
 			$config['users'][$username]['branches'] = $body['branches'];
+		}
+
+		// Update email
+		if (isset($body['email'])) {
+			$email = trim($body['email']);
+			if ($email === '') {
+				unset($config['users'][$username]['email']);
+			} elseif (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+				$config['users'][$username]['email'] = $email;
+			} else {
+				return array('error' => 'Invalid email address');
+			}
 		}
 
 		// Update manager scope
@@ -1263,7 +1316,7 @@ class Q_WebServer_Panel
 			),
 			'Q.panel.remote' => array(
 				'type' => 'boolean', 'level' => 'admin',
-				'desc' => 'Allow control panel access from non-localhost',
+				'desc' => 'Allow control panel access from non-localhost (default: on)',
 			),
 			'Q.webserver.panel.appsDir' => array(
 				'type' => 'string', 'level' => 'admin',
@@ -1683,6 +1736,23 @@ class Q_WebServer_Panel
 				return array('error' => 'Invalid value for: ' . $key . '. Options: ' . implode(', ', $schema[$key]['options'] ?? array()), 'status' => 400);
 			}
 			if ($type === 'integer') $value = (int) $value;
+		}
+
+		// Lockout protection: warn if disabling remote panel access from a remote IP
+		if ($key === 'Q.panel.remote' && !$value) {
+			$ip = $parsed['clientIp'] ?? $parsed['_remoteAddr'] ?? '';
+			if ($ip !== '127.0.0.1' && $ip !== '::1' && $ip !== '') {
+				$confirmed = $body['confirmed'] ?? false;
+				if (!$confirmed) {
+					return array(
+						'error' => 'lockout_warning',
+						'message' => 'You are accessing the panel remotely from ' . $ip
+							. '. Disabling remote access will lock you out immediately.'
+							. ' You would need SSH or local access to re-enable it.',
+						'status' => 409
+					);
+				}
+			}
 		}
 
 		// Save override to panel.json
@@ -6796,6 +6866,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <h3 style="font-size:14px;margin-bottom:12px">Add User</h3>
     <div class="form-row"><label>Username</label><input type="text" id="user-add-name" placeholder="username (lowercase, no spaces)"></div>
     <div class="form-row"><label>Password</label><input type="password" id="user-add-pw" placeholder="6+ characters"></div>
+    <div class="form-row"><label>Email</label><input type="email" id="user-add-email" placeholder="optional — used for relay notifications"></div>
     <div class="form-row"><label>Role</label><select id="user-add-role"><option value="user">user</option><option value="manager">manager</option><option value="admin">admin</option></select></div>
     <button class="btn btn-primary" onclick="addUser()">Add User</button>
     <div id="user-add-error" style="color:var(--red);font-size:13px;margin-top:8px;display:none"></div>
@@ -8754,11 +8825,21 @@ function filterConfigUI() {
   renderConfigList();
 }
 
-async function updateConfig(key, value) {
+async function updateConfig(key, value, confirmed) {
   var status = document.getElementById('cfg-status');
   status.innerHTML = '<span style="color:var(--dim);font-size:12px">Saving ' + escHtml(key) + '…</span>';
   try {
-    var r = await api('config/update', { key: key, value: value });
+    var payload = { key: key, value: value };
+    if (confirmed) payload.confirmed = true;
+    var r = await api('config/update', payload);
+    if (r.error === 'lockout_warning') {
+      if (confirm(r.message + '\n\nAre you sure you want to continue?')) {
+        return updateConfig(key, value, true);
+      }
+      status.innerHTML = '<span style="color:var(--dim);font-size:12px">Cancelled</span>';
+      setTimeout(function() { status.innerHTML = ''; }, 3000);
+      return;
+    }
     if (r.error) { status.innerHTML = '<span style="color:var(--red);font-size:12px">' + escHtml(r.error) + '</span>'; return; }
     status.innerHTML = '<span style="color:var(--grn);font-size:12px">✓ Saved ' + escHtml(key) + '</span>';
     // Update local cache
@@ -8825,6 +8906,7 @@ async function loadUsers() {
     if (u.role !== 'owner') {
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="changeUserRole(\'' + escHtml(u.username) + '\')">Role</button>';
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="resetUserPw(\'' + escHtml(u.username) + '\')">Reset PW</button>';
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px" onclick="changeUserEmail(\'' + escHtml(u.username) + '\', \'' + escHtml(u.email || '') + '\')">Email</button>';
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;color:var(--red)" onclick="removeUser(\'' + escHtml(u.username) + '\')">Remove</button>';
     }
     if (u.role === 'manager') {
@@ -8837,9 +8919,10 @@ async function loadUsers() {
         return '<span style="background:var(--ac);color:#fff;font-size:10px;padding:1px 5px;border-radius:6px">' + escHtml(s.type + ':' + (s.value || '*')) + '</span>';
       }).join(' ');
     }
+    var emailInfo = u.email ? ' · ✉ ' + escHtml(u.email) : '';
     return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
       + '<div><strong>' + escHtml(u.username) + '</strong> ' + roleBadge
-      + '<div style="font-size:11px;color:var(--dim)">Created: ' + (u.created || '?') + ' · Branches: ' + branches + scopeInfo + '</div></div>'
+      + '<div style="font-size:11px;color:var(--dim)">Created: ' + (u.created || '?') + emailInfo + ' · Branches: ' + branches + scopeInfo + '</div></div>'
       + '<div>' + btns + '</div></div></div>';
   }).join('');
   // Hide add form for non-admin
@@ -8854,11 +8937,15 @@ async function addUser() {
   var username = document.getElementById('user-add-name').value.trim();
   var password = document.getElementById('user-add-pw').value;
   var role = document.getElementById('user-add-role').value;
+  var email = document.getElementById('user-add-email').value.trim();
   if (!username || !password) { errEl.textContent = 'Username and password required'; errEl.style.display = 'block'; return; }
-  var r = await api('users/add', {username: username, password: password, role: role});
+  var payload = {username: username, password: password, role: role};
+  if (email) payload.email = email;
+  var r = await api('users/add', payload);
   if (r.error) { errEl.textContent = r.error; errEl.style.display = 'block'; return; }
   document.getElementById('user-add-name').value = '';
   document.getElementById('user-add-pw').value = '';
+  document.getElementById('user-add-email').value = '';
   loadUsers();
 }
 async function changeUserRole(username) {
@@ -8874,6 +8961,13 @@ async function resetUserPw(username) {
   var r = await api('users/update', {username: username, password: pw});
   if (r.error) { alert(r.error); return; }
   alert('Password updated for ' + username);
+}
+async function changeUserEmail(username, current) {
+  var email = prompt('Email for ' + username + ' (leave empty to remove):', current);
+  if (email === null) return;
+  var r = await api('users/update', {username: username, email: email});
+  if (r.error) { alert(r.error); return; }
+  loadUsers();
 }
 async function removeUser(username) {
   if (!confirm('Remove user ' + username + '? This cannot be undone.')) return;

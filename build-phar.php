@@ -62,6 +62,11 @@ if (is_file(__DIR__ . '/README.md')) {
 	$phar->addFile(__DIR__ . '/README.md', 'README.md');
 }
 
+// Add bin/ scripts (relay entry point, etc.)
+if (is_file(__DIR__ . '/bin/qbixrelay.php')) {
+	$phar->addFile(__DIR__ . '/bin/qbixrelay.php', 'bin/qbixrelay.php');
+}
+
 $fileCount = $phar->count();
 
 // Minimal stub

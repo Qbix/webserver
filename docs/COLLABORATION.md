@@ -1,10 +1,10 @@
 # AI-Assisted Collaboration
 
-Qbix Server v2.3 turns any running PHP application into a workspace that AI coding assistants and human collaborators can safely edit over the network. This page explains how that works in practice.
+Qbix Server v3.2 turns any running PHP application into a workspace that AI coding assistants and human collaborators can safely edit over the network. This page explains how that works in practice.
 
 ## The basic idea
 
-A public-facing Qbix Server exposes a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/Q/mcp/{appHost}/{branchName}`. AI tools — Claude, ChatGPT plugins, Cursor, Windsurf, or anything that speaks MCP — connect to that endpoint, authenticate with a bearer token, and get a set of tools for reading and writing files on a branch of the running app. Every write goes through the same permission model that human collaborators use: file-tier restrictions, deny-path rules, and admin review before anything reaches production.
+A public-facing Qbix Server exposes a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/mcp`. AI tools — Claude, ChatGPT plugins, Cursor, Windsurf, or anything that speaks MCP — connect to that endpoint, authenticate with a bearer token, and get a set of tools for reading and writing files on a branch of the running app. Every write goes through the same permission model that human collaborators use: file-tier restrictions, deny-path rules, and admin review before anything reaches production.
 
 The server is the arbiter. The AI never touches trunk directly, never bypasses file-type restrictions, and never merges its own work. It proposes changes on a branch; a human reviews and approves them.
 
@@ -23,11 +23,16 @@ This context lets the assistant make informed decisions about how to structure i
 
 | Tool | What it does |
 |---|---|
-| `health` | Verify the branch is reachable |
+| `branch_list` | List all branches for an app |
+| `branch_create` | Create a new branch with CoW filesystem and cloned database |
+| `file_list` | List files in a branch directory |
+| `file_read` | Read a file's contents from a branch |
 | `branch_export` | Download the branch (or trunk) as an archive with credentials scrubbed |
 | `branch_push` | Push individual files, each validated against the caller's file tier |
 | `branch_patch` | Apply a unified diff, with optional VCS commit |
 | `branch_request_merge` | Ask an admin to merge the branch back to trunk |
+
+The server also exposes panel management tools through MCP — listing apps, checking server health, viewing metrics, and managing email delivery — so an AI assistant can monitor and administer the server without using the web panel.
 
 ## Patch-based workflow
 
@@ -75,6 +80,10 @@ Multiple AI assistants (or one assistant alternating between servers) work on br
 
 A branch's git repo can push to a CI service (GitHub Actions, GitLab CI, etc.) for automated testing before the merge request is approved. The CI results inform the admin's review decision.
 
+### Mesh federation
+
+When [mesh networking](../README.md#mesh-networking) is configured, multiple Qbix Server instances can federate over encrypted P2P connections (BLE + Wi-Fi with multi-hop routing). Branch pushes between federated servers use the same permission model as local branches. Servers pin each other's identity via [OpenClaiming](api-discovery.md#well-knownopenclaiminghostnameserverjson) certificates to prevent MITM attacks on the mesh.
+
 ## Permission model
 
 The two-axis model applies to patches the same way it applies to individual file pushes:
@@ -110,6 +119,35 @@ If the file exists, a well-behaved AI assistant reads it before starting work. I
 - **Token-scoped access.** Each MCP token is tied to a user with a specific branch permission and file tier. Revoking the token immediately cuts off access.
 - **Patch validation is all-or-nothing.** A patch that touches any denied path is fully rejected, not partially applied.
 - **VCS history is local.** Git or mercurial repos in branch directories don't push anywhere unless explicitly configured. The history stays on the server by default.
+- **Telemetry headers.** Every outbound email sent through the relay includes `X-Q-App`, `X-Q-Host`, and `X-Q-View` headers for tracing which app and code path generated it. These same headers appear on HTTP responses when the app sets them.
+
+## Email and SMS relay
+
+The server includes a built-in [email and SMS relay](RELAY.md) that runs alongside the HTTP server. When configured, the relay starts an SMTP listener on a local port (default 2525) and handles both inbound and outbound email without any external mail server.
+
+### How apps use it
+
+PHP apps point their SMTP config at the relay's local port. For Qbix Platform apps, this means setting `Users.email.smtp.host` to `127.0.0.1` and `Users.email.smtp.port` to `2525`. For Laravel, set `MAIL_HOST=127.0.0.1` and `MAIL_PORT=2525` in `.env`. The app's existing email-sending code works without changes — it just sends to localhost instead of an external SMTP service.
+
+The relay then handles delivery through a configured upstream provider (Amazon SES, Mailgun, or raw SMTP), with:
+
+- **MIME parsing** — extracts text and HTML parts, handles multipart messages and attachments
+- **Conversation threading** — groups messages by `Message-ID`, `In-Reply-To`, and `References` headers into threads with members
+- **Digest batching** — aggregates high-frequency notifications into periodic digests with configurable intervals
+- **Rate limiting** — per-recipient rate limits with a circuit breaker that opens after repeated failures
+- **Delivery logging** — every send is logged with channel, direction, sender, recipient, status, and error detail
+
+### SMS
+
+The relay also handles SMS through Twilio. Apps call `Q_Relay_Mobile::send($to, $body)` or post to the relay's webhook endpoint. Inbound SMS arrives at `/Q/relay/sms/webhook`, is validated against Twilio's signature, and stored in the same threading system as email.
+
+### Integration with Qbix Platform
+
+The relay integrates with the Qbix Platform's Users plugin. `Users_Email::sendMessage()` sends through `Zend_Mail_Transport_Smtp`, which connects to the relay's local SMTP listener. The relay receives the message — including the platform's `X-Q-App` and `X-Q-View` headers — parses it, threads it, and delivers it upstream. This has been verified end-to-end: the platform boots, Zend_Mail connects to the relay's port 2525, the relay receives and parses the MIME message, threads it with sender and recipient, stores it in its SQLite database, and logs the delivery.
+
+### Branch isolation for email
+
+On branches, the relay's local SMTP port and dev credentials keep branch code from sending real email. The branch credential system (described below) automatically substitutes sandbox SMTP settings, so a branch's email-sending code hits the relay in test mode or a sandbox service like Mailtrap — never the production upstream.
 
 ## Branch subdomain routing and TLS
 
@@ -161,10 +199,8 @@ Set `Q.webserver.branches.credentials` in your server config with the developmen
                 "credentials": {
                     "REDIS_HOST": "127.0.0.1",
                     "REDIS_DB": "10",
-                    "MAIL_HOST": "sandbox.smtp.mailtrap.io",
+                    "MAIL_HOST": "127.0.0.1",
                     "MAIL_PORT": "2525",
-                    "MAIL_USERNAME": "your-mailtrap-user",
-                    "MAIL_PASSWORD": "your-mailtrap-pass",
                     "STRIPE_KEY": "sk_test_...",
                     "STRIPE_SECRET": "sk_test_...",
                     "AWS_BUCKET": "myapp-dev-uploads"
@@ -176,6 +212,8 @@ Set `Q.webserver.branches.credentials` in your server config with the developmen
 ```
 
 These shared dev credentials apply to every branch. The admin configures them once; there is no per-branch credential management.
+
+When the built-in relay is running, pointing `MAIL_HOST` / `MAIL_PORT` at `127.0.0.1:2525` routes all branch email through the relay, which can be configured to use a sandbox upstream or simply log without delivering.
 
 ### Database credentials are auto-generated
 
@@ -202,7 +240,7 @@ The framework is auto-detected from the host's `preset` setting. If a key appear
 
 The goal is to prevent branches from touching production services. Typical entries:
 
-- **Email**: Point to a sandbox SMTP service (Mailtrap, Mailhog) so branch code cannot send real email
+- **Email**: Point to the relay's local port (`127.0.0.1:2525`) or a sandbox SMTP service (Mailtrap, Mailhog) so branch code cannot send real email
 - **Payment processing**: Use test-mode keys (Stripe `sk_test_`, PayPal sandbox) so branches cannot charge real cards
 - **Object storage**: A separate dev bucket or path prefix so branch uploads don't mix with production
 - **Cache / Redis**: A different Redis database number or a key prefix so branch cache doesn't pollute production
@@ -247,11 +285,18 @@ The source database is auto-detected from the app's config files using the frame
 
 Each cloned database gets its own dedicated database user (MySQL: `br_<dbname>_<suffix>`) or role (PostgreSQL) with privileges scoped only to that branch's database. A compromised branch cannot access the source database, other branches' databases, or system databases. The per-branch credentials are auto-generated and injected transparently — no admin configuration required. Admin credentials are stored separately and used only for cleanup when the branch is dropped.
 
+## Observability
+
+The server includes a built-in [metrics and analytics](METRICS.md) system. A live dashboard at `/Q/dashboard` shows request rates, memory usage, status code distribution, and active connections. The control panel at `/Q/panel` provides app management, branch controls, an emails tab for viewing relay delivery logs, and server-side analytics with Sankey flow visualization and session replay.
+
+Client-side metrics are opt-in: set `Q.webserver.clientMetrics.enabled` to `true` and the server injects telemetry scripts that report scroll depth, media playback, SPA navigation, and dwell time. Server-side analytics are automatic and require no client-side code.
+
 ## Example: Claude edits a Laravel app
 
 ```
 1. Claude connects to the MCP endpoint
-   POST /Q/mcp/myapp.example.com/feature-redesign
+   POST /mcp
+   Authorization: Bearer <token>
 
 2. The initialize response tells Claude:
    - Framework: Laravel
@@ -286,11 +331,11 @@ Each cloned database gets its own dedicated database user (MySQL: `br_<dbname>_<
 
 ## Comparison with other approaches
 
-| Approach | Trunk safety | Permission control | VCS history | Works with any AI tool |
-|---|---|---|---|---|
-| AI edits files directly via SSH | ❌ | ❌ | Manual | ❌ |
-| AI commits to a git branch | ✅ | ❌ (full repo access) | ✅ | ❌ (needs git access) |
-| AI uses a custom API | ✅ | Custom | Custom | ❌ (proprietary) |
-| **Qbix Server MCP** | ✅ | ✅ (file tier + deny paths) | ✅ (automatic) | ✅ (standard MCP) |
+| Approach | Trunk safety | Permission control | VCS history | Email/SMS | Works with any AI tool |
+|---|---|---|---|---|---|
+| AI edits files directly via SSH | ❌ | ❌ | Manual | ❌ | ❌ |
+| AI commits to a git branch | ✅ | ❌ (full repo access) | ✅ | ❌ | ❌ (needs git access) |
+| AI uses a custom API | ✅ | Custom | Custom | ❌ | ❌ (proprietary) |
+| **Qbix Server MCP** | ✅ | ✅ (file tier + deny paths) | ✅ (automatic) | ✅ (built-in relay) | ✅ (standard MCP) |
 
-The key difference is that Qbix Server combines branch isolation, file-level permissions, and VCS history in a single system that any MCP-compatible AI tool can use without custom integration.
+The key difference is that Qbix Server combines branch isolation, file-level permissions, VCS history, and integrated email/SMS relay in a single system that any MCP-compatible AI tool can use without custom integration.

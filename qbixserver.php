@@ -1376,6 +1376,66 @@ if (!$qbixMode) {
 	}
 }
 
+// Apply any config overrides saved via the control panel
+require_once __DIR__ . '/src/Q/WebServer/Panel.php';
+Q_WebServer_Panel::applyConfigOverrides();
+
+// ── Auto-spawn relay process ────────────────────────
+// When relay config exists (Q.relay.smtp.host or Users.relay.smtp.host),
+// spawn qbixrelay.php as a managed child process. The server monitors
+// the relay, restarts it on crash, and reports its status in the dashboard.
+$__relayPid = null;
+$__relayConfigured = Q_Config::get('Q', 'relay', 'smtp', 'host',
+	Q_Config::get('Users', 'relay', 'smtp', 'host', null));
+if ($__relayConfigured && function_exists('pcntl_fork')) {
+	$__relayScript = __DIR__ . '/bin/qbixrelay.php';
+	if (!is_file($__relayScript)) {
+		// Check if running from PHAR — extract relay script path
+		$__relayScript = __DIR__ . '/qbixrelay.php';
+	}
+	if (is_file($__relayScript)) {
+		$__relayPid = pcntl_fork();
+		if ($__relayPid === 0) {
+			// Child: exec the relay process
+			$__relayArgs = [PHP_BINARY, $__relayScript];
+			if (isset($opts['debug']) && $opts['debug']) {
+				$__relayArgs[] = '--debug';
+			}
+			pcntl_exec(PHP_BINARY, array_slice($__relayArgs, 1));
+			// If pcntl_exec fails (e.g. running from PHAR), run inline.
+			// Reset argv so the relay doesn't inherit the server's --port etc.
+			$GLOBALS['argv'] = array_slice($__relayArgs, 1);
+			$GLOBALS['argc'] = count($GLOBALS['argv']);
+			require $__relayScript;
+			exit(0);
+		} elseif ($__relayPid > 0) {
+			fwrite(STDERR, "  Relay:   PID $__relayPid (auto-spawned)\n");
+			// Register relay monitoring in the main loop via a shutdown handler
+			// that sends SIGTERM to the relay on server shutdown
+			register_shutdown_function(function () use ($__relayPid) {
+				if ($__relayPid > 0) {
+					@posix_kill($__relayPid, SIGTERM);
+					$waited = 0;
+					while ($waited < 5) {
+						$r = pcntl_waitpid($__relayPid, $status, WNOHANG);
+						if ($r > 0 || $r === -1) break;
+						usleep(200000);
+						$waited += 0.2;
+					}
+					if ($waited >= 5) {
+						@posix_kill($__relayPid, SIGKILL);
+					}
+				}
+			});
+		} else {
+			fwrite(STDERR, "  Relay:   fork failed, relay not started\n");
+		}
+	}
+} elseif ($__relayConfigured) {
+	fwrite(STDERR, "  Relay:   pcntl extension not available, run qbixrelay.php separately\n");
+}
+unset($__relayConfigured, $__relayScript);
+
 // Forked workers and the framework boot master unwind to here by throwing
 // Q_WebServer_Role, then run their loop from a file included at this level,
 // so the PHP they execute runs at global scope.

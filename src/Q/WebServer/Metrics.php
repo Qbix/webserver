@@ -584,15 +584,21 @@ class Q_WebServer_Metrics
 		if (!self::$db) return;
 		if (!empty(self::$flowBuffer)) {
 			try {
-				$stmt = self::$db->prepare(
-					'INSERT INTO flow (from_path, to_path, count) VALUES (:f, :t, 1)
-					 ON CONFLICT(from_path, to_path) DO UPDATE SET count = count + 1'
+				$ins = self::$db->prepare(
+					'INSERT OR IGNORE INTO flow (from_path, to_path, count) VALUES (:f, :t, 0)'
+				);
+				$upd = self::$db->prepare(
+					'UPDATE flow SET count = count + 1 WHERE from_path = :f AND to_path = :t'
 				);
 				foreach (self::$flowBuffer as $f) {
-					$stmt->bindValue(':f', $f['from']);
-					$stmt->bindValue(':t', $f['to']);
-					$stmt->execute();
-					$stmt->reset();
+					$ins->bindValue(':f', $f['from']);
+					$ins->bindValue(':t', $f['to']);
+					$ins->execute();
+					$ins->reset();
+					$upd->bindValue(':f', $f['from']);
+					$upd->bindValue(':t', $f['to']);
+					$upd->execute();
+					$upd->reset();
 				}
 			} catch (\Exception $e) {}
 			self::$flowBuffer = [];
@@ -600,23 +606,33 @@ class Q_WebServer_Metrics
 		if (!empty(self::$pageHits)) {
 			try {
 				$now = date('c');
-				$stmt = self::$db->prepare(
-					'INSERT INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
-					 VALUES (:p, :h, :u, :a, :t)
-					 ON CONFLICT(path) DO UPDATE SET
+				$ins = self::$db->prepare(
+					'INSERT OR IGNORE INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
+					 VALUES (:p, 0, 0, 0, :t)'
+				);
+				$upd = self::$db->prepare(
+					'UPDATE page_stats SET
+					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
 					   hits = hits + :h,
 					   unique_sessions = unique_sessions + :u,
-					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
-					   last_hit = :t'
+					   last_hit = :t
+					 WHERE path = :p'
 				);
 				foreach (self::$pageHits as $path => $data) {
-					$stmt->bindValue(':p', $path);
-					$stmt->bindValue(':h', $data['hits']);
-					$stmt->bindValue(':u', count($data['sessions']));
-					$stmt->bindValue(':a', $data['hits'] > 0 ? $data['totalMs'] / $data['hits'] : 0);
-					$stmt->bindValue(':t', $now);
-					$stmt->execute();
-					$stmt->reset();
+					$h = $data['hits'];
+					$u = count($data['sessions']);
+					$a = $h > 0 ? $data['totalMs'] / $h : 0;
+					$ins->bindValue(':p', $path);
+					$ins->bindValue(':t', $now);
+					$ins->execute();
+					$ins->reset();
+					$upd->bindValue(':p', $path);
+					$upd->bindValue(':h', $h);
+					$upd->bindValue(':u', $u);
+					$upd->bindValue(':a', $a);
+					$upd->bindValue(':t', $now);
+					$upd->execute();
+					$upd->reset();
 				}
 			} catch (\Exception $e) {}
 			self::$pageHits = [];
@@ -649,26 +665,34 @@ class Q_WebServer_Metrics
 		// Flush session metadata
 		if (!empty(self::$sessionUpdates)) {
 			try {
-				$stmt = self::$db->prepare(
-					'INSERT INTO sessions (session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path)
-					 VALUES (:sid, :first, :last, :ip, :host, :plat, :br, :lang, :cnt, :entry)
-					 ON CONFLICT(session_id) DO UPDATE SET
+				$ins = self::$db->prepare(
+					'INSERT OR IGNORE INTO sessions (session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path)
+					 VALUES (:sid, :first, :last, :ip, :host, :plat, :br, :lang, :cnt, :entry)'
+				);
+				$upd = self::$db->prepare(
+					'UPDATE sessions SET
 					   last_seen = MAX(last_seen, :last),
-					   page_count = page_count + :cnt'
+					   page_count = page_count + :cnt
+					 WHERE session_id = :sid'
 				);
 				foreach (self::$sessionUpdates as $sid => $s) {
-					$stmt->bindValue(':sid', $sid);
-					$stmt->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
-					$stmt->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
-					$stmt->bindValue(':ip', $s['ip']);
-					$stmt->bindValue(':host', $s['host']);
-					$stmt->bindValue(':plat', $s['platform']);
-					$stmt->bindValue(':br', $s['browser']);
-					$stmt->bindValue(':lang', $s['lang']);
-					$stmt->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
-					$stmt->bindValue(':entry', $s['entryPath']);
-					$stmt->execute();
-					$stmt->reset();
+					$ins->bindValue(':sid', $sid);
+					$ins->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
+					$ins->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
+					$ins->bindValue(':ip', $s['ip']);
+					$ins->bindValue(':host', $s['host']);
+					$ins->bindValue(':plat', $s['platform']);
+					$ins->bindValue(':br', $s['browser']);
+					$ins->bindValue(':lang', $s['lang']);
+					$ins->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
+					$ins->bindValue(':entry', $s['entryPath']);
+					$ins->execute();
+					$ins->reset();
+					$upd->bindValue(':sid', $sid);
+					$upd->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
+					$upd->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
+					$upd->execute();
+					$upd->reset();
 				}
 			} catch (\Exception $e) {}
 			self::$sessionUpdates = [];

@@ -47,7 +47,7 @@ class Q_WebServer_ClientMetrics
 
 	static function enabled()
 	{
-		return Q_Config::get('Q', 'webserver', 'clientMetrics', 'enabled', false);
+		return Q_Config::get('Q', 'webserver', 'clientMetrics', 'enabled', true);
 	}
 
 	/**
@@ -139,7 +139,7 @@ class Q_WebServer_ClientMetrics
 	{
 		$endpoint = self::$endpoint;
 		$scriptUrl = Q_Config::get('Q', 'webserver', 'clientMetrics', 'scriptUrl', null);
-		$trackers = Q_Config::get('Q', 'webserver', 'clientMetrics', 'trackers', array('scroll', 'media'));
+		$trackers = Q_Config::get('Q', 'webserver', 'clientMetrics', 'trackers', array('scroll', 'media', 'navigation'));
 		$checkpointInterval = Q_Config::get('Q', 'webserver', 'clientMetrics', 'checkpointInterval', 10);
 		$debounce = Q_Config::get('Q', 'webserver', 'clientMetrics', 'debounce', 1000);
 		$extraScripts = Q_Config::get('Q', 'webserver', 'clientMetrics', 'extraScripts', array());
@@ -530,6 +530,7 @@ class Q_WebServer_ClientMetrics
 	 *   GET  /Q/panel/api/client-metrics/YYYY-MM-DD — summary for that date
 	 *   GET  /Q/panel/api/client-metrics/YYYY-MM-DD/tsv — raw TSV download
 	 *   GET  /Q/panel/api/client-metrics/YYYY-MM-DD/events — filtered events JSON
+	 *   GET  /Q/panel/api/client-metrics/YYYY-MM-DD/flow?type=page — Sankey flow data
 	 *
 	 * @param string $subPath  The path after /Q/panel/api/client-metrics
 	 * @param array  $parsed   The parsed request
@@ -576,6 +577,14 @@ class Q_WebServer_ClientMetrics
 				));
 		}
 
+		if ($action === 'flow') {
+			$qs = array();
+			if (!empty($parsed['query'])) parse_str($parsed['query'], $qs);
+			$type = $qs['type'] ?? 'page'; // page, media, section
+			$result = self::flowData($date, $type);
+			return array('status' => 200, 'body' => json_encode($result), 'headers' => $json);
+		}
+
 		if ($action === 'events') {
 			$qs = array();
 			if (!empty($parsed['query'])) parse_str($parsed['query'], $qs);
@@ -591,6 +600,262 @@ class Q_WebServer_ClientMetrics
 		// Default: summary for that date
 		$summary = self::summary($date);
 		return array('status' => 200, 'body' => json_encode($summary), 'headers' => $json);
+	}
+
+	/**
+	 * Compute Sankey flow data from navigate/loaded events for a given date.
+	 * Returns {nodes: [{id, label, value}], links: [{source, target, value}]}
+	 *
+	 * type=page: page-to-page navigation flow (from navigate events)
+	 * type=media: media engagement flow (play → checkpoint → ended)
+	 * type=section: section navigation flow (section:X events)
+	 *
+	 * @param string $date  YYYY-MM-DD
+	 * @param string $type  'page' | 'media' | 'section'
+	 * @return array {nodes, links, exits}
+	 */
+	static function flowData($date, $type = 'page')
+	{
+		$file = self::$tsvDir . '/' . $date . '.tsv';
+		if (!file_exists($file)) {
+			return array('nodes' => array(), 'links' => array(), 'exits' => 0);
+		}
+
+		$fp = fopen($file, 'r');
+		if (!$fp) return array('nodes' => array(), 'links' => array(), 'exits' => 0);
+
+		$columns = fgetcsv($fp, 0, "\t");
+		if (!$columns) { fclose($fp); return array('nodes' => array(), 'links' => array(), 'exits' => 0); }
+
+		if ($type === 'page') {
+			return self::flowDataPage($fp, $columns);
+		} elseif ($type === 'media') {
+			return self::flowDataMedia($fp, $columns);
+		} elseif ($type === 'section') {
+			return self::flowDataSection($fp, $columns);
+		}
+
+		fclose($fp);
+		return array('nodes' => array(), 'links' => array(), 'exits' => 0);
+	}
+
+	/**
+	 * Page-to-page navigation Sankey: loaded → navigate → navigate → exit
+	 * Navigate events have {from, to} in their data field.
+	 */
+	private static function flowDataPage($fp, $columns)
+	{
+		// Build per-session ordered page sequences
+		$sessions = array(); // session => [{page, time}, ...]
+
+		while (($line = fgetcsv($fp, 0, "\t")) !== false) {
+			if (count($line) < count($columns)) continue;
+			$row = array_combine($columns, $line);
+			$label = $row['label'] ?? '';
+			$session = $row['session'] ?? '';
+			if (empty($session)) continue;
+
+			if ($label === 'loaded') {
+				// Initial page load
+				$page = $row['page'] ?? '/';
+				if (!isset($sessions[$session])) $sessions[$session] = array();
+				$sessions[$session][] = $page;
+			} elseif ($label === 'navigate') {
+				// SPA navigation — data has {from, to}
+				$data = json_decode($row['data'] ?? '{}', true);
+				$to = $data['to'] ?? $row['page'] ?? '';
+				if (!empty($to)) {
+					if (!isset($sessions[$session])) $sessions[$session] = array();
+					$sessions[$session][] = $to;
+				}
+			}
+		}
+		fclose($fp);
+
+		// Count transitions and node visits
+		$linkCounts = array(); // "from\tfrom" => count
+		$nodeCounts = array(); // page => count
+		$exits = 0;
+
+		foreach ($sessions as $pages) {
+			// Deduplicate consecutive same-page entries
+			$deduped = array();
+			$prev = null;
+			foreach ($pages as $p) {
+				if ($p !== $prev) {
+					$deduped[] = $p;
+					$prev = $p;
+				}
+			}
+
+			for ($i = 0; $i < count($deduped); $i++) {
+				$page = self::normalizePath($deduped[$i]);
+				$nodeCounts[$page] = ($nodeCounts[$page] ?? 0) + 1;
+
+				if ($i + 1 < count($deduped)) {
+					$next = self::normalizePath($deduped[$i + 1]);
+					$key = $page . "\t" . $next;
+					$linkCounts[$key] = ($linkCounts[$key] ?? 0) + 1;
+				} else {
+					$exits++;
+				}
+			}
+		}
+
+		// Build nodes array (top 50 by visit count)
+		arsort($nodeCounts);
+		$topNodes = array_slice($nodeCounts, 0, 50, true);
+		$nodes = array();
+		foreach ($topNodes as $id => $count) {
+			$nodes[] = array('id' => $id, 'label' => $id, 'value' => $count);
+		}
+		$nodeSet = array_keys($topNodes);
+
+		// Build links array (only between top nodes)
+		arsort($linkCounts);
+		$links = array();
+		foreach ($linkCounts as $key => $count) {
+			list($src, $tgt) = explode("\t", $key);
+			if (in_array($src, $nodeSet) && in_array($tgt, $nodeSet)) {
+				$links[] = array('source' => $src, 'target' => $tgt, 'value' => $count);
+			}
+			if (count($links) >= 200) break;
+		}
+
+		return array('nodes' => $nodes, 'links' => $links, 'exits' => $exits);
+	}
+
+	/**
+	 * Media engagement Sankey: play → checkpoint → ended
+	 */
+	private static function flowDataMedia($fp, $columns)
+	{
+		$transitions = array();
+		$nodeCounts = array();
+		$sessions = array(); // session => last media state
+
+		while (($line = fgetcsv($fp, 0, "\t")) !== false) {
+			if (count($line) < count($columns)) continue;
+			$row = array_combine($columns, $line);
+			$label = $row['label'] ?? '';
+			$session = $row['session'] ?? '';
+			if (empty($session)) continue;
+
+			// Media events: media-play:id, media-pause:id, media-checkpoint:id, media-ended:id
+			if (strpos($label, 'media-') !== 0) continue;
+
+			$colonPos = strpos($label, ':');
+			$action = $colonPos !== false ? substr($label, 0, $colonPos) : $label;
+			$mediaId = $colonPos !== false ? substr($label, $colonPos + 1) : '';
+
+			// Simplify node labels
+			$node = $action;
+			$nodeCounts[$node] = ($nodeCounts[$node] ?? 0) + 1;
+
+			$prev = $sessions[$session] ?? null;
+			if ($prev !== null && $prev !== $node) {
+				$key = $prev . "\t" . $node;
+				$transitions[$key] = ($transitions[$key] ?? 0) + 1;
+			}
+			$sessions[$session] = $node;
+		}
+		fclose($fp);
+
+		$nodes = array();
+		foreach ($nodeCounts as $id => $count) {
+			$nodes[] = array('id' => $id, 'label' => self::mediaLabel($id), 'value' => $count);
+		}
+
+		arsort($transitions);
+		$links = array();
+		foreach ($transitions as $key => $count) {
+			list($src, $tgt) = explode("\t", $key);
+			$links[] = array('source' => $src, 'target' => $tgt, 'value' => $count);
+			if (count($links) >= 100) break;
+		}
+
+		return array('nodes' => $nodes, 'links' => $links, 'exits' => 0);
+	}
+
+	/**
+	 * Section navigation Sankey: section:X → section:Y flow
+	 */
+	private static function flowDataSection($fp, $columns)
+	{
+		$transitions = array();
+		$nodeCounts = array();
+		$sessions = array(); // session => last section
+
+		while (($line = fgetcsv($fp, 0, "\t")) !== false) {
+			if (count($line) < count($columns)) continue;
+			$row = array_combine($columns, $line);
+			$label = $row['label'] ?? '';
+			$session = $row['session'] ?? '';
+			if (empty($session)) continue;
+
+			// Section events: section:id, depth:N%, tab:name
+			$node = null;
+			if (strpos($label, 'section:') === 0) {
+				$node = $label;
+			} elseif (strpos($label, 'depth:') === 0) {
+				$node = $label;
+			} elseif (strpos($label, 'tab:') === 0) {
+				$node = $label;
+			}
+			if ($node === null) continue;
+
+			$nodeCounts[$node] = ($nodeCounts[$node] ?? 0) + 1;
+
+			$prev = $sessions[$session] ?? null;
+			if ($prev !== null && $prev !== $node) {
+				$key = $prev . "\t" . $node;
+				$transitions[$key] = ($transitions[$key] ?? 0) + 1;
+			}
+			$sessions[$session] = $node;
+		}
+		fclose($fp);
+
+		arsort($nodeCounts);
+		$topNodes = array_slice($nodeCounts, 0, 40, true);
+		$nodes = array();
+		foreach ($topNodes as $id => $count) {
+			$nodes[] = array('id' => $id, 'label' => $id, 'value' => $count);
+		}
+		$nodeSet = array_keys($topNodes);
+
+		arsort($transitions);
+		$links = array();
+		foreach ($transitions as $key => $count) {
+			list($src, $tgt) = explode("\t", $key);
+			if (in_array($src, $nodeSet) && in_array($tgt, $nodeSet)) {
+				$links[] = array('source' => $src, 'target' => $tgt, 'value' => $count);
+			}
+			if (count($links) >= 150) break;
+		}
+
+		return array('nodes' => $nodes, 'links' => $links, 'exits' => 0);
+	}
+
+	private static function normalizePath($url)
+	{
+		// Extract path from URL, strip query string and fragment
+		$parsed = parse_url($url);
+		$path = $parsed['path'] ?? '/';
+		// Collapse trailing slashes
+		$path = rtrim($path, '/') ?: '/';
+		return $path;
+	}
+
+	private static function mediaLabel($action)
+	{
+		$map = array(
+			'media-play' => 'Play',
+			'media-pause' => 'Pause',
+			'media-checkpoint' => 'Watching',
+			'media-ended' => 'Completed',
+			'media-seeked' => 'Seeked'
+		);
+		return $map[$action] ?? $action;
 	}
 
 	// ── Helpers ────────────────────────────────────────────

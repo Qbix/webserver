@@ -1327,6 +1327,23 @@ class Q_WebServer
 			}
 			return array('status'=>404, 'body'=>'Attestation not available');
 		}
+		// ── Email tracking routes (unauthenticated — called from email clients) ──
+		if ($path === '/Q/relay/open' || $path === '/Q/relay/click') {
+			$trackerFile = __DIR__ . '/Relay/EmailTracker.php';
+			if (is_file($trackerFile)) {
+				require_once __DIR__ . '/Relay/Db.php';
+				require_once $trackerFile;
+				$qs = array();
+				if (!empty($parsed['query'])) parse_str($parsed['query'], $qs);
+				$trackingId = $qs['id'] ?? '';
+				if ($path === '/Q/relay/open' && $trackingId) {
+					return Q_Relay_EmailTracker::handleOpen($trackingId, $parsed);
+				} elseif ($path === '/Q/relay/click' && $trackingId && !empty($qs['url'])) {
+					return Q_Relay_EmailTracker::handleClick($trackingId, $qs['url'], $parsed);
+				}
+			}
+			return array('status' => 404, 'body' => 'Not found');
+		}
 		// ── Mesh sync endpoints (unauthenticated — called by other servers) ──
 		if (strpos($path, '/Q/sync/') === 0) {
 			require_once __DIR__ . '/WebServer/Mesh.php';
@@ -2124,6 +2141,9 @@ class Q_WebServer
 			// Dashboard (live stats)
 			$handled = Q_WebServer_Dashboard::handle($client, $parsed);
 			if ($handled) return false;
+			// Catch-all: redirect unknown /Q/ routes to the panel
+			self::sendRedirect($client, '/Q/panel');
+			return false;
 		}
 
 		// 2. WebSocket upgrade on any path

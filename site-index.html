@@ -55,7 +55,7 @@ nav .logo img{height:28px}
 .hero pre{display:inline-block;margin:24px 0 0;padding:12px 26px;font-size:.9rem}
 .btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:24px}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:12px 24px;border-radius:8px;font-family:var(--head);font-size:.98rem;font-weight:700;text-decoration:none;transition:background .15s,border-color .15s,color .15s}
-.btn-red{background:var(--red);color:#fff}.btn-red:hover{background:#c0392b}
+.btn-red{background:var(--red);color:#fff}.btn-green{background:var(--green);color:#fff}.btn-green:hover{background:#1e8449}.btn-red:hover{background:#c0392b}
 .btn-out{background:#fff;color:var(--ink);border:2px solid var(--border)}.btn-out:hover{border-color:var(--blue);color:var(--blue)}
 
 /* Sections: full-bleed background, 920px content */
@@ -105,8 +105,8 @@ details[open] summary::after{content:"\2212"}
 .ico{font-style:normal}
 .detail-body{padding:0 20px 18px}
 .detail-body p{margin:0 0 12px;font-size:.95rem}
-.hero details{max-width:640px;margin:18px auto 0;text-align:left;background:transparent;border:0}
-.hero summary{justify-content:center;font-size:.9rem;color:var(--muted);padding:6px}
+.hero details{max-width:640px;margin:14px auto 0;text-align:left;background:transparent;border:0}
+.hero .detail-body{text-align:center}.hero summary{justify-content:center;text-align:center;font-size:.9rem;color:var(--muted);padding:6px}
 .hero summary::after{content:none}
 .table-wrap{overflow-x:auto;margin:0 0 14px}
 .vs-table{width:100%;border-collapse:collapse;font-size:.9rem;min-width:420px}
@@ -171,10 +171,21 @@ footer a:hover{color:#fff}
 <h1>Serve <span class="accent">100&times;</span> more users<br>on one machine</h1>
 <p class="sub">Handle all your HTTP requests and WebSocket rooms securely by default, through OS-enforced process isolation. Based on PHP&rsquo;s shared-nothing architecture, Qbix Server is able to run thousands of existing PHP websites<sup>&#9733;</sup> without modification. It now runs on Linux, Mac, Windows, iOS and Android, and is able to generate standalone binaries that you can sign and distribute. And now, v2 makes it easy to make apps decentralized and continue working offline via WiFi and Bluetooth, too. &#x1F92F;</p>
 <p class="fn"><sup>&#9733;</sup> including WordPress, ownCloud, Magento, Drupal, Joomla, and frameworks including Qbix, Laravel and Symfony.</p>
-<pre>php qbixserver.php --root=public --preset=laravel</pre>
+<pre>git clone https://github.com/Qbix/webserver
+cd webserver
+php qbixserver.php</pre>
+<details>
+<summary>Or grab a self-contained binary (Linux, macOS, Windows)</summary>
+<div class="detail-body">
+<pre id="hero-bin">curl -LO https://github.com/Qbix/webserver/releases/latest/download/qbixserver-macos-arm64
+chmod +x qbixserver-macos-arm64
+./qbixserver-macos-arm64</pre>
+</div>
+</details>
+<script>(function(){var u=navigator.userAgent||"",b,p;if(/Mac/i.test(u)){b="qbixserver-macos-arm64";p="macOS";}else if(/Linux/i.test(u)&&/aarch64|arm64/i.test(u)){b="qbixserver-linux-aarch64";p="Linux ARM64";}else if(/Linux/i.test(u)){b="qbixserver-linux-x86_64";p="Linux";}else if(/Win/i.test(u)){b="qbixserver-windows-x64.exe";p="Windows";}var el=document.getElementById("hero-bin");if(p==="Windows"){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\n"+b;}else if(b){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\nchmod +x "+b+"\n./"+b;}})();</script>
 <div class="btns">
-<a href="https://github.com/Qbix/webserver" class="btn btn-red">View on GitHub</a>
-<a href="https://github.com/Qbix/webserver/releases" class="btn btn-out">Download v2.0</a>
+<a href="https://github.com/Qbix/webserver" class="btn btn-green">View on GitHub</a>
+<a href="docs/examples.html" class="btn btn-out">See examples</a>
 </div>
 </div>
 
@@ -318,15 +329,6 @@ Q_WebServer_Transport::onPeerOnline(function ($peer) {
 <pre>git clone https://github.com/Qbix/webserver
 cd webserver
 php qbixserver.php --root=examples/todo/web</pre>
-<details>
-<summary><em class="ico">&#x1F4E6;</em> Or grab a self-contained binary (Linux, macOS, Windows)</summary>
-<div class="detail-body">
-<pre id="hero-bin">curl -LO https://github.com/Qbix/webserver/releases/latest/download/qbixserver-linux-x86_64
-chmod +x qbixserver-linux-x86_64
-./qbixserver-linux-x86_64</pre>
-</div>
-</details>
-<script>(function(){var u=navigator.userAgent||"",b,p;if(/Mac/i.test(u)){b="qbixserver-macos-arm64";p="macOS";}else if(/Linux/i.test(u)&&/aarch64|arm64/i.test(u)){b="qbixserver-linux-aarch64";p="Linux ARM64";}else if(/Linux/i.test(u)){b="qbixserver-linux-x86_64";p="Linux";}else if(/Win/i.test(u)){b="qbixserver-windows-x64.exe";p="Windows";}var el=document.getElementById("hero-bin");if(!el)return;if(p==="Windows"){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\n"+b;}else if(b){el.textContent="curl -LO https://github.com/Qbix/webserver/releases/latest/download/"+b+"\nchmod +x "+b+"\n./"+b;}})();</script>
 <p class="center" style="margin-top:20px"><span class="btns" style="margin-top:0"><a href="https://github.com/Qbix/webserver" class="btn btn-red">View on GitHub &rarr;</a> <a href="https://github.com/Qbix/webserver/releases" class="btn btn-out">Download binary</a> <a href="docs/examples.html" class="btn btn-out">Examples</a></span></p>
 </section>
 

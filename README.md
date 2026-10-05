@@ -1,4 +1,4 @@
-# ⚡ Qbix Server v3.1
+# ⚡ Qbix Server v3.2
 
 https://qbixserver.com is an all-in-one server that handles everything for you. Drop files in folders. Get real-time applications that can handle millions of users. Produce and distribute [standalone binaries](#single-binary-distribution) that run on Linux, Mac, Windows, and now iOS and Android too. Qbix Server v2 lets you build secure decentralized apps that can even work offline, over WiFi and Bluetooth.
 
@@ -56,6 +56,7 @@ You can also package your entire app — code, assets, SQLite database — into 
 - [Collaborative Branches](#-collaborative-branches)
 - [Metrics & Analytics](#-metrics--analytics)
 - [With Qbix Platform](#-with-qbix-platform)
+- [Email & SMS Relay](#-email--sms-relay)
 - [Architecture](#️-architecture)
 - [HTTP/2 Support](#-http2-support)
 - [Why PHP](#why-php)
@@ -68,39 +69,42 @@ You can also package your entire app — code, assets, SQLite database — into 
 | | Topic | What it covers |
 |---|---|---|
 | 🏎️ | [Why Not php-fpm?](docs/why.md) | COW memory model, comparison with Swoole and FrankenPHP |
-| 🔒 | [Server Headers](docs/headers.md) | Cache-Control, X-Cache-Tree, X-Accel-Redirect, ETag |
+| 🔒 | [Server Headers](#-server-headers--what-your-php-can-send) | Cache-Control, X-Cache-Tree, X-Accel-Redirect, ETag ([full doc](docs/headers.md)) |
 | 🗂️ | [Static Files](docs/static-files.md) | ETag/304, compression, precompression cache |
 | 🖼️ | [Image Processing](docs/images.md) | Resize with `?w=`, AVIF/WebP negotiation, Save-Data, disk cache, limits |
 | 🌐 | [HTTP](docs/http.md) | Fork-per-request mode, request lifecycle |
 | 🔌 | [WebSocket & Rooms](docs/websocket.md) | Process per connection, rooms, Socket.IO, SSE, chat example |
 | 🛤️ | [Routing](docs/routing.md) | Clean URLs, .htaccess, DirectoryIndex |
-| 📂 | [PHP Framework](docs/framework.md) | The micro-framework: handlers, events, Q classes |
-| ⚙️ | [Configuration](docs/configuration.md) | JSON config, CLI options, presets |
-| 📦 | [Running & Building](docs/running.md) | Source, phar, binary. Building static binaries. Requirements |
-| 📀 | [Binaries & Signing](docs/binaries.md) | Pack apps, manage like zip, ECDSA M-of-N signing, Rekor, platform signing |
-| 🏗️ | [Architecture](docs/architecture.md) | Persistent workers, COW, execution model, mental model, benchmarks |
+| 📂 | [PHP Framework](#-for-php-developers--the-micro-framework) | The micro-framework: handlers, events, Q classes ([full doc](docs/framework.md)) |
+| ⚙️ | [Configuration](#️-configuration) | JSON config, CLI options, presets ([full doc](docs/configuration.md)) |
+| 📦 | [Running & Building](#-three-ways-to-run) | Source, phar, binary. Building static binaries ([full doc](docs/running.md)) |
+| 📀 | [Binaries & Signing](#single-binary-distribution) | Pack apps, manage like zip, ECDSA M-of-N signing ([full doc](docs/binaries.md)) |
+| 🏗️ | [Architecture](#️-architecture) | Persistent workers, COW, execution model, mental model ([full doc](docs/architecture.md)) |
 | 📊 | [Dashboard & Panel](docs/dashboard.md) | Live stats, control panel tabs |
 | 🚀 | [Deploy & Federation](docs/deploy.md) | Rsync deploy, cluster replication, inter-server trust |
 | 🔍 | [API Discovery](docs/api-discovery.md) | OpenAPI, MCP, qbix.json, HTTP/2 |
 | 🧩 | [Compatibility](docs/compatibility.md) | Running Laravel, Symfony, WordPress, Drupal unmodified: what gets rewritten and why |
-| 🏢 | [Frameworks](docs/FRAMEWORKS.md) | All 13 supported frameworks, presets, boot adapters |
+| 🏢 | [Frameworks](#use-with-your-existing-codebase) | All 13 supported frameworks, presets, boot adapters ([full doc](docs/FRAMEWORKS.md)) |
 | 🧬 | [--app Mode & SAPI Internals](docs/app-mode.md) | SAPI emulation, class ownership, test suites |
-| 🌐 | [Mesh Protocol](docs/Mesh.md) | Identity, handshake, routing, encryption |
+| 🌐 | [Mesh Networking](#mesh-networking) | Identity, handshake, routing, encryption ([full doc](docs/Mesh.md)) |
 | 🔄 | [Data Sync](docs/sync.md) | Bloom filters, prolly trees, conflict resolution, current limits |
-| 📱 | [iOS & Android](docs/mobile.md) | Running on phones, transports, permissions |
-| 📈 | [Benchmarks](docs/BENCHMARKS.md) | Full methodology and numbers |
-| 📊 | [Metrics & Analytics](docs/METRICS.md) | Client-side telemetry, server-side analytics portal, Sankey flow, session replay |
+| 📱 | [Mobile](#mobile) | Running on phones, transports, permissions ([full doc](docs/mobile.md)) |
+| 📈 | [Performance](#-performance) | Full methodology and numbers ([full doc](docs/BENCHMARKS.md)) |
+| 📊 | [Metrics & Analytics](#-metrics--analytics) | Client-side telemetry, server-side analytics portal, Sankey flow ([full doc](docs/METRICS.md)) |
 | 🔄 | [State Reset](docs/reset.md) | What gets restored between requests |
 | 🔀 | [Migrate from nginx](docs/migrate-nginx.md) | Server blocks, try_files, proxy_pass, gzip |
 | 🔀 | [Migrate from Apache](docs/migrate-apache.md) | .htaccess unchanged, VirtualHost mapping |
 | 🔀 | [Migrate from Caddy](docs/migrate-caddy.md) | Automatic HTTPS, on-demand TLS → autohost |
 | ✅ | [Test Results](docs/TestResults.md) | 197 end-to-end tests |
-| 🌿 | [Branches](docs/branches-plan.md) | Collaborative branching, permissions, database cloning |
-| 🌐 | [Autohost](docs/AUTOHOST.md) | Automatic domain provisioning, TLS, DNS verification, claim verification |
+| 🌿 | [Collaborative Branches](#-collaborative-branches) | Collaborative branching, permissions, database cloning ([full doc](docs/branches-plan.md)) |
+| 🌐 | [Autohost](#-autohost--automatic-domain-provisioning) | Automatic domain provisioning, TLS, DNS verification ([full doc](docs/AUTOHOST.md)) |
 | 🤖 | [AI Collaboration](docs/COLLABORATION.md) | MCP workflow, patch-based editing, VCS integration, multi-server sync |
-| 📧 | [Email Plan](docs/EMAIL-PLAN.md) | Planned: inbound SMTP handlers, local relay, conversation threading |
+| 📧 | [Email & SMS Relay](#-email--sms-relay) | Inbound SMTP, outbound delivery, digest batching, Twilio SMS ([full doc](docs/RELAY.md)) |
+| 📧 | [Relay Architecture](docs/RELAY-PLAN.md) | Design document: process model, config fallback, digest algorithm, dashboard panels |
+| 🔌 | [Qbix Platform](#-with-qbix-platform) | Integration with the full Qbix Platform, Streams, plugin system |
+| 🌐 | [HTTP/2](#-http2-support) | Binary framing, multiplexing, HPACK, server push |
 | 🗺️ | [Roadmap](docs/roadmap.md) | What's next |
-| 📄 | [License](docs/license.md) | MIT |
+| 📄 | [License](#-license) | MIT ([full doc](docs/license.md)) |
 
 ---
 
@@ -321,33 +325,35 @@ php qbixserver.php --port=8080  # done
 
 | Category | What you get |
 |---|---|
-| **Static files** | ETag, 304 Not Modified, Last-Modified, MIME type detection, in-memory response cache |
-| **Keep-alive** | HTTP/1.0 and 1.1, TCP_NODELAY, configurable limits |
-| **HTTP/2** | Via amphp — multiplexed streams, header compression, TLS (optional) |
-| **PHP execution** | `.php` files in document root run in-process or via pre-fork worker pool |
-| **Compression** | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
-| **WebSocket** | RFC 6455 upgrade on any path |
-| **Dashboard** | Live stats at `/Q/dashboard` — request rates, memory, status codes |
-| **Health check** | JSON at `/Q/health` — for load balancers and monitoring |
-| **Control panel** | Password-protected at `/Q/panel` — manage apps and scripts |
-| **Rate limiting** | Per-IP with configurable windows and burst limits |
-| **Security** | Path traversal blocked, dotfiles blocked, 431 for oversized headers, 400 for malformed requests |
-| **Graceful shutdown** | SIGTERM/SIGINT drain in-flight requests before closing |
-| **TLS** | Optional HTTPS with auto-certbot or manual certs |
-| **Logging** | Colored terminal output + file-based access logs |
-| **Access control** | X-Accel-Redirect support — PHP enforces access, server serves the file |
-| **Component cache** | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
-| **Image processing** | Resize with `?w=`, automatic AVIF/WebP negotiation, disk cache |
-| **Framework presets** | Built-in presets for [13 frameworks](docs/FRAMEWORKS.md) — Laravel, Symfony, WordPress, Drupal, and more |
-| **Autohost** | Automatic domain provisioning — unknown `Host:` triggers DNS verification, ACME TLS, and config in one request. Multi-tenant SaaS, white-label, customer-owned domains |
-| **Collaborative branches** | Copy-on-write branches with per-user permissions, database cloning, subdomain routing, and merge review |
-| **Branch auto-TLS** | Automatic Let's Encrypt certificate provisioning per branch subdomain via HTTP-01 — no DNS API needed |
-| **Default lockdown** | Branches locked down by default — file-tier permissions, deny paths, optional OS-level UID isolation |
-| **MCP integration** | Model Context Protocol endpoint for AI-assisted editing with branch push, patch, export, and merge requests |
-| **Client metrics** | Opt-in [script injection](docs/METRICS.md) for client-side telemetry — scroll depth, media tracking, SPA navigation, click tracking — stored as daily TSV, viewable in panel |
-| **Analytics portal** | Server-side [per-request analytics](docs/METRICS.md#analytics-portal) with Sankey flow visualization, session replay, UA parsing, and filterable drill-down — no client-side opt-in needed |
-| **Mesh networking** | Encrypted P2P over BLE + Wi-Fi with multi-hop routing |
-| **Data sync** | Bloom filter + prolly tree sync between peers |
+| [**Static files**](docs/static-files.md) | ETag, 304 Not Modified, Last-Modified, MIME type detection, in-memory response cache |
+| [**Keep-alive**](docs/http.md) | HTTP/1.0 and 1.1, TCP_NODELAY, configurable limits |
+| [**HTTP/2**](#-http2-support) | Via amphp — multiplexed streams, header compression, TLS (optional) |
+| [**PHP execution**](#-for-php-developers--the-micro-framework) | `.php` files in document root run in-process or via pre-fork worker pool |
+| [**Compression**](docs/static-files.md) | On-the-fly gzip/brotli + pre-compressed `.gz`/`.br` siblings |
+| [**WebSocket**](docs/websocket.md) | RFC 6455 upgrade on any path |
+| [**Dashboard**](docs/dashboard.md) | Tabbed dashboard at `/Q/dashboard` — HTTP, WebSocket, Email, Mobile tabs with real-time stats, Sankey flow diagrams, and live request log |
+| [**Health check**](docs/dashboard.md) | JSON at `/Q/health` — for load balancers and monitoring |
+| [**Control panel**](docs/dashboard.md) | Password-protected at `/Q/panel` — manage apps and scripts |
+| [**Rate limiting**](#️-configuration) | Per-IP with configurable windows and burst limits |
+| [**Security**](docs/headers.md) | Path traversal blocked, dotfiles blocked, 431 for oversized headers, 400 for malformed requests |
+| [**Graceful shutdown**](docs/running.md) | SIGTERM/SIGINT drain in-flight requests before closing |
+| [**TLS**](docs/running.md) | Optional HTTPS with auto-certbot or manual certs |
+| [**Logging**](docs/running.md) | Colored terminal output + file-based access logs |
+| [**Access control**](#-server-headers--what-your-php-can-send) | X-Accel-Redirect support — PHP enforces access, server serves the file |
+| [**Component cache**](#-server-headers--what-your-php-can-send) | X-Cache-Tree headers — invalidate parts of a page, not the whole thing |
+| [**Image processing**](docs/images.md) | Resize with `?w=`, automatic AVIF/WebP negotiation, disk cache |
+| [**Framework presets**](docs/FRAMEWORKS.md) | Built-in presets for [13 frameworks](docs/FRAMEWORKS.md) — Laravel, Symfony, WordPress, Drupal, and more |
+| [**Autohost**](#-autohost--automatic-domain-provisioning) | Automatic domain provisioning — unknown `Host:` triggers DNS verification, ACME TLS, and config in one request. Multi-tenant SaaS, white-label, customer-owned domains |
+| [**Collaborative branches**](#-collaborative-branches) | Copy-on-write branches with per-user permissions, database cloning, subdomain routing, and merge review |
+| [**Branch auto-TLS**](docs/COLLABORATION.md) | Automatic Let's Encrypt certificate provisioning per branch subdomain via HTTP-01 — no DNS API needed |
+| [**Default lockdown**](docs/COLLABORATION.md) | Branches locked down by default — file-tier permissions, deny paths, optional OS-level UID isolation |
+| [**MCP integration**](docs/api-discovery.md) | Model Context Protocol endpoint for AI-assisted editing with branch push, patch, export, and merge requests |
+| [**Client metrics**](docs/METRICS.md) | Opt-in [script injection](docs/METRICS.md) for client-side telemetry — scroll depth, media tracking, SPA navigation, click tracking — stored as daily TSV, viewable in panel |
+| [**Analytics portal**](docs/METRICS.md#analytics-portal) | Server-side [per-request analytics](docs/METRICS.md#analytics-portal) with Sankey flow visualization, session replay, UA parsing, and filterable drill-down — no client-side opt-in needed |
+| [**Email relay**](#-email--sms-relay) | Built-in SMTP relay — inbound receiving, outbound delivery (SES, Mailgun), MIME parsing, conversation threading, digest batching, rate limiting with circuit breaker, open/click tracking with Sankey funnel visualization |
+| [**SMS relay**](docs/RELAY.md) | Twilio integration — send/receive SMS, webhook validation, template support |
+| [**Mesh networking**](#mesh-networking) | Encrypted P2P over BLE + Wi-Fi with multi-hop routing |
+| [**Data sync**](docs/sync.md) | Bloom filter + prolly tree sync between peers |
 
 ---
 
@@ -990,6 +996,85 @@ See [--app Mode & SAPI Internals](docs/app-mode.md) for details.
 
 ---
 
+## 📧 Email & SMS Relay
+
+Qbix Server v3.2 adds email and SMS as first-class transports — the same way it handles HTTP and WebSocket. Add provider config, run the same `php qbixserver.php`, and the server spawns a relay process that handles everything: inbound receiving, outbound delivery, MIME parsing, conversation threading, digest batching, rate limiting, and SMS.
+
+No relay config = no relay process = no overhead. When config is present, the relay starts automatically as a managed sibling process.
+
+```json
+{
+  "Q": {
+    "relay": {
+      "smtp": {
+        "host": "smtp-relay.gmail.com",
+        "port": 587
+      },
+      "mobile": {
+        "provider": "twilio",
+        "accountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "authToken": "your_auth_token",
+        "fromNumber": "+15551234567"
+      }
+    }
+  }
+}
+```
+
+### Email
+
+The relay includes a full **inbound SMTP server** (default port 2525) and an **outbound SMTP client** that works with any provider. Point your MTA or SES receipt rules at `127.0.0.1:2525` and the relay parses MIME, extracts text/HTML/attachments, threads conversations by Message-ID, stores everything in SQLite, and fires `Q::event()` hooks — so handling incoming email is the same pattern as handling an HTTP request.
+
+Outbound delivery works with **Gmail/Google Workspace** (SMTP relay for up to 10,000 recipients/day, or Gmail SMTP with app passwords), **Amazon SES**, **SendGrid**, **Mailgun**, or any SMTP-compatible service. The relay handles TLS negotiation, authentication, and delivery logging.
+
+```php
+<?php
+// Send an email
+Q_Relay_SmtpClient::deliver('app@yoursite.com', 'user@example.com', $rawMime);
+
+// Handle incoming email
+Q::event('Q/relay/email/incoming', [
+    'from'    => 'sender@example.com',
+    'to'      => 'recipient@example.com',
+    'subject' => 'Re: Hello',
+    'text'    => 'Plain text body',
+    'html'    => '<p>HTML body</p>',
+    'parsed'  => [/* full MIME parse result */],
+]);
+```
+
+### SMS
+
+Twilio integration gives your app a phone number for sending and receiving SMS. Inbound webhooks are validated with HMAC-SHA1 — invalid signatures get a 403. The same `Q::event()` pattern:
+
+```php
+<?php
+Q_Relay_Mobile::send('+15559876543', 'Your code is 123456');
+
+Q::event('Q/relay/sms/incoming', [
+    'from' => '+15551234567',
+    'body' => 'Message text',
+]);
+```
+
+### Digest batching and rate limiting
+
+When a sender sends multiple messages to the same recipient in quick succession (notification storms), the relay batches them into a single digest email. The first message delivers immediately; subsequent messages queue with exponential backoff and flush as one digest. Transactional emails (password resets, verification codes) bypass this with an `X-Qbix-No-Digest: true` header.
+
+A **token bucket** rate limiter controls outbound throughput (default 60/minute), and an **hourly circuit breaker** (default 1,000/hour) prevents runaway sending. Rate-limiter state persists to SQLite — crashes and restarts don't reset the counters.
+
+### Storage
+
+All messages, threads, delivery logs, and rate-limiter state live in a local SQLite database at `local/relay.db` (8 tables, WAL mode, created automatically). The relay tracks conversation threading, per-user inbox with read/unread state, and a full delivery audit trail.
+
+### Process model
+
+The relay runs as a separate process from the web server — a bug in SMTP parsing can't crash HTTP serving, and provider credentials (SMTP passwords, Twilio tokens) never enter the web server's memory. Each inbound message forks a ~120KB COW child process, the same model as HTTP requests. The relay can also run standalone (`php bin/qbixrelay.php`) with its own systemd service for production deployments that want separate process management.
+
+See [RELAY.md](docs/RELAY.md) for provider-specific setup guides (Google Workspace with sender avatars, SES, SendGrid, Mailgun), the incoming-email vs. WebSocket comparison, Twilio configuration, database table schemas, Qbix Platform integration, and the full configuration reference. See [RELAY-PLAN.md](docs/RELAY-PLAN.md) for the architecture design document.
+
+---
+
 ## 🏗️ Architecture
 
 ```
@@ -1007,6 +1092,20 @@ See [--app Mode & SAPI Internals](docs/app-mode.md) for details.
         │ In-memory│   │ In-proc  │   │ RFC 6455  │
         │ response │   │ or fork  │   │ frames    │
         │ cache    │   │ pool     │   │           │
+        └──────────┘   └──────────┘   └──────────┘
+
+                    ┌──────────────────┐
+ SMTP / SMS  ────→ │  Relay Process   │ auto-spawned sibling
+                    │ (qbixrelay.php) │ stream_select loop
+                    └────────┬─────────┘
+                             │
+             ┌───────────────┼───────────────┐
+             │               │               │
+        ┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐
+        │ Inbound  │   │ Outbound │   │  Mobile  │
+        │ SMTP     │   │ SMTP     │   │  (SMS)   │
+        │          │   │          │   │          │
+        │ :2525    │   │ SES etc  │   │ Twilio   │
         └──────────┘   └──────────┘   └──────────┘
 ```
 
