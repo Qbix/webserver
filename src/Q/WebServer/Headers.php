@@ -123,11 +123,25 @@ class Q_WebServer_Headers
 			$headers = self::stripInternal($headers);
 		}
 
-		// ── Compression ──────────────────────────────────
+		// ── Content-Type ─────────────────────────────────
+		// A script that never calls header() leaves us with no Content-Type:
+		// headers_list() is a no-op under CLI and Q_WebServer_State only holds
+		// what the script set itself. mod_php/fpm fall back to PHP's
+		// default_mimetype here, and without it browsers download the response
+		// instead of rendering it. 204 and 304 carry no body, so they keep none.
 		$ct = '';
 		foreach ($headers as $k => $v) {
 			if (strtolower($k) === 'content-type') $ct = $v;
 		}
+		if ($ct === '' && $status != 204 && $status != 304) {
+			$mime = (string) ini_get('default_mimetype');
+			if ($mime === '') $mime = 'text/html';
+			$charset = (string) ini_get('default_charset');
+			$ct = $charset === '' ? $mime : $mime . '; charset=' . $charset;
+			$headers['Content-Type'] = $ct;
+		}
+
+		// ── Compression ──────────────────────────────────
 		$body = self::maybeCompress($body, $ct, $requestHeaders, $headers);
 
 		// ── Send response ────────────────────────────────
