@@ -34,6 +34,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: Autoloaders across requests
+        run: bash tests/autoloader-persistence.sh
+
       - name: SCRIPT_NAME below the root
         run: bash tests/script-name.sh
 
