@@ -80,6 +80,11 @@ try {
 		&& $stat[7] === $expectedSize
 		&& $stat['size'] === $expectedSize,
 		'transformed stream returns complete stat metadata with transformed size');
+	$urlStat = $stream->url_stat($sessionFile, STREAM_URL_STAT_QUIET);
+	ok(is_array($urlStat)
+		&& $urlStat[7] === $expectedSize
+		&& $urlStat['size'] === $expectedSize,
+		'transformed PHP path reports transformed size through URL stat');
 
 	ob_start();
 	include $sessionFile;

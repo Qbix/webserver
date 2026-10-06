@@ -2286,6 +2286,21 @@ class Q_WebServer_CompatFileWrapper
 		} else {
 			$stat = $fn($realPath);
 		}
+		if ($stat
+			&& Q_WebServer_Compat::isEnabled()
+			&& preg_match('/\.php$/i', $realPath)
+		) {
+			$transformed = Q_WebServer_Compat::getCachedTransform($realPath);
+			if ($transformed === null) {
+				$source = @file_get_contents($realPath);
+				if ($source !== false) {
+					$transformed = Q_WebServer_Compat::transformSource($source, $realPath);
+				}
+			}
+			if (is_string($transformed)) {
+				$stat[7] = $stat['size'] = strlen($transformed);
+			}
+		}
 		self::rewrap();
 		$result = $stat ?: false;
 		self::$statCache[$cacheKey] = $result;
