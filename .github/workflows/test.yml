@@ -34,6 +34,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: SCRIPT_NAME below the root
+        run: bash tests/script-name.sh
+
       - name: Lazily initialised statics
         run: bash tests/lazy-statics.sh
 
