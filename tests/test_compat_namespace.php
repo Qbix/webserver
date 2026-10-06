@@ -64,6 +64,7 @@ $sessionFile = $sessionDir . '/session.php';
 $sessionSource = '<?php session_start(["save_path" => '
 	. var_export($sessionDir, true)
 	. ']); $_SESSION["n"] = (isset($_SESSION["n"]) ? $_SESSION["n"] : 0) + 1;'
+	. ' header("Content-Type: text/plain");'
 	. ' echo $_SESSION["n"], ":", session_id();';
 file_put_contents($sessionFile, $sessionSource);
 Q_WebServer_Compat::prewarm($sessionDir);
@@ -71,10 +72,16 @@ Q_WebServer_Compat::init();
 try {
 	$stream = new Q_WebServer_CompatFileWrapper;
 	$openedPath = '';
+	$urlStat = $stream->url_stat($sessionFile, STREAM_URL_STAT_QUIET);
+	$expectedSize = strlen(Q_WebServer_Compat::transformSource($sessionSource));
+	ok(is_array($urlStat)
+		&& $urlStat[7] === $expectedSize
+		&& $urlStat['size'] === $expectedSize,
+		'prewarmed transformed URL stat reports transformed size');
+
 	$stream->stream_open($sessionFile, 'r', STREAM_REPORT_ERRORS, $openedPath);
 	$stat = $stream->stream_stat();
 	$stream->stream_close();
-	$expectedSize = strlen(Q_WebServer_Compat::transformSource($sessionSource));
 	ok(is_array($stat)
 		&& count($stat) >= 26
 		&& $stat[7] === $expectedSize

@@ -2277,7 +2277,11 @@ class Q_WebServer_CompatFileWrapper
 		$cacheKey = $realPath . '|' . ($flags & STREAM_URL_STAT_LINK ? 'L' : 'S');
 		if (isset(self::$statCache[$cacheKey])) {
 			self::$__statCacheHits = (self::$__statCacheHits ?? 0) + 1;
-			return self::$statCache[$cacheKey];
+			$stat = self::adjustStatForCachedTransform(
+				$realPath, self::$statCache[$cacheKey]
+			);
+			self::$statCache[$cacheKey] = $stat;
+			return $stat;
 		}
 		self::unwrap();
 		$fn = ($flags & STREAM_URL_STAT_LINK) ? 'lstat' : 'stat';
@@ -2287,9 +2291,24 @@ class Q_WebServer_CompatFileWrapper
 			$stat = $fn($realPath);
 		}
 		self::rewrap();
-		$result = $stat ?: false;
+		$result = self::adjustStatForCachedTransform($realPath, $stat ?: false);
 		self::$statCache[$cacheKey] = $result;
 		return $result;
+	}
+
+	private static function adjustStatForCachedTransform($path, $stat)
+	{
+		if (!is_array($stat)
+			|| !preg_match('/\.php$/i', $path)
+			|| !class_exists('Q_WebServer_Compat', false)
+			|| !Q_WebServer_Compat::isEnabled()) {
+			return $stat;
+		}
+		$source = Q_WebServer_Compat::getCachedTransform($path);
+		if (is_string($source)) {
+			$stat[7] = $stat['size'] = strlen($source);
+		}
+		return $stat;
 	}
 
 	// ── Directory operations ──
