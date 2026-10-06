@@ -116,6 +116,19 @@ class Q_Scheduler
 		// Mark as run BEFORE fork — if we crash, we skip rather than double-run
 		self::$lastRun[$name] = microtime(true);
 
+		// Built-in handlers (prefixed with _)
+		if ($handler === '_certRenewal') {
+			$autohostFile = dirname(__DIR__) . '/Q/WebServer/Autohost.php';
+			if (is_file($autohostFile)) {
+				require_once $autohostFile;
+				$result = Q_WebServer_Autohost::renewAll(30);
+				if (!empty($result['renewed'])) {
+					fwrite(STDERR, date('H:i:s') . " cert-renewal: renewed " . $result['renewed'] . " cert(s)\n");
+				}
+			}
+			return;
+		}
+
 		if (!function_exists('pcntl_fork')) {
 			// No fork — run in-process (blocks event loop briefly)
 			$result = null;
