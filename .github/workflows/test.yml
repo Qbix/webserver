@@ -31,6 +31,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: Cookies and sessions
+        run: bash tests/cookies-sessions.sh
+
       - name: phpinfo renderer
         run: php tests/phpinfo.php
 
