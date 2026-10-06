@@ -28,6 +28,9 @@ jobs:
       - name: Main suite
         run: bash tests/run.sh --quick
 
+      - name: Compatibility stream regression
+        run: php tests/test_compat_namespace.php
+
       - name: SAPI suite
         run: php tests/testSapi.php
 

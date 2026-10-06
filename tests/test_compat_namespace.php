@@ -58,5 +58,42 @@ try {
 }
 @unlink($tmp);
 
+$sessionDir = sys_get_temp_dir() . '/qcompat-' . bin2hex(random_bytes(8));
+mkdir($sessionDir);
+$sessionFile = $sessionDir . '/session.php';
+$sessionSource = '<?php session_start(["save_path" => '
+	. var_export($sessionDir, true)
+	. ']); $_SESSION["n"] = (isset($_SESSION["n"]) ? $_SESSION["n"] : 0) + 1;'
+	. ' echo $_SESSION["n"];';
+file_put_contents($sessionFile, $sessionSource);
+Q_WebServer_Compat::init();
+try {
+	$stream = new Q_WebServer_CompatFileWrapper;
+	$openedPath = '';
+	$stream->stream_open($sessionFile, 'r', STREAM_REPORT_ERRORS, $openedPath);
+	$stat = $stream->stream_stat();
+	$stream->stream_close();
+	$expectedSize = strlen(Q_WebServer_Compat::transformSource($sessionSource));
+	ok(is_array($stat)
+		&& count($stat) >= 26
+		&& $stat[7] === $expectedSize
+		&& $stat['size'] === $expectedSize,
+		'transformed stream returns complete stat metadata with transformed size');
+
+	ob_start();
+	include $sessionFile;
+	$sessionOutput = ob_get_clean();
+	ok($sessionOutput === '1', 'transformed session script with ternary expression executes');
+	Q_WebServer_Compat::finishRequest();
+} catch (\Throwable $e) {
+	ok(false, 'transformed session stream executes: ' . get_class($e) . ': ' . $e->getMessage());
+}
+Q_WebServer_Compat::shutdown();
+@unlink($sessionFile);
+foreach (glob($sessionDir . '/sess_*') ?: array() as $path) {
+	@unlink($path);
+}
+@rmdir($sessionDir);
+
 echo "\n  $pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

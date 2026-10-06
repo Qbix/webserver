@@ -2057,6 +2057,8 @@ class Q_WebServer_CompatFileWrapper
 	private $transformed = false;
 	/** @var string Underlying path for transformed stream metadata */
 	private $realPath = '';
+	/** @var array|false Metadata for the underlying file */
+	private $stat = false;
 	/** @var resource Directory handle */
 	private $dirHandle;
 
@@ -2108,6 +2110,9 @@ class Q_WebServer_CompatFileWrapper
 				$this->buffer = $cached;
 				$this->position = 0;
 				$this->transformed = true;
+				self::unwrap();
+				$this->stat = @stat($realPath);
+				self::rewrap();
 				$opened_path = $realPath;
 				return true;
 			}
@@ -2133,6 +2138,7 @@ class Q_WebServer_CompatFileWrapper
 					$this->buffer = $transformed;
 					$this->position = 0;
 					$this->transformed = true;
+					$this->stat = @stat($realPath);
 					self::rewrap();
 					$opened_path = $realPath;
 					return true;
@@ -2191,9 +2197,7 @@ class Q_WebServer_CompatFileWrapper
 	public function stream_stat()
 	{
 		if ($this->transformed) {
-			self::unwrap();
-			$stat = @stat($this->realPath);
-			self::rewrap();
+			$stat = $this->stat;
 			if ($stat === false) return false;
 			$stat[7] = $stat['size'] = strlen($this->buffer);
 			return $stat;
