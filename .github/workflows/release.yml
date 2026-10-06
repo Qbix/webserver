@@ -244,6 +244,16 @@ jobs:
             Write-Host "Including qbix_fork.dll in artifacts"
           }
 
+      - name: Build GUI variant (Windows, no console)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "qbixserver-${{ matrix.name }}.exe")) { exit 0 }
+          Copy-Item "qbixserver-${{ matrix.name }}.exe" "qbixserver-${{ matrix.name }}-gui.exe"
+          editbin /SUBSYSTEM:WINDOWS "qbixserver-${{ matrix.name }}-gui.exe"
+          Write-Host "Built GUI variant (no console window on launch)"
+
       # ── Compress ─────────────────────────────────────────
       - name: Compress with UPX (Linux only)
         if: runner.os == 'Linux'
@@ -300,7 +310,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "v1.3.0 – Boldly Go"
+          name: "v1.5.0 – Boldly Go"
           body_path: RELEASE_NOTES.md
           draft: false
           generate_release_notes: false
@@ -310,6 +320,7 @@ jobs:
             artifacts/qbixserver-linux-aarch64/qbixserver-linux-aarch64
             artifacts/qbixserver-macos-arm64/qbixserver-macos-arm64
             artifacts/qbixserver-windows-x64/qbixserver-windows-x64.exe
+            artifacts/qbixserver-windows-x64/qbixserver-windows-x64-gui.exe
             artifacts/qbixserver-windows-x64/qbix_fork.dll
             artifacts/qbixserver-linux-x86_64/php-linux-x86_64
             artifacts/qbixserver-linux-aarch64/php-linux-aarch64

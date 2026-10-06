@@ -313,6 +313,13 @@ class Q_WebServer
 
 				if ($result['success']) {
 					fwrite(STDERR, "  [ACME] ✓ Certificate ready for {$domainName}\n");
+					// Register for SNI-based cert selection
+					if (is_file($result['cert']) && is_file($result['key'])) {
+						self::registerDomainCert($domainName, $result['cert'], $result['key']);
+						foreach ($alts as $alt) {
+							self::registerDomainCert($alt, $result['cert'], $result['key']);
+						}
+					}
 					// If HTTPS wasn't started yet, start it now
 					if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
 						Q_WebServer_Certs::init($domainName);
@@ -369,6 +376,15 @@ class Q_WebServer
 		// If $workers > 0, create the pool.
 		if ($workers > 0 && Q_WebServer_Fork::available()) {
 			self::$pool = new Q_WebServer_Pool($workers);
+			// Framework boot master (preset adapters). Off with
+			// Q.webserver.boot.skip = true.
+			if (!Q_Config::get('Q', 'webserver', 'boot', 'skip', false)) {
+				$bootFile = __DIR__ . '/WebServer/Boot.php';
+				if (is_file($bootFile)) {
+					require_once $bootFile;
+					Q_WebServer_Boot::start(self::$rootDir, $workers);
+				}
+			}
 		}
 
 		self::$running = true;
@@ -438,13 +454,51 @@ class Q_WebServer
 
 		stream_set_blocking($client, false);
 
-		// Set SSL context options on this specific socket
+		// Apply the full hardened TLS context — ciphers, dhparam, session
+		// tickets, honor_cipher_order — not just cert+key.
 		$certPath = Q_WebServer_Certs::$certPath;
 		$keyPath = Q_WebServer_Certs::$keyPath;
+
+		// Per-domain cert selection for autohost (SNI).
+		// The Host header isn't available yet (it's inside the TLS tunnel),
+		// but if we have domain-specific certs from ACME provisioning,
+		// PHP's OpenSSL will select via SNI_server_certs if provided.
+		$sniCerts = self::$sniCertMap ?? array();
+		if (!empty($sniCerts)) {
+			stream_context_set_option($client, 'ssl', 'SNI_server_certs', $sniCerts);
+		}
+
 		stream_context_set_option($client, 'ssl', 'local_cert', $certPath);
 		stream_context_set_option($client, 'ssl', 'local_pk', $keyPath);
 		stream_context_set_option($client, 'ssl', 'allow_self_signed', true);
 		stream_context_set_option($client, 'ssl', 'verify_peer', false);
+		stream_context_set_option($client, 'ssl', 'disable_compression', true);
+		stream_context_set_option($client, 'ssl', 'honor_cipher_order', true);
+
+		// Apply cipher suite and dhparam from the hardened context
+		stream_context_set_option($client, 'ssl', 'ciphers', implode(':', array(
+			'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256',
+			'ECDHE-ECDSA-AES256-GCM-SHA384', 'ECDHE-RSA-AES256-GCM-SHA384',
+			'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305',
+			'DHE-RSA-AES128-GCM-SHA256', 'DHE-RSA-AES256-GCM-SHA384',
+			'!aNULL', '!eNULL', '!EXPORT', '!DES', '!RC4', '!3DES', '!MD5', '!PSK'
+		)));
+		if (defined('OPENSSL_KEYTYPE_EC')) {
+			stream_context_set_option($client, 'ssl', 'ecdh_curve', 'prime256v1');
+		}
+
+		// DH params
+		$dhparamPaths = array(
+			dirname($certPath) . '/dhparam.pem',
+			'local/certs/dhparam.pem',
+			'/etc/ssl/certs/dhparam.pem'
+		);
+		foreach ($dhparamPaths as $dhpath) {
+			if (is_file($dhpath)) {
+				stream_context_set_option($client, 'ssl', 'dh_param', $dhpath);
+				break;
+			}
+		}
 
 		$key = (int) $client;
 		self::$clients[$key] = $client;
@@ -609,6 +663,13 @@ class Q_WebServer
 			// Reap zombie children from fork-per-request PHP execution
 			Q_Evented::onSignal(SIGCHLD, function () {
 				while (($pid = Q_WebServer_Fork::waitpid(-1, $st, 1)) > 0) {
+					// This reaps every child, the framework boot master included
+					if (class_exists('Q_WebServer_Boot', false)
+						&& $pid === Q_WebServer_Boot::$masterPid
+					) {
+						Q_WebServer_Boot::masterExited($st);
+						continue;
+					}
 					$info = Q_WebServer::$workerPids[$pid] ?? null;
 					unset(Q_WebServer::$workerPids[$pid]);
 					if (!$info) continue;
@@ -622,6 +683,12 @@ class Q_WebServer
 					if (!pcntl_wifexited($st) || pcntl_wexitstatus($st) !== 0) {
 						// Worker crashed or was killed — record as 502
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 502, $ms, 0, true);
+							if (class_exists('Q_WebServer_Metrics', false)) {
+								$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+								$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
+								$ck = is_array($info) ? ($info['cookies'] ?? []) : [];
+								Q_WebServer_Metrics::recordRequest(502, $ms, $method, $uri, $ip, $ua, 0, $ck);
+							}
 					} else {
 						// Normal exit — child already sent the response and recorded nothing
 						// The child handles recording on its own via exit(0)
@@ -648,6 +715,12 @@ class Q_WebServer
 						@posix_kill($pid, SIGKILL);
 						unset(Q_WebServer::$workerPids[$pid]);
 						Q_WebServer_Dashboard::recordRequest($method, $uri, 504, $ms, 0, true);
+						if (class_exists('Q_WebServer_Metrics', false)) {
+							$ip = is_array($info) ? ($info['clientIp'] ?? '') : '';
+							$ua = is_array($info) ? ($info['userAgent'] ?? '') : '';
+							$ck = is_array($info) ? ($info['cookies'] ?? []) : [];
+							Q_WebServer_Metrics::recordRequest(504, $ms, $method, $uri, $ip, $ua, 0, $ck);
+						}
 					}
 				}
 			});
@@ -655,6 +728,14 @@ class Q_WebServer
 
 		// Scheduler — run tasks on intervals or at specific times
 		$schedule = Q_Config::get('Q', 'scheduler', array());
+		// Built-in: cert renewal check every 12 hours
+		if (!isset($schedule['_certRenewal'])) {
+			$schedule['_certRenewal'] = array(
+				'handler' => '_certRenewal',
+				'every' => 43200, // 12 hours
+			);
+			Q_Config::set('Q', 'scheduler', '_certRenewal', $schedule['_certRenewal']);
+		}
 		if (!empty($schedule)) {
 			Q_Scheduler::init($schedule);
 			Q_Evented::repeat(1, function () {
@@ -667,10 +748,52 @@ class Q_WebServer
 			Q_HotReload::init();
 			Q_Evented::repeat(2, function () {
 				Q_HotReload::check();
-				// Also invalidate stale compat transform cache
 				if (class_exists('Q_WebServer_Compat', false)) {
 					Q_WebServer_Compat::invalidateStale();
 				}
+			});
+		}
+
+		// Config file watcher — re-read config on change (no restart needed)
+		$configFiles = array_filter([
+			'local/app.json',
+			'local/panel.json',
+			'config/app.json',
+		], 'is_file');
+		if ($configFiles) {
+			$configMtimes = [];
+			foreach ($configFiles as $cf) {
+				$configMtimes[$cf] = filemtime($cf);
+			}
+			Q_Evented::repeat(3, function () use (&$configMtimes) {
+				foreach ($configMtimes as $cf => $mtime) {
+					clearstatcache(true, $cf);
+					$newMtime = @filemtime($cf);
+					if ($newMtime && $newMtime !== $mtime) {
+						$configMtimes[$cf] = $newMtime;
+						// Re-read the config
+						$data = @json_decode(file_get_contents($cf), true);
+						if ($data && is_array($data)) {
+							Q_Config::merge($data);
+							fwrite(STDERR, date('H:i:s') . " config reloaded: $cf\n");
+						}
+					}
+				}
+			});
+		}
+
+		// Metrics — buffered logging and time-series stats
+		$metricsFile = __DIR__ . '/WebServer/Metrics.php';
+		if (is_file($metricsFile)) {
+			require_once $metricsFile;
+			Q_WebServer_Metrics::init();
+			$flushInterval = Q_Config::get('Q', 'webserver', 'metrics', 'flushInterval', 10);
+			Q_Evented::repeat($flushInterval, function () {
+				Q_WebServer_Metrics::tick();
+			});
+			// Daily purge of old metrics
+			Q_Evented::repeat(86400, function () {
+				Q_WebServer_Metrics::purgeOld();
 			});
 		}
 
@@ -781,6 +904,22 @@ class Q_WebServer
 	{
 		$key = (int) $client;
 		if (!isset(self::$clients[$key])) return;
+
+		// If this connection is waiting for a worker response, just buffer
+		// any incoming data (HTTP pipelining) — don't try to parse yet.
+		if ((self::$clientState[$key] ?? 'reading') === 'waiting') {
+			$chunk = @fread($client, 65536);
+			if ($chunk === false || $chunk === '') {
+				// Client disconnected while we were processing their request.
+				// Mark as dead — the Pool will detect this when it tries to write.
+				self::$clientState[$key] = 'dead';
+				return;
+			}
+			self::$buffers[$key] .= $chunk;
+			return;
+		}
+
+		self::$clientState[$key] = 'reading';
 
 		// Check if we already have a complete request from pipelining.
 		//
@@ -909,12 +1048,19 @@ class Q_WebServer
 		self::$keepAliveCount[$key] = (self::$keepAliveCount[$key] ?? 0) + 1;
 		$parsed['_keepAlive'] = ($connHeader !== 'close')
 			&& self::$keepAliveCount[$key] < $maxKeepAlive;
+		// Propagate into headers array so processResponse can access it
+		$parsed['headers']['_keepAlive'] = $parsed['_keepAlive'];
 
 		try {
 			$savedRoot = self::$rootDir;
 			$memBefore = memory_get_usage();
+			$__t0 = hrtime(true);
 			$keepOpen = self::handleRequest($client, $parsed);
+			$__dt = (hrtime(true) - $__t0) / 1e6;
+			if ($__dt > 5) fwrite(STDERR, sprintf("  SLOW handleRequest: %.1fms %s %s\n", $__dt, $parsed['method'], $parsed['uri']));
 		} catch (\Throwable $e) {
+			// A forked child on its way to its role, not an error
+			if ($e instanceof Q_WebServer_Role) throw $e;
 			// Never let a request crash the event loop
 			$msg = htmlspecialchars($e->getMessage());
 			self::sendResponse($client, 500, "Internal Server Error: $msg");
@@ -955,6 +1101,17 @@ class Q_WebServer
 				$parsed['method'], $parsed['uri'], self::$lastStatus, $ms, self::$lastBytes,
 				false, '', $memUsed, $parsed['cookies'] ?? array()
 			);
+			// Metrics: buffered logging, clickstream, time-series
+			if (class_exists('Q_WebServer_Metrics', false)) {
+				Q_WebServer_Metrics::recordRequest(
+					self::$lastStatus, $ms,
+					$parsed['method'], $parsed['uri'],
+					$parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					$parsed['headers']['user-agent'] ?? '',
+					self::$lastBytes,
+					$parsed['cookies'] ?? []
+				);
+			}
 			self::$lastBytes = 0;
 			if (self::$onRequest) {
 				(self::$onRequest)($parsed['method'], $parsed['uri'], self::$lastStatus, $ms);
@@ -1056,12 +1213,55 @@ class Q_WebServer
 			}
 			$stats = Q_WebServer_Dashboard::getStats();
 			$result = array('status' => 'ok') + $stats;
-			// Add cluster info if active
 			if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
 				$result['cluster'] = Q_WebServer_Cluster::status();
 			}
+			if (class_exists('Q_WebServer_Boot', false) && Q_WebServer_Boot::$adapter) {
+				$result['boot'] = Q_WebServer_Boot::status();
+			}
 			return array('status'=>200, 'body'=>json_encode($result),
 				'headers'=>array('Content-Type'=>'application/json'));
+		}
+		if ($path === '/Q/metrics') {
+			if (class_exists('Q_WebServer_Metrics', false)) {
+				return array('status'=>200,
+					'body' => Q_WebServer_Metrics::prometheus(),
+					'headers'=>array('Content-Type'=>'text/plain; version=0.0.4'));
+			}
+			return array('status'=>404, 'body'=>'Metrics not enabled');
+		}
+		if ($path === '/Q/attestation') {
+			$attFile = __DIR__ . '/WebServer/Trust.php';
+			if (is_file($attFile)) {
+				require_once $attFile;
+				return array('status'=>200,
+					'body' => json_encode(Q_WebServer_Trust::attestation()),
+					'headers'=>array('Content-Type'=>'application/json'));
+			}
+			return array('status'=>404, 'body'=>'Attestation not available');
+		}
+		// ── Mesh sync endpoints (unauthenticated — called by other servers) ──
+		if (strpos($path, '/Q/sync/') === 0) {
+			require_once __DIR__ . '/WebServer/Mesh.php';
+			$syncAction = substr($path, 8); // strip '/Q/sync/'
+			$syncData = array();
+			if (!empty($parsed['body'])) {
+				$syncData = json_decode($parsed['body'], true) ?: array();
+			}
+			// $parsed['query'] is the raw query string; array_merge() on a
+			// string threw a TypeError, so every /Q/sync/* request returned 500.
+			$syncQuery = $parsed['query'] ?? array();
+			if (!is_array($syncQuery)) {
+				$qp = array();
+				parse_str((string) $syncQuery, $qp);
+				$syncQuery = $qp;
+			}
+			$syncData = array_merge($syncData, $syncQuery);
+			Q_WebServer_Mesh::init();
+			$result = Q_WebServer_Mesh::handleSyncApi($syncAction, $syncData);
+			return array('status' => 200,
+				'body' => json_encode($result),
+				'headers' => array('Content-Type' => 'application/json'));
 		}
 		if ($path === '/Q/cluster/join' && $method === 'POST') {
 			if (class_exists('Q_WebServer_Cluster', false)) {
@@ -1382,8 +1582,18 @@ class Q_WebServer
 	 */
 	private static function handleRequest($client, $parsed)
 	{
+		$__tp = array(); $__tp['start'] = hrtime(true);
 		$method = $parsed['method'];
 		$path = $parsed['path'];
+
+		// ?Q.clearCache — flush all in-memory caches and re-read config
+		$qs = $parsed['query'] ?? '';
+		if (is_string($qs) && strpos($qs, 'Q.clearCache') !== false) {
+			$cleared = self::clearCache();
+			return self::sendResponse($client, 200,
+				json_encode(array('cleared' => $cleared)),
+				'application/json');
+		}
 
 		// ACME HTTP-01 challenge handler (for automatic TLS)
 		if (strpos($path, '/.well-known/acme-challenge/') === 0) {
@@ -1400,13 +1610,43 @@ class Q_WebServer
 		$host = $parsed['headers']['host'] ?? '';
 		$host = strtolower(preg_replace('/:\d+$/', '', $host)); // strip port
 		$hostConfig = Q_Config::get('Q', 'webserver', 'hosts', $host, null);
+		if (!$hostConfig) {
+			$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+		}
 		if ($hostConfig && isset($hostConfig['root'])) {
 			$vroot = realpath($hostConfig['root']);
 			if ($vroot && is_dir($vroot)) {
 				self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $vroot), DS) . DS;
 			}
+		} elseif ($host && !$hostConfig) {
+			// Unknown host — try autohost
+			$autohostFile = __DIR__ . '/WebServer/Autohost.php';
+			if (is_file($autohostFile)) {
+				require_once $autohostFile;
+				if (Q_WebServer_Autohost::enabled() && !Q_WebServer_Autohost::isKnownHost($host)) {
+					$clientIp = $parsed['headers']['x-forwarded-for']
+						?? ($parsed['headers']['x-real-ip'] ?? '127.0.0.1');
+					$clientIp = explode(',', $clientIp)[0];
+					$result = Q_WebServer_Autohost::handleUnknownHost($host, trim($clientIp), $parsed);
+					if ($result && !empty($result['splash'])) {
+						return self::sendResponse($client, 503, $result['html'], array(
+							'Content-Type' => 'text/html; charset=utf-8',
+							'Retry-After' => '5',
+						));
+					}
+					// If provisioning succeeded, re-check the host config
+					$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+					if ($hostConfig && isset($hostConfig['root'])) {
+						$vroot = realpath($hostConfig['root']);
+						if ($vroot && is_dir($vroot)) {
+							self::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $vroot), DS) . DS;
+						}
+					}
+				}
+			}
 		}
 
+		$__tp['vhost'] = hrtime(true);
 		// 1. Dashboard + Panel + WebSocket + Health (/Q/*)
 		// 1. Serve built-in assets (JS clients, logo, bundled frontend)
 		$assetMap = array();
@@ -1453,6 +1693,7 @@ class Q_WebServer
 			}
 		}
 
+		$__tp['assets'] = hrtime(true);
 		// 2. Server discovery + federation endpoints
 		// RFC 8615 .well-known endpoints
 		if (strpos($path, '/.well-known/') === 0) {
@@ -1485,6 +1726,7 @@ class Q_WebServer
 			return false;
 		}
 
+		$__tp['wellknown'] = hrtime(true);
 		// 3. Dashboard + Panel + WebSocket + Health (/Q/*)
 		if (strpos($path, '/Q/') === 0) {
 			if ($path === '/Q/ws') {
@@ -1580,9 +1822,46 @@ class Q_WebServer
 				if (class_exists('Q_WebServer_Cluster', false) && Q_WebServer_Cluster::isActive()) {
 					$result['cluster'] = Q_WebServer_Cluster::status();
 				}
+				if (class_exists('Q_WebServer_Boot', false) && Q_WebServer_Boot::$adapter) {
+					$result['boot'] = Q_WebServer_Boot::status();
+				}
 				self::sendResponse($client, 200,
 					json_encode($result),
 					'application/json');
+				return false;
+			}
+			if ($path === '/Q/metrics') {
+				if (class_exists('Q_WebServer_Metrics', false)) {
+					self::sendResponse($client, 200,
+						Q_WebServer_Metrics::prometheus(),
+						'text/plain; version=0.0.4');
+				} else {
+					self::sendResponse($client, 404, 'Metrics not enabled');
+				}
+				return false;
+			}
+			if ($path === '/Q/attestation') {
+				$trustFile = __DIR__ . '/WebServer/Trust.php';
+				if (is_file($trustFile)) {
+					require_once $trustFile;
+					self::sendResponse($client, 200,
+						json_encode(Q_WebServer_Trust::attestation()),
+						'application/json');
+				} else {
+					self::sendResponse($client, 404, 'Not available');
+				}
+				return false;
+			}
+			if (strpos($path, '/Q/sync/') === 0) {
+				require_once __DIR__ . '/WebServer/Mesh.php';
+				$sa = substr($path, 8);
+				$sd = !empty($parsed['body']) ? (json_decode($parsed['body'], true) ?: array()) : array();
+				$sq = $parsed['query'] ?? array();
+				if (!is_array($sq)) { $qp = array(); parse_str((string) $sq, $qp); $sq = $qp; }
+				$sd = array_merge($sd, $sq);
+				Q_WebServer_Mesh::init();
+				$r = Q_WebServer_Mesh::handleSyncApi($sa, $sd);
+				self::sendResponse($client, 200, json_encode($r), 'application/json');
 				return false;
 			}
 			if ($path === '/Q/cluster/join' && $method === 'POST') {
@@ -1659,9 +1938,12 @@ class Q_WebServer
 			return false;
 		}
 
+		$__tp['preResolve'] = hrtime(true);
+		$parsed['_tp'] = $__tp; // pass timing to handlePhp
 		// 4. Resolve filesystem path
 		$fsPath = self::resolveStatic($path);
 
+		$__tp['resolved'] = hrtime(true);
 		// 4. Directory handling
 		if ($fsPath && is_dir($fsPath)) {
 			if (substr($path, -1) !== '/') {
@@ -1845,7 +2127,7 @@ class Q_WebServer
 		$_hostPort = explode(':', $parsed['headers']['host'] ?? 'localhost');
 		$_SERVER['SERVER_PORT'] = isset($_hostPort[1]) ? $_hostPort[1] : '80';
 		$_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
-		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+		$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . QBIX_SERVER_VERSION;
 		$_SERVER['DOCUMENT_ROOT'] = rtrim(self::$rootDir, DS);
 		$_SERVER['REMOTE_ADDR'] = $parsed['_remoteAddr'] ?? '127.0.0.1';
 		$_SERVER['REQUEST_TIME'] = time();
@@ -1934,6 +2216,9 @@ class Q_WebServer
 					'time' => microtime(true),
 					'method' => $parsed['method'],
 					'uri' => $parsed['uri'],
+					'clientIp' => $parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					'userAgent' => $parsed['headers']['user-agent'] ?? '',
+					'cookies' => $parsed['cookies'] ?? array(),
 				);
 				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = -1; // -1 = delegated to child, don't record in parent
@@ -2004,6 +2289,22 @@ class Q_WebServer
 	 */
 	private static function handlePhp($client, $parsed, $scriptPath)
 	{
+		// Timing profile from handleRequest
+		if (isset($parsed['_tp'])) {
+			$tp = $parsed['_tp'];
+			$s = $tp['start'];
+			$parts = array();
+			$prev = $s;
+			foreach (array('vhost','assets','wellknown','preResolve','resolved') as $k) {
+				if (isset($tp[$k])) {
+					$parts[] = sprintf("%s=%.3fms", $k, ($tp[$k] - $prev) / 1e6);
+					$prev = $tp[$k];
+				}
+			}
+			$parts[] = sprintf("toHandlePhp=%.3fms", (hrtime(true) - $prev) / 1e6);
+			$parts[] = sprintf("TOTAL=%.3fms", (hrtime(true) - $s) / 1e6);
+			fwrite(STDERR, "  PROFILE handleRequest: " . implode(' | ', $parts) . "\n");
+		}
 		// ── CGI carveout: check if this script should use php-cgi ──
 		// Scripts matching Q.webserver.cgi.patterns run via php-cgi subprocess
 		// where native header(), setcookie(), headers_list() all work.
@@ -2042,12 +2343,25 @@ class Q_WebServer
 
 		if (self::$pool) {
 			self::$lastStatus = 200;
-			self::$pool->dispatch($client, $parsed, $scriptPath);
+			$__tp2 = hrtime(true);
+			// Booted framework workers first; they decline requests they
+			// cannot serve from booted state, which then go to the pool.
+			if (!(class_exists('Q_WebServer_Boot', false)
+				&& Q_WebServer_Boot::tryDispatch($client, $parsed, $scriptPath))
+			) {
+				self::$pool->dispatch($client, $parsed, $scriptPath);
+			}
+			$__tp3 = hrtime(true);
+			fwrite(STDERR, sprintf("  TIMING dispatch: %.3fms (pre-dispatch handlePhp: %.3fms)\n",
+				($__tp3 - $__tp2) / 1e6,
+				($__tp2 - ($__tp['start'] ?? $__tp2)) / 1e6
+			));
 			$key = (int) $client;
 			if (isset(self::$clientWatchers[$key])) {
 				Q_Evented::cancel(self::$clientWatchers[$key]);
 			}
-			unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
+			unset(self::$clientWatchers[$key], self::$clients[$key],
+				self::$buffers[$key], self::$clientState[$key]);
 			return false;
 		}
 
@@ -2089,6 +2403,8 @@ class Q_WebServer
 						@fclose($client);
 						return;
 					}
+					// Forked child always closes — can't reuse connection across processes
+					$parsed['headers']['_keepAlive'] = false;
 					Q_WebServer_Headers::processResponse($client, $response, $parsed['headers']);
 					@fclose($client);
 				};
@@ -2146,7 +2462,14 @@ class Q_WebServer
 					Q_Evented::cancel(self::$clientWatchers[$key]);
 				}
 				unset(self::$clientWatchers[$key], self::$clients[$key], self::$buffers[$key]);
-				self::$workerPids[$pid] = microtime(true);
+				self::$workerPids[$pid] = array(
+					'time' => microtime(true),
+					'method' => $parsed['method'] ?? 'GET',
+					'uri' => $parsed['uri'] ?? '/',
+					'clientIp' => $parsed['clientIp'] ?? ($parsed['_remoteAddr'] ?? ''),
+					'userAgent' => $parsed['headers']['user-agent'] ?? '',
+					'cookies' => $parsed['cookies'] ?? array(),
+				);
 				// Non-blocking reap — don't wait for child
 				Q_WebServer_Fork::waitpid($pid, $st, 1);
 				self::$lastStatus = 200;
@@ -2201,7 +2524,7 @@ $_SERVER['SERVER_NAME'] = $req['serverName'] ?? 'localhost';
 $_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
 $_SERVER['SERVER_ADDR'] = '127.0.0.1';
 $_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
-$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/1.0';
+$_SERVER['SERVER_SOFTWARE'] = 'QbixServer/' . QBIX_SERVER_VERSION;
 $_SERVER['GATEWAY_INTERFACE'] = 'CGI/1.1';
 $_SERVER['REDIRECT_STATUS'] = 200;
 $_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
@@ -2253,7 +2576,9 @@ WORKER;
 		if (!$workerFile || !file_exists($workerFile)) {
 			$workerFile = tempnam(sys_get_temp_dir(), 'qbix_worker_');
 			file_put_contents($workerFile, $workerCode);
-			register_shutdown_function(function () use (&$workerFile) {
+			$serverPid = getmypid();
+			register_shutdown_function(function () use (&$workerFile, $serverPid) {
+				if (getmypid() !== $serverPid) return; // inherited by forks
 				@unlink($workerFile);
 				Q_WebServer::cleanupUploadFiles();
 			});
@@ -2558,7 +2883,7 @@ WORKER;
 		$reason = $reasons[$status] ?? 'OK';
 		$out = "HTTP/1.1 $status $reason\r\n";
 		foreach ($headers as $k => $v) {
-			$out .= "$k: $v\r\n";
+			foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		}
 		// Append all Set-Cookie headers (can't use associative array)
 		foreach ($extraHeaders as $pair) {
@@ -2655,7 +2980,12 @@ WORKER;
 		}
 
 		$contentType = self::mimeType($ext);
-		$baseHeaders = "Content-Type: $contentType\r\n"
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
+		$baseHeaders = "Server: $serverTag\r\n"
+			. "Content-Type: $contentType\r\n"
 			. "ETag: $etag\r\n"
 			. "Last-Modified: " . gmdate('D, d M Y H:i:s', $mtime) . " GMT\r\n"
 			. "Cache-Control: public, max-age=0, must-revalidate\r\n";
@@ -3569,10 +3899,10 @@ HTML;
 					$hdrs['Connection'] = 'keep-alive';
 					if (!isset($hdrs['X-Accel-Buffering'])) $hdrs['X-Accel-Buffering'] = 'no';
 					foreach (Q_WebServer_State::cookieHeaders() as $ch) {
-						$hdrs['Set-Cookie'] = $ch;
+						$hdrs['Set-Cookie'][] = $ch;
 					}
 					$out = "HTTP/1.1 $status " . Q_WebServer::statusText($status) . "\r\n";
-					foreach ($hdrs as $k => $v) $out .= "$k: $v\r\n";
+					foreach ($hdrs as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 					$out .= "\r\n";
 					@fwrite($_streamingClient, $out);
 				}
@@ -3587,7 +3917,7 @@ HTML;
 				| PHP_OUTPUT_HANDLER_REMOVABLE);
 		} else {
 			// Platform mode or no client socket: non-removable buffer
-			ob_start(null, 0, 0);
+			ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE); // cleanable, not removable (flags 0 left every page in the buffer, printed at exit)
 		}
 
 		$status = 200;
@@ -3997,9 +4327,14 @@ HTML;
 		self::$lastBody = $body;
 		$body = (string) $body;
 		self::$lastBytes = strlen($body);
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
 		$conn = $extra['Connection'] ?? 'keep-alive';
 		unset($extra['Connection']);
 		$out = "HTTP/1.1 $status " . ($reasons[$status] ?? 'OK')
+			. "\r\nServer: $serverTag"
 			. "\r\nContent-Type: $type\r\nContent-Length: " . strlen($body)
 			. "\r\nConnection: $conn\r\n";
 		foreach ($extra as $k => $v) $out .= "$k: $v\r\n";
@@ -4172,6 +4507,12 @@ var docTitles = {
   "configuration.md": "Configuration",
   "running.md": "Running & Building",
   "architecture.md": "Architecture",
+  "Mesh.md": "Mesh Protocol",
+  "static-files.md": "Static Files",
+  "images.md": "Image Processing",
+  "sync.md": "Data Sync",
+  "mobile.md": "iOS & Android",
+  "app-mode.md": "--app Mode & SAPI",
   "dashboard.md": "Dashboard & Panel",
   "deploy.md": "Deploy & Federation",
   "api-discovery.md": "API Discovery",
@@ -4190,9 +4531,9 @@ async function init() {
   var html = "";
   if (r.hasReadme) html += \'<a href="#README.md" onclick="load(\\\'README.md\\\');return false">Overview</a>\';
   var sections = {"Getting Started":["why.md","running.md","configuration.md"],
-    "Features":["headers.md","http.md","websocket.md","routing.md","framework.md"],
+    "Features":["headers.md","static-files.md","images.md","http.md","websocket.md","routing.md","framework.md","Mesh.md","sync.md","mobile.md"],
     "Operations":["architecture.md","dashboard.md","deploy.md","api-discovery.md"],
-    "Reference":["compatibility.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
+    "Reference":["compatibility.md","app-mode.md","BENCHMARKS.md","reset.md","TestResults.md","roadmap.md","license.md"]};
   for (var sec in sections) {
     html += "<h2>"+sec+"</h2>";
     sections[sec].forEach(function(f) {
@@ -4448,7 +4789,7 @@ init();
 		return $result;
 	}
 
-	private static function closeClient($key)
+	static function closeClient($key)
 	{
 		if (isset(self::$clientWatchers[$key])) {
 			Q_Evented::cancel(self::$clientWatchers[$key]);
@@ -4463,7 +4804,34 @@ init();
 			unset(self::$clients[$key]);
 		}
 		unset(self::$buffers[$key], self::$clientInfo[$key],
-			self::$keepAliveCount[$key]);
+			self::$keepAliveCount[$key], self::$clientState[$key]);
+	}
+
+	/**
+	 * Re-register a client socket in the event loop for keep-alive.
+	 * Called by Pool after sending a response when the connection should
+	 * stay open for the next request.
+	 */
+	static function reRegisterClient($client)
+	{
+		$key = (int) $client;
+		if (!is_resource($client)) {
+			// Socket died while queued — clean up
+			unset(self::$clients[$key], self::$buffers[$key],
+				self::$clientInfo[$key], self::$keepAliveCount[$key]);
+			return;
+		}
+		// Re-register the read watcher (socket is already in $clients)
+		self::$clients[$key] = $client;
+		self::$buffers[$key] = '';  // reset buffer for next request
+		if (isset(self::$clientWatchers[$key])) {
+			Q_Evented::cancel(self::$clientWatchers[$key]);
+		}
+		self::$clientWatchers[$key] = Q_Evented::onReadable($client,
+			function ($s) use ($client) {
+				Q_WebServer::onClientData($client);
+			}
+		);
 	}
 
 	// ── State ────────────────────────────────────────────
@@ -4472,13 +4840,40 @@ init();
 	private static $tlsSocket = null;
 	private static $tlsWatcher = null;
 	private static $tlsPending = array();
+
+	/**
+	 * SNI certificate map: hostname => cert context path.
+	 * Built from autohost domain provisioning. When a TLS client
+	 * sends an SNI hostname, OpenSSL selects the matching cert.
+	 * Format: ['example.com' => ['local_cert' => '/path/cert.pem', 'local_pk' => '/path/key.pem'], ...]
+	 */
+	private static $sniCertMap = array();
+
+	/**
+	 * Register a domain's certificate for SNI-based selection.
+	 * Called by Autohost after provisioning a cert via ACME.
+	 *
+	 * @param string $hostname The domain name
+	 * @param string $certPath Path to the PEM certificate (fullchain)
+	 * @param string $keyPath Path to the PEM private key
+	 */
+	static function registerDomainCert($hostname, $certPath, $keyPath)
+	{
+		if (is_file($certPath) && is_file($keyPath)) {
+			self::$sniCertMap[$hostname] = array(
+				'local_cert' => $certPath,
+				'local_pk' => $keyPath
+			);
+		}
+	}
 	private static $httpsPort = 0;
 	static $clients = array();
 	static $clientWatchers = array();
-	private static $buffers = array();
+	static $buffers = array();
 	private static $clientInfo = array();      // key => [ip, connectTime]
 	static $keepAliveCount = array();   // key => int
 	private static $timeoutWatchers = array();  // key => evented timer id
+	static $clientState = array();     // key => 'reading'|'waiting'|'idle'
 	private static $acceptWatcher = null;
 	private static $running = false;
 	private static $lastStatus = 200;
@@ -4612,6 +5007,66 @@ init();
 		'pdf','zip'
 	);
 	private static $rateLimitData = array(); // ip => [timestamps]
+
+	/**
+	 * Clear all in-memory caches and re-read config files.
+	 * Call via PHP or trigger with ?Q.clearCache on any request.
+	 * @method clearCache
+	 * @static
+	 * @return {array} Summary of what was cleared
+	 */
+	static function clearCache()
+	{
+		$cleared = array();
+
+		// 1. Clear file response cache
+		$fileCount = count(self::$fileCache);
+		self::$fileCache = array();
+		self::$fileCacheSize = 0;
+		if ($fileCount) $cleared[] = "file cache ($fileCount entries)";
+
+		// 2. Clear PHP stat cache
+		clearstatcache(true);
+		$cleared[] = 'stat cache';
+
+		// 3. Clear shortcut resolution cache
+		if (class_exists('Q_WebServer_Shortcut', false)) {
+			Q_WebServer_Shortcut::clearCache();
+			$cleared[] = 'shortcut cache';
+		}
+
+		// 4. Clear compat transform cache
+		if (class_exists('Q_WebServer_Compat', false)
+			&& method_exists('Q_WebServer_Compat', 'clearStatCache')
+		) {
+			Q_WebServer_Compat::clearStatCache();
+			$cleared[] = 'compat stat cache';
+		}
+
+		// 5. Re-read config files
+		$configFiles = array_filter(array(
+			'local/app.json',
+			'local/panel.json',
+			'config/app.json',
+		), 'is_file');
+		$reloaded = array();
+		foreach ($configFiles as $cf) {
+			$data = @json_decode(file_get_contents($cf), true);
+			if ($data && is_array($data)) {
+				Q_Config::merge($data);
+				$reloaded[] = $cf;
+			}
+		}
+		if ($reloaded) $cleared[] = 'config (' . implode(', ', $reloaded) . ')';
+
+		// 6. Clear OPcache if available
+		if (function_exists('opcache_reset')) {
+			@opcache_reset();
+			$cleared[] = 'opcache';
+		}
+
+		return $cleared;
+	}
 
 	// ── Static file response cache ──────────────────────
 	// Caches full response bytes (headers+body) keyed by fsPath.
