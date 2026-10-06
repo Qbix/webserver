@@ -31,6 +31,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: phpinfo renderer
+        run: php tests/phpinfo.php
+
       - name: Document root listing
         run: bash tests/root-listing.sh
 
