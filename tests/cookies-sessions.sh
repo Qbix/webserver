@@ -104,7 +104,8 @@ r3=$(curl -s -b "$jar" --max-time 15 "http://127.0.0.1:$PORT/count.php" 2>/dev/n
 id1=${r1#id=}; id1=${id1%% *}
 id2=${r2#id=}; id2=${id2%% *}
 id3=${r3#id=}; id3=${id3%% *}
-[ -n "$id1" ] && [ "$id1" = "$id2" ] && [ "$id2" = "$id3" ] \
+[ "$id1" != "$r1" ] && [[ "$id1" =~ ^[a-f0-9]{32}$ ]] \
+    && [ "$id1" = "$id2" ] && [ "$id2" = "$id3" ] \
     && ok "session id stays the same across requests" \
     || bad "session id changed: $id1 / $id2 / $id3"
 
