@@ -362,7 +362,8 @@ class Q_WebServer_Pool
 	{
 		$resp = self::collectResponse(self::$failedRequest ? 500 : null);
 		self::$currentSocket = null;
-		self::writeMsg(self::$roleSocket, $resp['status'], $resp['body'], $resp['headers']);
+		self::writeMsg(self::$roleSocket, $resp['status'], $resp['body'],
+			$resp['headers'], $resp['cookies'] ?? array());
 		self::$handled++;
 		if (!self::$roleOctane) return false;
 		self::resetForNextRequest();
@@ -832,7 +833,8 @@ class Q_WebServer_Pool
 		if ($fatal && $resp['body'] === '') {
 			$resp['body'] = 'Internal Server Error';
 		}
-		self::writeMsg($sock, $resp['status'], $resp['body'], $resp['headers']);
+		self::writeMsg($sock, $resp['status'], $resp['body'],
+			$resp['headers'], $resp['cookies'] ?? array());
 		self::runShutdownCallbacks();
 	}
 
@@ -1245,31 +1247,55 @@ class Q_WebServer_Pool
 		return $buf;
 	}
 
-  protected static function writeMsg($sock, $status, $body, $headers,
-    $cookies = array())
-  {
-    $j = json_encode(compact('status', 'body', 'headers', 'cookies'));
-    if ($j === false) {
-        $b64 = true;
-        $body = base64_encode($body);
-        $j = json_encode(compact('status', 'body', 'headers', 'cookies', 'b64'));
-    }
-    if ($j === false) {
-        $j = json_encode(array(
-            'status' => 500,
-            'body' => 'Response could not be encoded',
-            'headers' => array('Content-Type' => 'text/plain')
-        ));
-    }
-    $data = pack('N', strlen($j)) . $j;
-	$len = strlen($data);
-	$written = 0;
-	while ($written < $len) {
-	    $w = fwrite($sock, substr($data, $written));
-	    if ($w === false || $w === 0) break;
-	    $written += $w;
+	/**
+	 * Send a length-prefixed JSON response frame to the parent.
+	 *
+	 * json_encode() returns false on bytes that are not valid UTF-8, and
+	 * strlen(false) is 0, so a binary body used to go out as a length
+	 * prefix of zero and nothing else. Base64 carries those bytes through,
+	 * and only those: text responses keep their exact previous shape.
+	 * JSON_INVALID_UTF8_SUBSTITUTE on the retry handles the case where
+	 * headers or cookies also contain stray bytes that would fail the
+	 * second encode.
+	 *
+	 * @method writeMsg
+	 * @static
+	 * @param {resource} $sock
+	 * @param {integer}  $status
+	 * @param {string}   $body
+	 * @param {array}    $headers
+	 * @param {array}    $cookies
+	 */
+	protected static function writeMsg($sock, $status, $body, $headers,
+		$cookies = array())
+	{
+		$j = json_encode(compact('status', 'body', 'headers', 'cookies'));
+		if ($j === false) {
+			$b64 = true;
+			$body = base64_encode($body);
+			$j = json_encode(
+				compact('status', 'body', 'headers', 'cookies', 'b64'),
+				JSON_INVALID_UTF8_SUBSTITUTE
+			);
+		}
+		if ($j === false) {
+			// Headers themselves are not encodable. Say so rather than
+			// hanging up on the client.
+			$j = json_encode(array(
+				'status' => 500,
+				'body' => 'Response could not be encoded',
+				'headers' => array('Content-Type' => 'text/plain')
+			));
+		}
+		$data = pack('N', strlen($j)) . $j;
+		$len = strlen($data);
+		$written = 0;
+		while ($written < $len) {
+			$w = fwrite($sock, substr($data, $written));
+			if ($w === false || $w === 0) break;
+			$written += $w;
+		}
 	}
-  }
 }
 
 /**
