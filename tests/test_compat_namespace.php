@@ -64,8 +64,9 @@ $sessionFile = $sessionDir . '/session.php';
 $sessionSource = '<?php session_start(["save_path" => '
 	. var_export($sessionDir, true)
 	. ']); $_SESSION["n"] = (isset($_SESSION["n"]) ? $_SESSION["n"] : 0) + 1;'
-	. ' echo $_SESSION["n"];';
+	. ' echo $_SESSION["n"], ":", session_id();';
 file_put_contents($sessionFile, $sessionSource);
+Q_WebServer_Compat::prewarm($sessionDir);
 Q_WebServer_Compat::init();
 try {
 	$stream = new Q_WebServer_CompatFileWrapper;
@@ -83,7 +84,8 @@ try {
 	ob_start();
 	include $sessionFile;
 	$sessionOutput = ob_get_clean();
-	ok($sessionOutput === '1', 'transformed session script with ternary expression executes');
+	ok(preg_match('/^1:[a-f0-9]{32}$/', $sessionOutput) === 1,
+		'prewarmed transformed session script reports its session ID');
 	Q_WebServer_Compat::finishRequest();
 } catch (\Throwable $e) {
 	ok(false, 'transformed session stream executes: ' . get_class($e) . ': ' . $e->getMessage());
