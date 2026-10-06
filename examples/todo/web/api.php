@@ -1,6 +1,12 @@
 <?php
 Q_Response::header('Content-Type: application/json');
-$dbPath = dirname($_SERVER['DOCUMENT_ROOT'] ?? __DIR__) . '/data/todos.db';
+// Use the data directory if running from a packed binary,
+// otherwise fall back to the local data/ directory
+if (defined('QBIX_DATA_DIR')) {
+    $dbPath = QBIX_DATA_DIR . '/db.sqlite';
+} else {
+    $dbPath = dirname($_SERVER['DOCUMENT_ROOT'] ?? __DIR__) . '/data/todos.db';
+}
 $dbDir = dirname($dbPath);
 if (!is_dir($dbDir)) @mkdir($dbDir, 0755, true);
 try {
