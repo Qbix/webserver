@@ -34,6 +34,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: Lazily initialised statics
+        run: bash tests/lazy-statics.sh
+
       - name: Cookies and sessions
         run: bash tests/cookies-sessions.sh
 

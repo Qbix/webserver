@@ -393,8 +393,8 @@ class Q_WebServer_Pool
 		}
 
 		// Static properties: the snapshot captures the clean state the parent
-		// had after preloading. restoreStatics() resets all user-defined class
-		// statics via ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
+    // had after preloading. restoreStatics() resets them via
+    // ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
 		if (class_exists('Q_WebServer_Snapshot', false)) {
 			// Auto-introspect: scripts may declare new classes (e.g. inline
 			// class definitions). These weren't in the original snapshot
