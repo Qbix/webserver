@@ -912,6 +912,21 @@ class Q_WebServer_Pool
 		$json = substr($buf, 4, $len);
 		$response = json_decode($json, true);
 
+		if ($response && !empty($response['b64'])) {
+			$decoded = is_string($response['body'] ?? null)
+				? base64_decode($response['body'], true) : false;
+			if ($decoded === false) {
+				$response = array(
+					'status' => 500,
+					'body' => 'Invalid binary response payload',
+					'headers' => array('Content-Type' => 'text/plain')
+				);
+			} else {
+				$response['body'] = $decoded;
+				unset($response['b64']);
+			}
+		}
+
 		// Check for cache messages piggybacked on the response
 		if ($response && !empty($response['_cacheMessages'])) {
 			foreach ($response['_cacheMessages'] as $msg) {
@@ -1243,7 +1258,28 @@ class Q_WebServer_Pool
 		$cookies = array())
 	{
 		$j = json_encode(compact('status', 'body', 'headers', 'cookies'));
-		fwrite($sock, pack('N', strlen($j)) . $j);
+		if ($j === false) {
+			// Binary body (invalid UTF-8): carry it as base64
+			$b64 = true;
+			$body = base64_encode((string)$body);
+			$j = json_encode(
+				compact('status', 'body', 'headers', 'cookies', 'b64'),
+				JSON_INVALID_UTF8_SUBSTITUTE
+			);
+		}
+		$frame = pack('N', strlen($j)) . $j;
+		$total = strlen($frame);
+		$written = 0;
+		while ($written < $total) {
+			$n = @fwrite($sock, substr($frame, $written));
+			if ($n === false) break;
+			if ($n === 0) {
+				if (!is_resource($sock) || feof($sock)) break;
+				usleep(1000);
+				continue;
+			}
+			$written += $n;
+		}
 	}
 }
 
