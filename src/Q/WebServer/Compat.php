@@ -346,14 +346,21 @@ class Q_WebServer_Compat
 
 		$tokens = token_get_all($source);
 		$count = count($tokens);
-		$out = '';
+		// One element per token, joined at the end. Not `$out .= ...`: on
+		// PHP 8.3's function JIT with hot-loop counters (opcache.jit=1235,
+		// which shivammathur/setup-php turns on by default), entering the
+		// compiled loop mid-run doubled the accumulated string, so a file
+		// came out with its first lines repeated and failed to parse. The
+		// array form never triggers it, and indexing by token lets the
+		// backslash-strip below remove the separator token itself.
+		$out = array();
 		$changed = false;
 
 		for ($i = 0; $i < $count; $i++) {
 			$token = $tokens[$i];
 
 			if (!is_array($token)) {
-				$out .= $token;
+				$out[$i] = $token;
 				continue;
 			}
 
@@ -380,11 +387,11 @@ class Q_WebServer_Compat
 				}
 				if ($isExpression) {
 					// $var = require_once → $var = require
-					$out .= ($token[0] === T_REQUIRE_ONCE ? 'require' : 'include');
+					$out[$i] = ($token[0] === T_REQUIRE_ONCE ? 'require' : 'include');
 					$changed = true;
 					continue;
 				}
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 			if ($token[0] === T_REQUIRE || $token[0] === T_INCLUDE) {
@@ -399,11 +406,11 @@ class Q_WebServer_Compat
 				}
 				if (!$isExpression) {
 					// standalone require → require_once  (idempotent)
-					$out .= ($token[0] === T_REQUIRE ? 'require_once' : 'include_once');
+					$out[$i] = ($token[0] === T_REQUIRE ? 'require_once' : 'include_once');
 					$changed = true;
 					continue;
 				}
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -415,7 +422,7 @@ class Q_WebServer_Compat
 				// \header(), \setcookie(), etc. — strip the leading backslash
 				$name = strtolower(ltrim($token[1], '\\'));
 			} else {
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -434,12 +441,12 @@ class Q_WebServer_Compat
 						))
 					));
 					if (!$isQualified) {
-						$out .= self::$constantReplacements[$constName];
+						$out[$i] = self::$constantReplacements[$constName];
 						$changed = true;
 						continue;
 					}
 				}
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -456,11 +463,11 @@ class Q_WebServer_Compat
 					// Leading backslash: the shim class is global, and an
 					// unqualified name inside `namespace Foo;` would resolve
 					// to Foo\Q_WebServer_Compat and fatal.
-					$out .= '\\' . self::$replacements[$name];
+					$out[$i] = '\\' . self::$replacements[$name];
 					$changed = true;
 					continue;
 				}
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -469,7 +476,7 @@ class Q_WebServer_Compat
 			// Must NOT have '->' or '::' before it (that's a method call)
 			// Must NOT have 'function' before it (that's a definition)
 			if (!self::isGlobalFunctionCall($tokens, $i, $count)) {
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -478,14 +485,14 @@ class Q_WebServer_Compat
 			$prevIdx = $i - 1;
 			while ($prevIdx >= 0 && is_array($tokens[$prevIdx]) && $tokens[$prevIdx][0] === T_WHITESPACE) $prevIdx--;
 			if ($prevIdx >= 0 && is_array($tokens[$prevIdx]) && $tokens[$prevIdx][0] === T_NS_SEPARATOR) {
-				$out = substr($out, 0, -1); // remove the trailing '\'
+				$out[$prevIdx] = ''; // drop the '\' token
 			}
 
-			$out .= '\\' . self::$replacements[$name];
+			$out[$i] = '\\' . self::$replacements[$name];
 			$changed = true;
 		}
 
-		$result = $changed ? $out : $source;
+		$result = $changed ? implode('', $out) : $source;
 
 		// Save to cache
 		if ($changed && $filePath) {
