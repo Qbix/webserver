@@ -52,7 +52,7 @@ printf '<?php header("Set-Cookie: manual=m; Path=/"); header("Content-Type: text
 cat > "$ROOT/count.php" <<'PHP'
 <?php
 session_start();
-$_SESSION['n'] = ($_SESSION['n'] ?? 0) + 1;
+$_SESSION['n'] = (isset($_SESSION['n']) ? $_SESSION['n'] : 0) + 1;
 header('Content-Type: text/plain');
 echo "id=", session_id(), " n=", $_SESSION['n'];
 PHP
@@ -89,7 +89,7 @@ esac
 h=$(heads two.php)
 n=$(printf '%s' "$h" | grep -ci '^set-cookie:')
 [ "$n" = "2" ] && ok "two cookies produce two Set-Cookie headers" \
-               || bad "expected 2 Set-Cookie headers, got $n"
+                 || bad "expected 2 Set-Cookie headers, got $n"
 case "$h" in *"a=1"*) ok "first of the two survives" ;; *) bad "cookie a=1 missing" ;; esac
 case "$h" in *"b=2"*) ok "second of the two survives" ;; *) bad "cookie b=2 missing" ;; esac
 
