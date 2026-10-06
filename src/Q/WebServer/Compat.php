@@ -2055,6 +2055,8 @@ class Q_WebServer_CompatFileWrapper
 	private $position = 0;
 	/** @var bool Whether this file was transformed (reading from buffer) */
 	private $transformed = false;
+	/** @var string Underlying path for transformed stream metadata */
+	private $realPath = '';
 	/** @var resource Directory handle */
 	private $dirHandle;
 
@@ -2082,6 +2084,7 @@ class Q_WebServer_CompatFileWrapper
 		self::$__openCount++;
 		// Strip file:// prefix if present
 		$realPath = preg_replace('/^file:\/\//', '', $path);
+		$this->realPath = $realPath;
 
 		// Only transform PHP files opened for reading (include/require)
 		$shouldTransform = (
@@ -2188,7 +2191,12 @@ class Q_WebServer_CompatFileWrapper
 	public function stream_stat()
 	{
 		if ($this->transformed) {
-			return array('size' => strlen($this->buffer));
+			self::unwrap();
+			$stat = @stat($this->realPath);
+			self::rewrap();
+			if ($stat === false) return false;
+			$stat[7] = $stat['size'] = strlen($this->buffer);
+			return $stat;
 		}
 		self::unwrap();
 		$stat = fstat($this->handle);
