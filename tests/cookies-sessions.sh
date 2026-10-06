@@ -116,4 +116,5 @@ esac
 
 echo
 echo "  passed: $PASS  failed: $FAIL"
+[ "$FAIL" -eq 0 ] || { echo "  server log:"; cat "$TMP/server.log"; }
 [ "$FAIL" -eq 0 ] || exit 1
