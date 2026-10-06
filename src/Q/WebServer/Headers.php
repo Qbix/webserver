@@ -140,12 +140,17 @@ class Q_WebServer_Headers
 		$keepAlive = $requestHeaders['_keepAlive'] ?? false;
 		$headers['Connection'] = $keepAlive ? 'keep-alive' : 'close';
 
-		// Merge Q_Response cookies into Set-Cookie headers
-		if (class_exists('Q_Response', false)) {
+		// Cookies set by the script. A pooled response carries them, because
+		// they were built in the worker and this process has none of its own;
+		// the in-process paths still read the local state.
+		$cookieHeaders = array();
+		if (isset($response['cookies']) and is_array($response['cookies'])) {
+			$cookieHeaders = $response['cookies'];
+		} else if (class_exists('Q_Response', false)) {
 			$cookieHeaders = Q_WebServer_State::cookieHeaders();
-			foreach ($cookieHeaders as $ch) {
-				$headers['Set-Cookie'] = $ch; // last one wins for single-value
-			}
+		}
+		foreach ($cookieHeaders as $ch) {
+			$headers['Set-Cookie'] = $ch; // one of them; the rest are added below
 		}
 
 		static $reasons = array(
@@ -167,14 +172,11 @@ class Q_WebServer_Headers
 			foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		}
 		// Multiple Set-Cookie headers (can't use the associative array for dupes)
-		if (class_exists('Q_Response', false)) {
-			$cookieHeaders = Q_WebServer_State::cookieHeaders();
-			if (count($cookieHeaders) > 1) {
-				// Remove the single Set-Cookie we added above
-				$out = preg_replace("/Set-Cookie:.*\r\n/", "", $out);
-				foreach ($cookieHeaders as $ch) {
-					$out .= "Set-Cookie: $ch\r\n";
-				}
+		if (count($cookieHeaders) > 1) {
+			// Remove the single Set-Cookie we added above
+			$out = preg_replace("/Set-Cookie:.*\r\n/", "", $out);
+			foreach ($cookieHeaders as $ch) {
+				$out .= "Set-Cookie: $ch\r\n";
 			}
 		}
 		@fwrite($client, $out . "\r\n" . $body);

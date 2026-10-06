@@ -34,6 +34,9 @@ jobs:
       - name: Binary response bodies
         run: bash tests/binary-response.sh
 
+      - name: Cookies and sessions
+        run: bash tests/cookies-sessions.sh
+
       - name: phpinfo renderer
         run: php tests/phpinfo.php
 

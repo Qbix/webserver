@@ -503,8 +503,9 @@ class Q_WebServer_Pool
 			}
 			self::$currentSocket = $socket;
 			$resp = self::executeScript($req);
+			self::writeMsg($socket, $resp['status'], $resp['body'],
+				$resp['headers'], $resp['cookies'] ?? array());
 			self::$currentSocket = null;
-			self::writeMsg($socket, $resp['status'], $resp['body'], $resp['headers']);
 			$handled++;
 
 			if (!$octane) break;
@@ -791,7 +792,18 @@ class Q_WebServer_Pool
 				@ob_clean();
 			}
 		}
-		return compact('status', 'body', 'headers');
+		while (@ob_end_clean()) { /* drop removable buffers */ }
+
+		// Cookies live in Q_Response, which is the worker's memory. The
+		// parent used to read its own copy when writing the response and so
+		// found nothing: setcookie() reached the client from no script at
+		// all. Carry them across with the response.
+		$cookies = array();
+		if (class_exists('Q_WebServer_State', false)
+		and method_exists('Q_WebServer_State', 'cookieHeaders')) {
+			$cookies = (array) Q_WebServer_State::cookieHeaders();
+		}
+		return compact('status', 'body', 'headers', 'cookies');
 	}
 
 	/** @var integer Output-buffer level of the worker's response buffer (public for Compat shims) */
@@ -1233,32 +1245,24 @@ class Q_WebServer_Pool
 		return $buf;
 	}
 
-	protected static function writeMsg($sock, $status, $body, $headers)
-	{
-		// json_encode() returns false on bytes that are not valid UTF-8, and
-		// strlen(false) is 0, so a binary body used to go out as a length
-		// prefix of zero and nothing else: the parent read an empty frame and
-		// answered with an empty response while still logging 200. Anything a
-		// script generated that was not text -- an image, a PDF, a zip --
-		// vanished silently. Base64 carries those bytes through, and only
-		// those: text responses keep their exact previous shape and cost.
-		$j = json_encode(compact('status', 'body', 'headers'));
-		if ($j === false) {
-			$b64 = true;
-			$body = base64_encode($body);
-			$j = json_encode(compact('status', 'body', 'headers', 'b64'));
-		}
-		if ($j === false) {
-			// Headers themselves are not encodable. Say so rather than
-			// hanging up on the client.
-			$j = json_encode(array(
-				'status' => 500,
-				'body' => 'Response could not be encoded',
-				'headers' => array('Content-Type' => 'text/plain')
-			));
-		}
-		fwrite($sock, pack('N', strlen($j)) . $j);
-	}
+  protected static function writeMsg($sock, $status, $body, $headers,
+    $cookies = array())
+  {
+    $j = json_encode(compact('status', 'body', 'headers', 'cookies'));
+    if ($j === false) {
+        $b64 = true;
+        $body = base64_encode($body);
+        $j = json_encode(compact('status', 'body', 'headers', 'cookies', 'b64'));
+    }
+    if ($j === false) {
+        $j = json_encode(array(
+            'status' => 500,
+            'body' => 'Response could not be encoded',
+            'headers' => array('Content-Type' => 'text/plain')
+        ));
+    }
+    fwrite($sock, pack('N', strlen($j)) . $j);
+  }
 }
 
 /**
