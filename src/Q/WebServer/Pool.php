@@ -1261,7 +1261,14 @@ class Q_WebServer_Pool
             'headers' => array('Content-Type' => 'text/plain')
         ));
     }
-    fwrite($sock, pack('N', strlen($j)) . $j);
+    $data = pack('N', strlen($j)) . $j;
+	$len = strlen($data);
+	$written = 0;
+	while ($written < $len) {
+	    $w = fwrite($sock, substr($data, $written));
+	    if ($w === false || $w === 0) break;
+	    $written += $w;
+	}
   }
 }
 
