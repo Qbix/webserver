@@ -82,7 +82,12 @@ class Q_WebServer_Snapshot
 		foreach ($GLOBALS as $k => $v) {
 			if (in_array($k, $skip, true)) continue;
 			if (is_resource($v)) continue;
-			self::$globals[$k] = is_object($v) ? clone $v : $v;
+			if (is_object($v)) {
+				try { self::$globals[$k] = clone $v; }
+				catch (\Throwable $e) { /* uncloneable (PDO, etc.) — skip */ }
+			} else {
+				self::$globals[$k] = $v;
+			}
 		}
 
 		self::$taken = true;
@@ -136,6 +141,26 @@ class Q_WebServer_Snapshot
 	static function getClassSnapshot() { return self::$snapshot; }
 
 	/**
+	 * Restore ONLY globals (not statics) to the snapshot.
+	 * Removes globals added during the request and restores originals.
+	 */
+	static function restoreGlobals()
+	{
+		if (!self::$taken) return;
+		$skip = array('_GET','_POST','_COOKIE','_SERVER','_REQUEST',
+			'_FILES','_ENV','_SESSION','GLOBALS','argv','argc');
+		foreach (array_keys($GLOBALS) as $k) {
+			if (in_array($k, $skip, true)) continue;
+			if (!array_key_exists($k, self::$globals)) {
+				unset($GLOBALS[$k]);
+			}
+		}
+		foreach (self::$globals as $k => $v) {
+			$GLOBALS[$k] = is_object($v) ? clone $v : $v;
+		}
+	}
+
+	/**
 	 * Restore ONLY class statics, not globals.
 	 * Uses cached ReflectionProperty handles — no Reflection lookups per call.
 	 */
@@ -149,10 +174,26 @@ class Q_WebServer_Snapshot
 			// Never restore Compat statics — the compat layer manages its
 			// own state via shutdown()/init().
 			if ($cls === 'Q_WebServer_Compat') continue;
+			// Never restore Pool statics — the worker's socket, handler,
+			// request count and role flags are set after the snapshot and
+			// must survive across requests.
+			if ($cls === 'Q_WebServer_Pool') continue;
 			foreach ($props as $name => $val) {
-				self::$reflectors[$cls][$name]->setValue(
-					null, is_object($val) ? clone $val : $val
-				);
+				$prop = self::$reflectors[$cls][$name];
+				// A closure in a static is behaviour installed once, never
+				// request data. Composer's ClassLoader keeps its include helper
+				// there and builds it behind a null check, so putting the
+				// declared null back left the loader calling null on the next
+				// request.
+				//
+				// Only closures. Skipping the class entirely, or sparing every
+				// object, both left an application's request state standing:
+				// Exponential keeps the requested route in an object static, so
+				// every later request came back with the first one's page.
+				try {
+					if ($prop->getValue(null) instanceof \Closure) continue;
+				} catch (\Throwable $ignore) { /* uninitialized typed property */ }
+				$prop->setValue(null, is_object($val) ? clone $val : $val);
 			}
 		}
 	}

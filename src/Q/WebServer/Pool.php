@@ -45,6 +45,95 @@ class Q_WebServer_Pool
 	protected static $inputWrapperRegistered = false;
 
 	/**
+	 * When set (in a booted worker), called with the request instead of
+	 * including the script file. See Q_WebServer_Boot.
+	 * @property $scriptRunner
+	 * @type callable|null
+	 */
+	public static $scriptRunner = null;
+
+	/**
+	 * Serve exactly one request on an already-connected socket, then return.
+	 * Used by booted single-use workers.
+	 * @method serveOne
+	 * @static
+	 * @param {resource} $socket
+	 */
+	static function serveOne($socket)
+	{
+		self::childRun($socket, false, 1);
+		self::runShutdownCallbacks();
+	}
+
+	/**
+	 * Run shutdown callbacks captured by the source rewriter. In octane mode
+	 * this happens between requests; a single-use worker must do it before
+	 * exiting, after the response has gone out, or callbacks registered with
+	 * register_shutdown_function() (WordPress's 'shutdown' action, session
+	 * writes, deferred jobs) never run at all.
+	 * @method runShutdownCallbacks
+	 * @static
+	 */
+	static function runShutdownCallbacks()
+	{
+		// The response has been sent. Anything printed from here on (WordPress
+		// flushes its output buffers on 'shutdown') belongs to no client and
+		// would otherwise land in the server's log. Discard it; the buffer is
+		// non-removable so callbacks cannot flush past it.
+		ob_start(function () { return ''; }, 0, 0);
+		if (class_exists('Q_WebServer_Compat', false)) {
+			Q_WebServer_Compat::finishRequest();
+		}
+	}
+
+	/**
+	 * SCRIPT_NAME for a script: its path under the document root. It was
+	 * the bare file name, so /wp-admin/edit.php ran with SCRIPT_NAME and
+	 * PHP_SELF of /edit.php, and WordPress could not tell which admin screen
+	 * it was on ("Invalid post type").
+	 * @method scriptName
+	 * @static
+	 */
+	static function scriptName($scriptPath)
+	{
+		$root = rtrim((string) (Q_WebServer::$rootDir ?? ''), '/\\');
+		$real = realpath($scriptPath) ?: $scriptPath;
+		$realRoot = $root !== '' ? (realpath($root) ?: $root) : '';
+		foreach (array(array($scriptPath, $root), array($real, $realRoot)) as $pair) {
+			list($p, $r) = $pair;
+			if ($r !== '' && strncmp($p, $r . DIRECTORY_SEPARATOR, strlen($r) + 1) === 0) {
+				return '/' . str_replace(DIRECTORY_SEPARATOR, '/', substr($p, strlen($r) + 1));
+			}
+		}
+		return '/' . basename($scriptPath);
+	}
+
+	/**
+	 * Encode a request for a worker (length-prefixed JSON).
+	 * @method encodeRequest
+	 * @static
+	 * @return {string}
+	 */
+	static function encodeRequest($parsed, $scriptPath)
+	{
+		$msg = json_encode(array(
+			'method'         => $parsed['method'],
+			'uri'            => $parsed['uri'],
+			'path'           => $parsed['path'],
+			'query'          => $parsed['query'],
+			'headers'        => $parsed['headers'],
+			'rawHeaders'     => $parsed['rawHeaders'] ?? array(),
+			'body'           => $parsed['body'],
+			'scriptFilename' => $scriptPath,
+			'scriptName'     => self::scriptName($scriptPath),
+			'documentRoot'   => rtrim(Q_WebServer::$rootDir ?? '', '/\\'),
+			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
+			'remoteAddr'     => '127.0.0.1'
+		));
+		return pack('N', strlen($msg)) . $msg;
+	}
+
+	/**
 	 * @method __construct
 	 * @param {integer} [$size=4]
 	 */
@@ -72,13 +161,12 @@ class Q_WebServer_Pool
 			'Q', 'webserver', 'maxRequests', 1000
 		);
 
-		// In octane mode, default compat on (unless explicitly disabled)
-		// so lifecycle functions are shimmed for shared-nothing safety.
-		if ($this->octane) {
-			$compatSet = Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', null);
-			if ($compatSet === null) {
-				Q_Config::set('Q', 'compat', 'skipSourceCodeTransform', false);
-			}
+		// Source rewriting on in both modes (unless explicitly disabled).
+		// Octane needs it to reset lifecycle state; fork-per-request needs it
+		// so header(), setcookie() and friends reach the client at all. Only
+		// octane used to enable it, so fork-mode workers forked before the
+		// first request silently dropped every header (a 302 with no Location).
+		if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 			$compatFile = dirname(__DIR__) . '/WebServer/Compat.php';
 			if (!class_exists('Q_WebServer_Compat', false) && is_file($compatFile)) {
 				require_once $compatFile;
@@ -126,8 +214,10 @@ class Q_WebServer_Pool
 		if ($pid === 0) {
 			// ── CHILD ──
 			fclose($pair[0]);
-			self::childRun($pair[1], $this->octane, $this->maxRequests);
-			exit(0);
+			self::$roleSocket = $pair[1];
+			self::$roleOctane = $this->octane;
+			self::$roleMax = $this->maxRequests;
+			throw new Q_WebServer_Role(__DIR__ . '/roles/worker.php');
 		}
 
 		// ── PARENT ──
@@ -151,7 +241,223 @@ class Q_WebServer_Pool
 		return $index;
 	}
 
+
+	// ── Workers at global scope ─────────────────────────
+	//
+	// A forked worker does not run scripts from inside this class: PHP gives
+	// an included file the scope of the include statement, and a method's
+	// scope is not global. Frameworks assume global scope (wp-admin/menu.php
+	// builds $menu and $submenu as top-level variables that admin functions
+	// then read with `global $menu`), so a worker throws Q_WebServer_Role up
+	// to the top level of qbixserver.php, which includes roles/worker.php
+	// there. That file drives the loop below and includes each script at
+	// global scope.
+
+	/** @var resource Socket to the parent, for the worker role */
+	static $roleSocket = null;
+	static $roleOctane = false;
+	static $roleMax = 0;
+	static $roleKeepsGlobals = false;
+	/** @var array Current request */
+	static $req = null;
+	/** @var string|null File to include at global scope for this request */
+	static $scriptFile = null;
+	protected static $handled = 0;
+	protected static $failedRequest = false;
+
+	/**
+	 * Prepare this process to act as a worker: drop what belongs to the
+	 * server (client sockets, the server's global variables).
+	 * @method workerStart
+	 * @static
+	 */
+	static function workerStart()
+	{
+		if (class_exists('Q_WebServer', false)) {
+			foreach (Q_WebServer::$clients as $c) {
+				if (is_resource($c)) @fclose($c);
+			}
+			Q_WebServer::$clients = array();
+		}
+		// A booted worker's globals are the framework's booted state; a pool
+		// worker's are the server's and must not leak into scripts.
+		if (!self::$roleKeepsGlobals) self::clearGlobals();
+		stream_set_blocking(self::$roleSocket, true);
+		self::$handled = 0;
+		if (!self::$exitHandlerRegistered) {
+			register_shutdown_function(array(__CLASS__, 'onExitDuringRequest'));
+			self::$exitHandlerRegistered = true;
+		}
+	}
+
+	/** Remove every global the server or a previous request left behind. */
+	static function clearGlobals()
+	{
+		$keep = array('_GET','_POST','_COOKIE','_SERVER','_REQUEST',
+			'_FILES','_ENV','_SESSION','GLOBALS','argv','argc', '_Q_RAW_INPUT');
+		foreach (array_keys($GLOBALS) as $gk) {
+			if (!in_array($gk, $keep, true)) unset($GLOBALS[$gk]);
+		}
+	}
+
+	/**
+	 * Wait for the next request and set up superglobals and output buffer.
+	 * @method receive
+	 * @static
+	 * @return {boolean} false when the parent closed the connection
+	 */
+	static $__receiveTime = 0;
+	static function receive()
+	{
+		$socket = self::$roleSocket;
+		while (true) {
+			$hdr = self::readExact($socket, 4);
+			if ($hdr === false) return false;
+			$len = unpack('N', $hdr)[1];
+			if ($len > 10485760) return false;
+			$json = self::readExact($socket, $len);
+			if ($json === false) return false;
+			$req = json_decode($json, true);
+			if ($req) break;
+			self::writeMsg($socket, 500, 'Bad message', array());
+			if (!self::$roleOctane) return false;
+		}
+		self::$req = $req;
+		self::$failedRequest = false;
+		self::prepareRequest($req);
+		if (is_string(self::$scriptRunner)) {
+			self::$scriptFile = self::$scriptRunner;     // adapter's global-scope handler
+		} elseif (self::$scriptRunner) {
+			self::$scriptFile = null;                    // adapter's callable handler
+		} else {
+			self::$scriptFile = $req['scriptFilename'];
+		}
+		self::$currentSocket = $socket;
+		self::$__receiveTime = hrtime(true);
+		return true;
+	}
+
+	/**
+	 * Record an uncaught exception from the script.
+	 * @method fail
+	 * @static
+	 */
+	static function fail($e)
+	{
+		self::$failedRequest = true;
+		if (ob_get_level()) @ob_clean();
+		echo $e->getMessage();
+		error_log(sprintf('PHP Fatal error:  Uncaught %s: %s in %s:%d%sStack trace:%s%s',
+			get_class($e), $e->getMessage(), $e->getFile(), $e->getLine(),
+			PHP_EOL, PHP_EOL, $e->getTraceAsString()));
+	}
+
+	/**
+	 * Send the response; in octane mode reset for the next request.
+	 * @method respond
+	 * @static
+	 * @return {boolean} whether to take another request
+	 */
+	static function respond()
+	{
+		$resp = self::collectResponse(self::$failedRequest ? 500 : null);
+		self::$currentSocket = null;
+		self::writeMsg(self::$roleSocket, $resp['status'], $resp['body'], $resp['headers']);
+		self::$handled++;
+		if (!self::$roleOctane) return false;
+		self::resetForNextRequest();
+		if (self::$roleMax > 0 && self::$handled >= self::$roleMax) return false;
+		return true;
+	}
+
 	// ── Child process ────────────────────────────────────
+
+	/**
+	 * Octane: reset state between requests in a persistent worker.
+	 * @method resetForNextRequest
+	 * @static
+	 */
+	protected static function resetForNextRequest()
+	{
+		// ── Octane: reset state for the next request ──
+
+		// Compat layer: fire shutdown callbacks, restore error/exception
+		// handlers, unregister request autoloaders, restore env vars,
+		// close sessions, clean up uploads — all BEFORE snapshot restore
+		// so shutdown callbacks see the request's final state.
+		if (class_exists('Q_WebServer_Compat', false)
+			&& Q_WebServer_Compat::isEnabled()) {
+			Q_WebServer_Compat::shutdown();
+			// Re-init for next request (re-registers file:// wrapper)
+			Q_WebServer_Compat::init();
+		}
+
+		// Static properties: the snapshot captures the clean state the parent
+    // had after preloading. restoreStatics() resets them via
+    // ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
+		if (class_exists('Q_WebServer_Snapshot', false)) {
+			// Auto-introspect: scripts may declare new classes (e.g. inline
+			// class definitions). These weren't in the original snapshot
+			// because they didn't exist at preload time. Detect and add them
+			// so their statics get reset on subsequent requests.
+			Q_WebServer_Snapshot::updateNewClasses();
+			Q_WebServer_Snapshot::restoreStatics();
+		}
+
+		// Global variables: restore to clean state between requests.
+		// Boot workers use the Snapshot's global restore — this preserves
+		// globals created during boot (e.g. $wp, $wpdb for WordPress)
+		// while still resetting request-time additions.
+		// Fork workers nuke everything since each fork is disposable.
+		if (self::$roleOctane
+			&& class_exists('Q_WebServer_Snapshot', false)) {
+			Q_WebServer_Snapshot::restoreGlobals();
+		} else {
+			$keepGlobals = array('_GET','_POST','_COOKIE','_SERVER','_REQUEST',
+				'_FILES','_ENV','_SESSION','GLOBALS','argv','argc',
+				'_Q_RAW_INPUT');
+			foreach (array_keys($GLOBALS) as $gk) {
+				if (!in_array($gk, $keepGlobals, true)) {
+					unset($GLOBALS[$gk]);
+				}
+			}
+		}
+
+		// Superglobals: overwritten by executeScript() on next iteration.
+		// Output buffers: non-removable buffer in executeScript, read via ob_get_contents.
+		// Error state: clear it.
+		error_clear_last();
+
+		// Response headers: clear Q_WebServer_State's accumulated headers
+		// and any native header() calls from the previous request.
+		if (class_exists('Q_WebServer_State', false)) {
+			Q_WebServer_State::clear();
+		}
+		// Issue #16: also clear Q_Response accumulated state (scripts,
+		// styles, cookies, errors) so they don't leak between requests.
+		if (class_exists('Q_Response', false)
+			&& method_exists('Q_Response', 'clear')) {
+			Q_Response::clear();
+		}
+		if (function_exists('header_remove')) {
+			@header_remove();
+		}
+
+		// DB connections: flush transaction state. A persistent worker that
+		// serves request A (which starts a transaction) and then request B
+		// would leak A's uncommitted transaction into B. ROLLBACK is safe
+		// even if no transaction is active (it's a no-op).
+		if (class_exists('Db', false) && method_exists('Db', 'getConnection')) {
+			try {
+				foreach (Db::getConnections() as $conn) {
+					if (method_exists($conn, 'rawQuery')) {
+						$conn->rawQuery('ROLLBACK');
+					}
+				}
+			} catch (\Throwable $e) { /* no DB configured — that's fine */ }
+		}
+	}
+
 
 	/**
 	 * Child: handle requests. In octane mode, loops with snapshot restore
@@ -167,6 +473,11 @@ class Q_WebServer_Pool
 	protected static function childRun($socket, $octane = false, $maxReqs = 0)
 	{
 		stream_set_blocking($socket, true);
+		// An octane worker blocks on readExact() between requests, sometimes
+		// for minutes. Without this, PHP's default_socket_timeout (60s) makes
+		// that read return '' and the worker exits, so the first request after
+		// an idle period gets a 502. There is no deadline on waiting for work.
+		stream_set_timeout($socket, 86400);
 		$handled = 0;
 
 		do {
@@ -184,82 +495,22 @@ class Q_WebServer_Pool
 				continue;
 			}
 
-			// Execute the PHP script
+			// Execute the PHP script. If it calls exit(), the shutdown
+			// function below still sends its response.
+			if (!self::$exitHandlerRegistered) {
+				register_shutdown_function(array(__CLASS__, 'onExitDuringRequest'));
+				self::$exitHandlerRegistered = true;
+			}
+			self::$currentSocket = $socket;
 			$resp = self::executeScript($req);
-			self::writeMsg($socket, $resp['status'], $resp['body'], $resp['headers']);
+			self::writeMsg($socket, $resp['status'], $resp['body'],
+				$resp['headers'], $resp['cookies'] ?? array());
+			self::$currentSocket = null;
 			$handled++;
 
 			if (!$octane) break;
 
-			// ── Octane: reset state for the next request ──
-
-			// Compat layer: fire shutdown callbacks, restore error/exception
-			// handlers, unregister request autoloaders, restore env vars,
-			// close sessions, clean up uploads — all BEFORE snapshot restore
-			// so shutdown callbacks see the request's final state.
-			if (class_exists('Q_WebServer_Compat', false)
-				&& Q_WebServer_Compat::isEnabled()) {
-				Q_WebServer_Compat::shutdown();
-				// Re-init for next request (re-registers file:// wrapper)
-				Q_WebServer_Compat::init();
-			}
-
-			// Static properties: the snapshot captures the clean state the parent
-			// had after preloading. restoreStatics() resets all user-defined class
-			// statics via ReflectionProperty::setValue — 0.05ms, vs 8ms for fork.
-			if (class_exists('Q_WebServer_Snapshot', false)) {
-				// Auto-introspect: scripts may declare new classes (e.g. inline
-				// class definitions). These weren't in the original snapshot
-				// because they didn't exist at preload time. Detect and add them
-				// so their statics get reset on subsequent requests.
-				Q_WebServer_Snapshot::updateNewClasses();
-				Q_WebServer_Snapshot::restoreStatics();
-			}
-
-			// Global variables: remove anything the script added.
-			// Keep superglobals and the server's own bookkeeping.
-			$keepGlobals = array('_GET','_POST','_COOKIE','_SERVER','_REQUEST',
-				'_FILES','_ENV','_SESSION','GLOBALS','argv','argc',
-				'_Q_RAW_INPUT');
-			foreach (array_keys($GLOBALS) as $gk) {
-				if (!in_array($gk, $keepGlobals, true)) {
-					unset($GLOBALS[$gk]);
-				}
-			}
-
-			// Superglobals: overwritten by executeScript() on next iteration.
-			// Output buffers: non-removable buffer in executeScript, read via ob_get_contents.
-			// Error state: clear it.
-			error_clear_last();
-
-			// Response headers: clear Q_WebServer_State's accumulated headers
-			// and any native header() calls from the previous request.
-			if (class_exists('Q_WebServer_State', false)) {
-				Q_WebServer_State::clear();
-			}
-			// Issue #16: also clear Q_Response accumulated state (scripts,
-			// styles, cookies, errors) so they don't leak between requests.
-			if (class_exists('Q_Response', false)
-				&& method_exists('Q_Response', 'clear')) {
-				Q_Response::clear();
-			}
-			if (function_exists('header_remove')) {
-				@header_remove();
-			}
-
-			// DB connections: flush transaction state. A persistent worker that
-			// serves request A (which starts a transaction) and then request B
-			// would leak A's uncommitted transaction into B. ROLLBACK is safe
-			// even if no transaction is active (it's a no-op).
-			if (class_exists('Db', false) && method_exists('Db', 'getConnection')) {
-				try {
-					foreach (Db::getConnections() as $conn) {
-						if (method_exists($conn, 'rawQuery')) {
-							$conn->rawQuery('ROLLBACK');
-						}
-					}
-				} catch (\Throwable $e) { /* no DB configured — that's fine */ }
-			}
+			self::resetForNextRequest();
 
 			// Voluntary recycling: after N requests, exit so the parent
 			// re-forks a clean worker. Safety net for state the snapshot
@@ -276,7 +527,7 @@ class Q_WebServer_Pool
 	 * The script (index.php, action.php, etc.) internally calls
 	 * Q_WebController::execute() or Q_ActionController::execute().
 	 */
-	protected static function executeScript($req)
+	protected static function prepareRequest($req)
 	{
 		// ── Reset ALL superglobals to prevent cross-request leaks ──
 		// $_SERVER: strip all HTTP_* headers and app-injected keys from
@@ -309,6 +560,14 @@ class Q_WebServer_Pool
 		$_SERVER['SCRIPT_NAME'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['PHP_SELF'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
+
+		// Match PHP-FPM / built-in server: set cwd to the document root
+		// so relative paths in frameworks (Twig templates, etc.) resolve.
+		$docRoot = $_SERVER['DOCUMENT_ROOT'];
+		if ($docRoot !== '' && is_dir($docRoot)) {
+			chdir($docRoot);
+		}
+
 		$_SERVER['SERVER_NAME'] = $req['headers']['host'] ?? 'localhost';
 		$_SERVER['SERVER_PORT'] = $req['serverPort'] ?? '8080';
 		$_SERVER['REMOTE_ADDR'] = $req['remoteAddr'] ?? '127.0.0.1';
@@ -360,6 +619,16 @@ class Q_WebServer_Pool
 			);
 		}
 
+		// Sanitize $_SERVER: PSR-7 implementations (e.g. Diactoros)
+		// reject booleans in header values. Cast everything to string.
+		foreach ($_SERVER as $k => $v) {
+			if (is_bool($v)) {
+				$_SERVER[$k] = $v ? '1' : '';
+			} elseif (!is_string($v) && !is_numeric($v) && !is_array($v)) {
+				$_SERVER[$k] = (string)$v;
+			}
+		}
+
 		// ── Clear and rebuild all input superglobals ──
 		$_GET = $_POST = $_REQUEST = $_FILES = array();
 		$_COOKIE = array();
@@ -404,22 +673,84 @@ class Q_WebServer_Pool
 		// which would destroy a normal buffer. Passing flags=0 makes
 		// ob_end_flush()/ob_end_clean() fail on this buffer, so it survives.
 		// We read it with ob_get_contents(). (Same fix as dispatchToQ, issue #12.)
-		ob_start(null, 0, 0);
+		// Our buffer: cleanable (so each request starts empty) but not
+		// removable, because front controllers call ob_end_flush() and would
+		// otherwise pop it. It used to be opened with flags 0, which also made
+		// it impossible to clean: every page stayed in it and was printed to
+		// the server's stdout when the worker exited, and octane workers
+		// stacked a new permanent buffer on every request.
+		if (self::$bufferLevel === 0 || ob_get_level() < self::$bufferLevel) {
+			ob_start(null, 0, PHP_OUTPUT_HANDLER_CLEANABLE);
+			self::$bufferLevel = ob_get_level();
+		} else {
+			while (ob_get_level() > self::$bufferLevel && @ob_end_clean()) {}
+			@ob_clean();
+		}
+	}
+
+	protected static function executeScript($req)
+	{
+		self::prepareRequest($req);
+		$failed = false;
+		try {
+			if (self::$scriptRunner) {
+				// Booted framework: the adapter handles the request with the
+				// state its boot master prepared, instead of including the
+				// front controller from scratch.
+				call_user_func(self::$scriptRunner, $req);
+			} else {
+				include($req['scriptFilename']);
+			}
+		} catch (\Throwable $e) {
+			$failed = true;
+			if (ob_get_level()) @ob_clean();
+			echo $e->getMessage();
+			// PHP logs uncaught exceptions; catching them here must not hide them
+			error_log(sprintf('PHP Fatal error:  Uncaught %s: %s in %s:%d%sStack trace:%s%s',
+				get_class($e), $e->getMessage(), $e->getFile(), $e->getLine(),
+				PHP_EOL, PHP_EOL, $e->getTraceAsString()));
+		}
+		return self::collectResponse($failed ? 500 : null);
+	}
+
+	/**
+	 * Gather status, headers and body for the current request.
+	 * @method collectResponse
+	 * @static
+	 * @param {integer|null} $forceStatus
+	 * @return {array}
+	 */
+	protected static function collectResponse($forceStatus = null)
+	{
 		$status = 200;
 		$headers = array();
-		try {
-			include($req['scriptFilename']);
+		if ($forceStatus === null) {
 			// Collect headers from native header() (works in fpm, no-op in CLI)
 			foreach (headers_list() as $h) {
 				if (strpos($h, ':') !== false) {
 					list($k, $v) = explode(':', $h, 2);
-					$headers[trim($k)] = trim($v);
+					$k = trim($k);
+					if (strcasecmp($k, 'Set-Cookie') === 0) {
+						$headers['Set-Cookie'][] = trim($v);
+					} else {
+						$headers[$k] = trim($v);
+					}
 				}
 			}
 			// Also collect headers from Q_WebServer_State (works in CLI/octane)
 			if (class_exists('Q_WebServer_State', false)) {
 				foreach (\Q_WebServer_State::getHeaders() as $k => $v) {
-					$headers[$k] = $v;
+					if ($k === 'Set-Cookie') {
+						$headers['Set-Cookie'] = array_merge(
+							(array) ($headers['Set-Cookie'] ?? array()), (array) $v);
+					} else {
+						$headers[$k] = $v;
+					}
+				}
+				// Cookies set with setcookie() (rewritten to Q_Response::setCookie)
+				// were never collected here, so they never reached the client.
+				foreach (\Q_WebServer_State::cookieHeaders() as $c) {
+					$headers['Set-Cookie'][] = $c;
 				}
 			}
 			$code = http_response_code();
@@ -446,20 +777,63 @@ class Q_WebServer_Pool
 					}
 				} catch (\Throwable $ignore) {}
 			}
-		} catch (\Throwable $e) {
-			$status = 500;
-			if (ob_get_level()) ob_clean();
-			echo $e->getMessage();
+		} else {
+			$status = $forceStatus;
 		}
-		// ob_get_contents reads the non-removable buffer; ob_get_clean would
-		// return false. Then drop any buffers we can.
+		// Buffers the script opened and left open hold part of the page
+		// (caching plugins rely on the end-of-request flush): fold them down
+		// into ours, then read and empty ours.
 		$body = '';
-		if (ob_get_level()) {
-			$body = (string) ob_get_contents();
-			@ob_clean();
+		if (self::$bufferLevel > 0) {
+			while (ob_get_level() > self::$bufferLevel && @ob_end_flush()) {}
+			if (ob_get_level() >= self::$bufferLevel) {
+				$body = (string) ob_get_contents();
+
+				@ob_clean();
+			}
 		}
 		while (@ob_end_clean()) { /* drop removable buffers */ }
-		return compact('status', 'body', 'headers');
+
+		// Cookies live in Q_Response, which is the worker's memory. The
+		// parent used to read its own copy when writing the response and so
+		// found nothing: setcookie() reached the client from no script at
+		// all. Carry them across with the response.
+		$cookies = array();
+		if (class_exists('Q_WebServer_State', false)
+		and method_exists('Q_WebServer_State', 'cookieHeaders')) {
+			$cookies = (array) Q_WebServer_State::cookieHeaders();
+		}
+		return compact('status', 'body', 'headers', 'cookies');
+	}
+
+	/** @var integer Output-buffer level of the worker's response buffer (public for Compat shims) */
+	public static $bufferLevel = 0;
+
+	/** @var resource|null Socket of the request this worker is serving */
+	protected static $currentSocket = null;
+	protected static $exitHandlerRegistered = false;
+
+	/**
+	 * Shutdown function for workers: if the script called exit() or die()
+	 * in the middle of a request (header('Location: ...'); exit; is the
+	 * common case), send what it produced instead of dropping the response.
+	 * Without this the client got a 502.
+	 * @method onExitDuringRequest
+	 * @static
+	 */
+	static function onExitDuringRequest()
+	{
+		$sock = self::$currentSocket;
+		if (!$sock || !is_resource($sock)) return;
+		self::$currentSocket = null;
+		$err = error_get_last();
+		$fatal = $err && in_array($err['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR), true);
+		$resp = self::collectResponse($fatal ? 500 : null);
+		if ($fatal && $resp['body'] === '') {
+			$resp['body'] = 'Internal Server Error';
+		}
+		self::writeMsg($sock, $resp['status'], $resp['body'], $resp['headers']);
+		self::runShutdownCallbacks();
 	}
 
 	// ── Parent-side dispatch ─────────────────────────────
@@ -530,21 +904,7 @@ class Q_WebServer_Pool
 			Q_Evented::enable($this->watchers[$index]);
 		}
 
-		$msg = json_encode(array(
-			'method'         => $parsed['method'],
-			'uri'            => $parsed['uri'],
-			'path'           => $parsed['path'],
-			'query'          => $parsed['query'],
-			'headers'        => $parsed['headers'],
-			'rawHeaders'     => $parsed['rawHeaders'] ?? array(),
-			'body'           => $parsed['body'],
-			'scriptFilename' => $scriptPath,
-			'scriptName'     => self::scriptName($scriptPath),
-			'documentRoot'   => rtrim(Q_WebServer::$rootDir ?? '', '/\\'),
-			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
-			'remoteAddr'     => '127.0.0.1'
-		));
-		$written = @fwrite($this->workers[$index]['socket'], pack('N', strlen($msg)) . $msg);
+		$written = @fwrite($this->workers[$index]['socket'], self::encodeRequest($parsed, $scriptPath));
 		if ($written === false || $written === 0) {
 			// Worker died before receiving the request — recycle and re-queue
 			$this->pending[] = array($client, $parsed, $scriptPath);
@@ -584,6 +944,21 @@ class Q_WebServer_Pool
 		$json = substr($buf, 4, $len);
 		$response = json_decode($json, true);
 
+		if ($response && !empty($response['b64'])) {
+			$decoded = is_string($response['body'] ?? null)
+				? base64_decode($response['body'], true) : false;
+			if ($decoded === false) {
+				$response = array(
+					'status' => 500,
+					'body' => 'Invalid binary response payload',
+					'headers' => array('Content-Type' => 'text/plain')
+				);
+			} else {
+				$response['body'] = $decoded;
+				unset($response['b64']);
+			}
+		}
+
 		// Check for cache messages piggybacked on the response
 		if ($response && !empty($response['_cacheMessages'])) {
 			foreach ($response['_cacheMessages'] as $msg) {
@@ -593,8 +968,15 @@ class Q_WebServer_Pool
 		}
 
 		$client = $this->workerClients[$index] ?? null;
+		$reqHeaders = $this->workerRequestHeaders[$index] ?? [];
 		if ($response && $client && is_resource($client)) {
+			$reqHeaders['_keepAlive'] = false;
+			$this->workerRequestHeaders[$index] = $reqHeaders;
 			$this->sendHttp($client, $response, $index);
+			Q_WebServer::closeClient((int) $client);
+		}
+		if ($client && class_exists('Q_WebServer_Boot', false)) {
+			Q_WebServer_Boot::requestFinished($client);
 		}
 
 		// In octane mode the worker is still alive — mark it idle so it
@@ -602,18 +984,23 @@ class Q_WebServer_Pool
 		// child exited after one request).
 		if ($this->octane) {
 			$this->workers[$index]['busy'] = false;
+			$this->workers[$index]['requests'] = ($this->workers[$index]['requests'] ?? 0) + 1;
 			$this->workerBuffers[$index] = '';
 			unset($this->workerClients[$index]);
-			// CANCEL the readable watcher entirely. stream_select reports a
-			// Unix socket pair as readable whenever the other end is alive
-			// (fread returns '' rather than blocking), so a disabled-but-
-			// registered watcher fires endlessly. sendTo() creates a fresh
-			// one-shot watcher for the next dispatch.
+
+			// Recycle if marked for graceful recycling, or hit maxRequests
+			$shouldRecycle = !empty($this->workers[$index]['recycleAfter'])
+				|| ($this->maxRequests > 0 && $this->workers[$index]['requests'] >= $this->maxRequests);
+
+			if ($shouldRecycle) {
+				$this->recycle($index, false);
+				return;
+			}
+
 			if (isset($this->watchers[$index])) {
 				Q_Evented::cancel($this->watchers[$index]);
 				unset($this->watchers[$index]);
 			}
-			// Process any pending requests
 			if (!empty($this->pending)) {
 				$next = array_shift($this->pending);
 				$this->dispatch($next[0], $next[1], $next[2]);
@@ -685,6 +1072,71 @@ class Q_WebServer_Pool
 			if (!$w['busy']) return $i;
 		}
 		return null;
+	}
+
+	/**
+	 * Gracefully recycle a single worker: let it finish its current request,
+	 * then replace it with a fresh fork.
+	 * If the worker is idle, recycle immediately.
+	 */
+	function recycleWorker($index)
+	{
+		if (!isset($this->workers[$index])) return false;
+		if ($this->workers[$index]['busy']) {
+			// Mark for recycling after current request finishes
+			$this->workers[$index]['recycleAfter'] = true;
+			return 'pending';
+		}
+		$this->recycle($index, false);
+		return 'recycled';
+	}
+
+	/**
+	 * Gracefully recycle ALL workers (rolling restart).
+	 * Idle workers are replaced immediately. Busy workers are marked
+	 * and replaced when their current request finishes.
+	 * Returns count of immediately recycled vs pending.
+	 */
+	function recycleAll()
+	{
+		$immediate = 0;
+		$pending = 0;
+		foreach ($this->workers as $i => $w) {
+			if ($w['busy']) {
+				$this->workers[$i]['recycleAfter'] = true;
+				$pending++;
+			} else {
+				$this->recycle($i, false);
+				$immediate++;
+			}
+		}
+		return ['immediate' => $immediate, 'pending' => $pending];
+	}
+
+	/**
+	 * Get stats for the control panel.
+	 */
+	function workerStats()
+	{
+		$stats = [];
+		foreach ($this->workers as $i => $w) {
+			$stats[] = [
+				'index' => $i,
+				'pid' => $w['pid'],
+				'busy' => $w['busy'],
+				'requests' => $w['requests'] ?? 0,
+				'recycleAfter' => !empty($w['recycleAfter']),
+			];
+		}
+		return [
+			'workers' => $stats,
+			'total' => count($this->workers),
+			'busy' => count(array_filter($this->workers, function($w) { return $w['busy']; })),
+			'idle' => count(array_filter($this->workers, function($w) { return !$w['busy']; })),
+			'maxRequests' => $this->maxRequests,
+			'mode' => $this->octane ? 'persistent' : 'fork-per-request',
+			'pending' => count($this->pending),
+		];
 	}
 
 	/**
@@ -820,16 +1272,46 @@ class Q_WebServer_Pool
 		$buf = '';
 		while (strlen($buf) < $n) {
 			$c = fread($sock, $n - strlen($buf));
-			if ($c === false || $c === '') return false;
+			if ($c === false || $c === '') {
+				// '' means EOF only when feof() says so. A read timeout —
+				// or a signal interrupting the read — also yields '', and
+				// treating that as EOF kills a perfectly healthy worker.
+				if (feof($sock)) return false;
+				$meta = @stream_get_meta_data($sock);
+				if (!empty($meta['timed_out'])) continue;
+				return false;
+			}
 			$buf .= $c;
 		}
 		return $buf;
 	}
 
-	protected static function writeMsg($sock, $status, $body, $headers)
+	protected static function writeMsg($sock, $status, $body, $headers,
+		$cookies = array())
 	{
-		$j = json_encode(compact('status', 'body', 'headers'));
-		fwrite($sock, pack('N', strlen($j)) . $j);
+		$j = json_encode(compact('status', 'body', 'headers', 'cookies'));
+		if ($j === false) {
+			// Binary body (invalid UTF-8): carry it as base64
+			$b64 = true;
+			$body = base64_encode((string)$body);
+			$j = json_encode(
+				compact('status', 'body', 'headers', 'cookies', 'b64'),
+				JSON_INVALID_UTF8_SUBSTITUTE
+			);
+		}
+		$frame = pack('N', strlen($j)) . $j;
+		$total = strlen($frame);
+		$written = 0;
+		while ($written < $total) {
+			$n = @fwrite($sock, substr($frame, $written));
+			if ($n === false) break;
+			if ($n === 0) {
+				if (!is_resource($sock) || feof($sock)) break;
+				usleep(1000);
+				continue;
+			}
+			$written += $n;
+		}
 	}
 }
 
