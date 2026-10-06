@@ -164,6 +164,12 @@ class Q_Evented_StreamSelect extends Q_Evented_Driver
 			return;
 		}
 
+		// Filter out closed/invalid resources — a watcher callback may have
+		// closed a socket that was already in this iteration's read/write arrays.
+		$read = array_filter($read, 'is_resource');
+		$write = array_filter($write, 'is_resource');
+		if (empty($read) && empty($write)) return;
+
 		$wait = $timeout;
 		if ($nextTimer !== null) {
 			$wait = ($wait !== null) ? min($wait, $nextTimer) : $nextTimer;

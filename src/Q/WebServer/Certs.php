@@ -79,6 +79,11 @@ class Q_WebServer_Certs
 		self::$keyPath = Q::ifset($config, 'key',
 			$certsDir . DS . 'privkey.pem');
 
+		// Ensure DH parameters exist for DHE key exchange.
+		// If no dhparam.pem found, generate a 2048-bit one in the background.
+		// This takes 2-10 seconds but only happens once.
+		self::ensureDhparam($certsDir);
+
 		// Check if we have valid certs already
 		$valid = self::validateCerts();
 
@@ -122,18 +127,88 @@ class Q_WebServer_Certs
 			return null;
 		}
 
-		return stream_context_create(array(
-			'ssl' => array(
-				'local_cert'        => self::$certPath,
-				'local_pk'          => self::$keyPath,
-				'verify_peer'       => false,
-				'verify_peer_name'  => false,
-				'allow_self_signed' => true,
-				'crypto_method'     => STREAM_CRYPTO_METHOD_TLSv1_2_SERVER
-					| STREAM_CRYPTO_METHOD_TLSv1_3_SERVER,
-			)
-		));
+		$sslOpts = array(
+			'local_cert'        => self::$certPath,
+			'local_pk'          => self::$keyPath,
+			'verify_peer'       => false,
+			'verify_peer_name'  => false,
+			'allow_self_signed' => true,
+			'crypto_method'     => STREAM_CRYPTO_METHOD_TLSv1_2_SERVER
+				| STREAM_CRYPTO_METHOD_TLSv1_3_SERVER,
+
+			// ── Cipher suite (nginx parity) ──────────────────────
+			// Prefer ECDHE for forward secrecy. GCM for AEAD.
+			// Exclude weak ciphers (RC4, 3DES, export, null).
+			'ciphers' => implode(':', array(
+				'ECDHE-ECDSA-AES128-GCM-SHA256',
+				'ECDHE-RSA-AES128-GCM-SHA256',
+				'ECDHE-ECDSA-AES256-GCM-SHA384',
+				'ECDHE-RSA-AES256-GCM-SHA384',
+				'ECDHE-ECDSA-CHACHA20-POLY1305',
+				'ECDHE-RSA-CHACHA20-POLY1305',
+				'DHE-RSA-AES128-GCM-SHA256',
+				'DHE-RSA-AES256-GCM-SHA384',
+				'!aNULL', '!eNULL', '!EXPORT', '!DES',
+				'!RC4', '!3DES', '!MD5', '!PSK'
+			)),
+
+			// ── Session resumption ───────────────────────────────
+			// Reuse TLS sessions to avoid full handshakes on repeat
+			// connections. PHP's stream wrapper doesn't expose
+			// shared session caches, but enabling session tickets
+			// (the default in OpenSSL) lets clients resume.
+			'disable_compression' => true,
+
+			// ── Honor server cipher preference ───────────────────
+			'honor_cipher_order' => true,
+		);
+
+		// ── DH parameters ────────────────────────────────────
+		// If a dhparam file exists, use it for DHE key exchange.
+		// Generates stronger DH groups than OpenSSL's built-in 1024-bit.
+		// Generate with: openssl dhparam -out local/certs/dhparam.pem 2048
+		$dhparamPaths = array(
+			dirname(self::$certPath) . '/dhparam.pem',
+			'local/certs/dhparam.pem',
+			'/etc/ssl/certs/dhparam.pem'
+		);
+		if (function_exists('qbix_data_path')) {
+			array_unshift($dhparamPaths, qbix_data_path('certs/dhparam.pem'));
+		}
+		foreach ($dhparamPaths as $dhpath) {
+			if (is_file($dhpath)) {
+				$sslOpts['dh_param'] = $dhpath;
+				break;
+			}
+		}
+
+		// ── ECDH curve ───────────────────────────────────────
+		// Use P-256 (prime256v1) for ECDHE — fast, widely supported.
+		if (defined('OPENSSL_KEYTYPE_EC')) {
+			$sslOpts['ecdh_curve'] = 'prime256v1';
+		}
+
+		// ── OCSP stapling ────────────────────────────────────
+		// PHP's stream wrapper doesn't directly support OCSP stapling
+		// (no ssl_stapling equivalent in stream_context). True OCSP
+		// stapling requires fetching the OCSP response from the CA
+		// and attaching it during the TLS handshake, which only
+		// OpenSSL's low-level API supports — not PHP's stream layer.
+		//
+		// If a staple file exists (fetched externally by a cron job
+		// or certbot's --staple-ocsp), we note it for future use
+		// when PHP adds stapling support or we switch to a custom
+		// TLS accept path via FFI.
+		$staplePath = dirname(self::$certPath) . '/ocsp-staple.der';
+		if (is_file($staplePath)) {
+			self::$ocspStaplePath = $staplePath;
+		}
+
+		return stream_context_create(array('ssl' => $sslOpts));
 	}
+
+	/** Path to OCSP staple file (for future use / FFI TLS). */
+	static $ocspStaplePath = null;
 
 	/**
 	 * Check if current certs exist and are not expired.
@@ -163,6 +238,46 @@ class Q_WebServer_Certs
 	 * @param {string} $certPath Path to PEM cert
 	 * @return {integer|null} Expiry timestamp or null
 	 */
+	/**
+	 * Ensure a DH parameters file exists for DHE cipher suites.
+	 *
+	 * DHE (Diffie-Hellman Ephemeral) needs a pre-generated DH group.
+	 * Without it, OpenSSL uses a built-in 1024-bit group which is
+	 * considered weak. We generate a 2048-bit group on first run.
+	 *
+	 * @param string $certsDir Directory to store dhparam.pem
+	 */
+	static function ensureDhparam($certsDir)
+	{
+		$dhpath = $certsDir . '/dhparam.pem';
+		if (is_file($dhpath)) return;
+
+		// Also check the system-wide location
+		if (is_file('/etc/ssl/certs/dhparam.pem')) return;
+
+		// Generate in the background (takes 2-10 seconds)
+		@mkdir($certsDir, 0755, true);
+		$tmpPath = $dhpath . '.tmp';
+		$cmd = "openssl dhparam -out " . escapeshellarg($tmpPath) . " 2048 2>/dev/null"
+			. " && mv " . escapeshellarg($tmpPath) . " " . escapeshellarg($dhpath);
+
+		// Non-blocking: fork the generation so it doesn't delay startup
+		if (function_exists('pcntl_fork')) {
+			$pid = pcntl_fork();
+			if ($pid === 0) {
+				exec($cmd);
+				exit(0);
+			}
+			if ($pid > 0) {
+				fwrite(STDERR, "  [TLS] Generating DH parameters (background, PID $pid)\n");
+			}
+		} else {
+			// No fork — generate synchronously (blocks startup briefly)
+			fwrite(STDERR, "  [TLS] Generating DH parameters (this takes a few seconds)...\n");
+			exec($cmd);
+		}
+	}
+
 	static function certExpiry($certPath)
 	{
 		if (!function_exists('openssl_x509_parse')) return null;
