@@ -34,6 +34,15 @@ jobs:
       - name: Cookies and sessions
         run: bash tests/cookies-sessions.sh
 
+      - name: phpinfo renderer
+        run: php tests/phpinfo.php
+
+      - name: Document root listing
+        run: bash tests/root-listing.sh
+
+      - name: Idle worker survival
+        run: bash tests/idle-worker.sh
+
       - name: End-to-end probe (standalone only)
         run: bash tests/run-probe.sh
         continue-on-error: true

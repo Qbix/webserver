@@ -132,7 +132,13 @@ class Q_WebServer_Headers
 
 		// ── Send response ────────────────────────────────
 		$headers['Content-Length'] = strlen($body);
-		$headers['Connection'] = 'close';
+
+		// Keep-alive: persistent workers can reuse the connection.
+		// Forked children always close (the child exits after writing).
+		// Check _keepAlive from the parsed request, or default to close
+		// for safety (child processes, CGI mode).
+		$keepAlive = $requestHeaders['_keepAlive'] ?? false;
+		$headers['Connection'] = $keepAlive ? 'keep-alive' : 'close';
 
 		// Cookies set by the script. A pooled response carries them, because
 		// they were built in the worker and this process has none of its own;
@@ -157,9 +163,13 @@ class Q_WebServer_Headers
 		);
 
 		$reason = $reasons[$status] ?? 'OK';
-		$out = "HTTP/1.1 $status $reason\r\n";
+		static $serverTag = null;
+		if ($serverTag === null) {
+			$serverTag = 'QbixServer/' . (defined('QBIX_SERVER_VERSION') ? QBIX_SERVER_VERSION : '1.0');
+		}
+		$out = "HTTP/1.1 $status $reason\r\nServer: $serverTag\r\n";
 		foreach ($headers as $k => $v) {
-			$out .= "$k: $v\r\n";
+			foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		}
 		// Multiple Set-Cookie headers (can't use the associative array for dupes)
 		if (count($cookieHeaders) > 1) {
@@ -211,7 +221,7 @@ class Q_WebServer_Headers
 			$headers['Connection'] = 'close';
 
 			$out = "HTTP/1.1 200 OK\r\n";
-			foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+			foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 			fwrite($client, $out . "\r\n");
 
 			$fp = fopen($compressed['path'], 'rb');
@@ -237,7 +247,7 @@ class Q_WebServer_Headers
 			$headers['Connection'] = 'close';
 
 			$out = "HTTP/1.1 200 OK\r\n";
-			foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+			foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 			@fwrite($client, $out . "\r\n" . $body);
 			return;
 		}
@@ -247,7 +257,7 @@ class Q_WebServer_Headers
 		$headers['Connection'] = 'close';
 
 		$out = "HTTP/1.1 200 OK\r\n";
-		foreach ($headers as $k => $v) $out .= "$k: $v\r\n";
+		foreach ($headers as $k => $v) foreach ((array) $v as $__v) $out .= "$k: $__v\r\n";
 		fwrite($client, $out . "\r\n");
 
 		$fp = fopen($fsPath, 'rb');

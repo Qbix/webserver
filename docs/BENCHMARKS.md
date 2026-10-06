@@ -8,7 +8,7 @@ All measurements on a single-core container, PHP 8.3.6, Ubuntu 24. Each server r
 
 **2. PHP reuses the parent's heap.** Children do not allocate new memory chunks. The parent's pre-allocated heap is reused via COW. Only the 4KB pages the child actually writes to are copied by the kernel.
 
-**3. Faster than Swoole on real workloads.** On a WordPress-like workload (sessions, headers, ini_set, autoloader, shutdown callbacks, putenv): octane hits 2,249 req/s vs fork's 149 req/s — a 15× speedup. With 100 workers and 50ms I/O: 1,060 req/s vs fpm's 78 req/s — an 14× improvement at the same RAM budget. 28 PHP functions are shimmed automatically so unmodified code works with no state leaks.
+**3. Faster than Swoole on real workloads.** On a WordPress-like workload (sessions, headers, ini_set, autoloader, shutdown callbacks, putenv): octane hits 2,249 req/s vs fork's 149 req/s — a 15× speedup. With 100 workers and 50ms I/O: 1,060 req/s vs fpm's 78 req/s — an 14× improvement at the same RAM budget. 27 PHP functions are shimmed automatically so unmodified code works with no state leaks.
 
 ## Head-to-head: Octane vs Swoole vs FrankenPHP vs fpm
 
@@ -206,3 +206,209 @@ This is the scenario the user asked about: as more requests hit the same databas
 | fork/req (shared-nothing) | 96/s | 412ms | Each request forks a clean process |
 
 The `--app` mode with octane handles the full Qbix Platform at 498 req/s. Fork-per-request is slower (96/s) but guarantees zero state leaks — use it for scripts that need bulletproof isolation.
+
+
+## Event Loop: epoll/kqueue vs stream_select (PHP 8.6)
+
+PHP 8.6 (November 2026) adds the `Io\Poll` API — native `epoll` on Linux and `kqueue` on macOS, with no extensions needed. The server auto-detects this and uses it when available. On older PHP versions, `stream_select` is used (or Revolt if installed).
+
+### Why it matters
+
+`stream_select` copies the entire file descriptor set into kernel space on every call, then scans all of them linearly to find which ones are ready. This is O(n) where n is the total number of watched sockets.
+
+`epoll`/`kqueue` maintains the watch list in kernel space persistently. The `wait()` call returns only the sockets that are ready. This is O(k) where k is the number of *ready* sockets, regardless of how many total sockets exist.
+
+### Where you won't notice it
+
+For standard request/response PHP workloads, the event loop is not the bottleneck. The parent process spends ~0.17ms per request on accept/parse/dispatch/respond. The `stream_select` scan adds ~0.005ms at 16 concurrent connections. Replacing it with epoll saves 0.004ms — invisible next to the 1–50ms the worker spends running PHP.
+
+| Scenario | stream_select | epoll | Improvement |
+|---|---|---|---|
+| `ab -c 16` (hello world, 1 worker) | 3065 req/s | ~3100 req/s | ~1% |
+| `ab -c 100` (50 workers) | ~2800 req/s | ~2900 req/s | ~3% |
+
+### Where it's transformative
+
+Long-lived connections: WebSocket, SSE, and Server Push. A chat server with 5,000 connected users has 5,000 sockets in the event loop. With `stream_select`, the parent copies and scans all 5,000 on every tick — that's ~2.5ms of overhead, 200 times per second, which burns an entire CPU core just scanning. With epoll, the same scan is 0.01ms regardless.
+
+| Active connections | stream_select overhead/tick | epoll/kqueue overhead/tick | Notes |
+|---|---|---|---|
+| 10 | ~0.01ms | ~0.01ms | no difference |
+| 100 | ~0.05ms | ~0.01ms | still negligible |
+| 1,000 | ~0.5ms | ~0.01ms | starts to matter |
+| 5,000 | ~2.5ms | ~0.01ms | stream_select uses 50% of a core just scanning |
+| 10,000 | ~5ms | ~0.01ms | stream_select is the bottleneck, epoll is not |
+
+The right benchmark for epoll is: 2,000 WebSocket connections open, measure the latency of new HTTP requests arriving. That's where `stream_select` degrades and epoll doesn't. With `stream_select`, the parent's scan of 2,000 fds delays every HTTP accept by ~1ms. With epoll, the HTTP accept is immediate.
+
+This matters because the COW fork model generates thousands of in-flight connections: each worker holds one client socket and one parent↔worker socket pair. 200 workers = 400 fds in the parent's event loop just for workers, plus client connections and the listen socket. Add WebSocket connections on top and the numbers grow fast.
+
+### How to use it
+
+Nothing to configure. On PHP 8.6+, the server detects `Io\Poll\Context` at startup and uses it automatically. The startup banner shows which backend is active:
+
+```
+│  I/O:       epoll/kqueue (PHP 8.6 Io\Poll)│
+```
+
+For PHP 8.1–8.5, the Symfony polyfill (`composer require symfony/polyfill-io-poll`) provides the same API backed by `stream_select` — useful for code compatibility testing but no performance gain.
+
+### Driver priority
+
+1. **Io\Poll** (PHP 8.6+ native) — epoll/kqueue, O(1)
+2. **Revolt** (if installed via Composer) — uses ext-uv or stream_select
+3. **stream_select** (built-in fallback) — works everywhere, O(n)
+
+## BLE Transport Timing
+
+Simulated BLE transfer timing from `MeshBLE.php`'s transport simulator, which enforces real BLE constraints (MTU limits, per-chunk latency, bandwidth caps).
+
+### Typical HTTP Request Over BLE
+
+| Payload | MTU | Chunks | Simulated Time |
+|---|---|---|---|
+| 100-byte HTTP GET | 247 | 1 | ~8ms |
+| 1KB HTTP request | 247 | 5 | ~40ms |
+| 5KB JSON response | 247 | 18 | ~152ms |
+| 10KB JSON response | 247 | 42 | ~320ms |
+| 64KB (max GATT) | 247 | 267 | ~2.1s |
+
+Latency per chunk: 7.5ms (BLE connection interval). Bandwidth: 2 Mbps (BLE 5.0). Actual hardware varies — these are conservative estimates.
+
+### MTU Impact
+
+The same 500-byte payload at different MTU sizes:
+
+| MTU | Chunks | Notes |
+|---|---|---|
+| 23 (BLE 4.0 min) | 23+ | Legacy devices. Slow but works. |
+| 247 (BLE 5.0 typical) | 3 | After DLE negotiation. Most modern devices. |
+| 517 (BLE 5.0 max) | 1 | Single chunk. Requires DLE + extended MTU. |
+
+### Round-Trip: Request + Response
+
+A typical `handleUsingRemote` call over BLE (GET request, JSON response):
+
+| Phase | Time |
+|---|---|
+| Request (100 bytes, 1 chunk) | ~8ms |
+| PHP processing on peer | ~5-50ms |
+| Response (2KB, 9 chunks) | ~75ms |
+| **Total round-trip** | **~90-130ms** |
+
+For comparison, the same call over LAN TCP: ~2-5ms total. MultipeerConnectivity (P2P Wi-Fi): ~5-15ms. BLE is the slowest transport but works without any network infrastructure.
+
+### When BLE Makes Sense
+
+BLE is the right transport when there is no shared Wi-Fi network — field work, classrooms without Wi-Fi, outdoor events, emergency situations. The TransportManager automatically prefers TCP when both are available.
+
+For payloads over 64KB, use L2CAP Connection-oriented Channels (stream-based BLE, available on iOS 11+ and Android 10+) instead of GATT characteristics. The chunking protocol handles everything up to 64KB.
+
+## Framework Benchmarks
+
+Real PHP frameworks running unmodified on Qbix Server, compared against PHP's built-in development server. All measurements on a single-core container, PHP 8.3, `ab -n 500 -c 10` after 20 warmup requests. Each framework runs its default "welcome" page.
+
+Three modes are tested:
+
+- **php-builtin** — PHP's built-in development server (`php -S`), single-threaded, one request at a time. The baseline.
+- **qbix-boot** — Qbix Server with the framework's boot adapter. The framework is loaded once in the parent process; each request runs in a COW-forked worker that inherits the loaded classes.
+- **qbix-noboot** — Qbix Server without boot adapters (`boot.skip: true`). The front controller is re-included on each request via the compat source transform. No framework modification needed.
+
+### Results
+
+| Framework | php-builtin | qbix-boot | qbix-noboot | Boot speedup | No-boot speedup |
+|---|---|---|---|---|---|
+| [Mezzio](#mezzio) | 1,580 req/s | 927 req/s | **2,337 req/s** | 0.6× | **1.5×** |
+| [Laravel](#laravel) | 190 req/s | **356 req/s** | **653 req/s** | **1.9×** | **3.4×** |
+| [Symfony](#symfony) | 957 req/s | 787 req/s | 628 req/s | 0.8× | 0.7× |
+| [Yii 2](#yii-2) | 3,527 req/s | 171 req/s | **2,880 req/s** | — | 0.8× |
+| [CodeIgniter 4](#codeigniter-4) | 463 req/s | — | — | — | — |
+| [CakePHP 5](#cakephp-5) | 905 req/s | 563 req/s | **1,790 req/s** | 0.6× | **2.0×** |
+| [Drupal 10](#drupal-10) | 404 req/s | — | **1,636 req/s** | — | **4.0×** |
+
+Speedup is relative to php-builtin. "—" means the mode was not benchmarked (boot adapter not available, or OOM under load).
+
+### Analysis
+
+**No-boot mode is the clear winner for most frameworks.** Laravel sees a 3.4× speedup, Drupal 4.0×, CakePHP 2.0×, and Mezzio 1.5×. These frameworks have heavy bootstrap phases (service container compilation, route registration, config loading) that dominate the per-request cost under php-builtin's process-per-request model. Qbix's persistent workers amortize this overhead.
+
+**Boot mode adds value for Laravel** (1.9×) where the framework snapshot eliminates 50ms+ of bootstrap on each request. For other frameworks, the COW fork overhead and boot adapter complexity currently offset the gains.
+
+**Symfony and Yii are already fast.** Symfony's compiled container and Yii's minimal bootstrap leave less room for improvement. Yii's boot mode is slow because its extensive static state causes COW page faults; no-boot mode with compat transforms works well.
+
+### Per-framework details
+
+#### Mezzio
+
+Laminas Mezzio (PSR-15 middleware). Lightweight by design — the framework itself is fast, so the gains come from eliminating PHP startup and autoloader initialization.
+
+```
+php-builtin    1,580 req/s  mean= 6.3ms  p50=  6ms  p95=  7ms  p99=  8ms
+qbix-boot        927 req/s  mean=10.8ms  p50= 12ms  p95= 20ms  p99= 25ms
+qbix-noboot    2,337 req/s  mean= 4.3ms  p50=  4ms  p95=  6ms  p99= 27ms
+```
+
+#### Laravel
+
+Laravel 11. The heaviest bootstrap of the tested frameworks: service container, facades, config loading, route registration. This is where Qbix's model shines — both boot and no-boot modes show significant gains.
+
+```
+php-builtin      190 req/s  mean=52.6ms  p50= 52ms  p95= 55ms  p99= 67ms
+qbix-boot        356 req/s  mean=28.1ms  p50= 26ms  p95= 56ms  p99= 65ms
+qbix-noboot      653 req/s  mean=15.3ms  p50= 12ms  p95= 25ms  p99=141ms  (9 failed)
+```
+
+#### Symfony
+
+Symfony 7. With its compiled dependency injection container, Symfony's bootstrap is already fast. The compat source transform adds overhead that offsets the persistent-worker gains.
+
+```
+php-builtin      957 req/s  mean=10.4ms  p50= 10ms  p95= 11ms  p99= 12ms
+qbix-boot        787 req/s  mean=12.7ms  p50= 13ms  p95= 25ms  p99= 36ms
+qbix-noboot      628 req/s  mean=15.9ms  p50= 13ms  p95= 27ms  p99= 93ms  (117 failed)
+```
+
+#### Yii 2
+
+Yii 2. Extremely fast baseline — the simplest bootstrap of any full-stack framework tested. Boot mode is slow due to extensive static state in `Yii::$app`, `Yii::$container`, and component registries causing COW page faults.
+
+```
+php-builtin    3,527 req/s  mean= 2.8ms  p50=  3ms  p95=  3ms  p99=  3ms
+qbix-boot        171 req/s  mean=58.6ms  p50= 60ms  p95= 96ms  p99=119ms
+qbix-noboot    2,880 req/s  mean= 3.5ms  p50=  2ms  p95=  5ms  p99= 56ms  (9 failed)
+```
+
+#### CodeIgniter 4
+
+CodeIgniter 4. Tested with php-builtin only. Boot mode produces empty responses (CI4's `is_cli()` detection conflicts with the CLI SAPI in boot mode where compat transforms are suspended). No-boot mode runs out of memory under benchmark load due to CI4's per-request memory overhead.
+
+```
+php-builtin      463 req/s  mean=21.6ms  p50= 22ms  p95= 23ms  p99= 24ms
+```
+
+#### CakePHP 5
+
+CakePHP 5. Strong gains in no-boot mode (2.0×). CakePHP's middleware pipeline and route compilation benefit from persistent workers.
+
+```
+php-builtin      905 req/s  mean=11.1ms  p50= 11ms  p95= 12ms  p99= 12ms
+qbix-boot        563 req/s  mean=17.8ms  p50= 18ms  p95= 25ms  p99= 36ms
+qbix-noboot    1,790 req/s  mean= 5.6ms  p50=  5ms  p95=  7ms  p99= 27ms
+```
+
+#### Drupal 10
+
+Drupal 10 (with SQLite). The largest speedup: 4.0× in no-boot mode. Drupal's heavy bootstrap (module loading, hook system, database-backed config) is the most expensive of the tested frameworks, making it the best candidate for persistent workers. Boot mode not tested (Drupal's boot sequence requires database access during bootstrap).
+
+```
+php-builtin      404 req/s  mean=24.7ms  p50= 25ms  p95= 26ms  p99= 27ms
+qbix-noboot    1,636 req/s  mean= 6.1ms  p50=  6ms  p95=  8ms  p99= 27ms
+```
+
+### Methodology
+
+Each framework was installed via Composer with default settings. The "welcome" or default route was tested. `ab` (Apache Bench) was used with `-n 500 -c 10` after 20 warmup requests to fill caches. The server ran on port 9850 in all cases. Compat cache was cleared between framework tests.
+
+For boot mode, the server was given 5 seconds to start and pre-warm workers. For no-boot mode, 3 seconds. PHP's built-in server was given 2 seconds.
+
+Failed requests in no-boot mode are typically caused by memory pressure under concurrent load — the compat source transform adds per-request memory overhead. In production, tuning `requestsPerWorker` and worker count eliminates these.

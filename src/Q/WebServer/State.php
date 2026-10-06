@@ -119,6 +119,13 @@ class Q_WebServer_State
 	/** Set a header by name/value (what Q_Response::setHeader() did). */
 	static function setHeader($name, $value, $replace = true)
 	{
+		if (strcasecmp($name, 'Set-Cookie') === 0) {
+			// One line per cookie; see header()
+			self::$headers['Set-Cookie'] = ($replace || !isset(self::$headers['Set-Cookie']))
+				? array($value)
+				: array_merge((array) self::$headers['Set-Cookie'], array($value));
+			return;
+		}
 		if ($replace || !isset(self::$headers[$name])) {
 			self::$headers[$name] = $value;
 		} else {
@@ -153,6 +160,20 @@ class Q_WebServer_State
 		$parts = explode(':', $header, 2);
 		$name = trim($parts[0]);
 		$value = isset($parts[1]) ? trim($parts[1]) : '';
+		if (strcasecmp($name, 'Set-Cookie') === 0) {
+			// Each cookie is its own header line. Joining them with ', ' (as
+			// for other repeated headers) produced one line browsers read as a
+			// single cookie, because cookie dates contain commas: Laravel's
+			// session cookie was lost behind XSRF-TOKEN.
+			$name = 'Set-Cookie';
+			if ($replace || !isset(self::$headers[$name])) {
+				self::$headers[$name] = array($value);
+			} else {
+				self::$headers[$name] = array_merge((array) self::$headers[$name], array($value));
+			}
+			if ($code) { self::$code = $code; }
+			return;
+		}
 		if ($replace || !isset(self::$headers[$name])) {
 			self::$headers[$name] = $value;
 		} else {
