@@ -725,57 +725,72 @@ class Q_WebServer_Pool
 		$status = 200;
 		$headers = array();
 		if ($forceStatus === null) {
-			// Collect headers from native header() (works in fpm, no-op in CLI)
-			foreach (headers_list() as $h) {
-				if (strpos($h, ':') !== false) {
-					list($k, $v) = explode(':', $h, 2);
-					$k = trim($k);
-					if (strcasecmp($k, 'Set-Cookie') === 0) {
-						$headers['Set-Cookie'][] = trim($v);
-					} else {
-						$headers[$k] = trim($v);
-					}
-				}
-			}
-			// Also collect headers from Q_WebServer_State (works in CLI/octane)
-			if (class_exists('Q_WebServer_State', false)) {
-				foreach (\Q_WebServer_State::getHeaders() as $k => $v) {
-					if ($k === 'Set-Cookie') {
-						$headers['Set-Cookie'] = array_merge(
-							(array) ($headers['Set-Cookie'] ?? array()), (array) $v);
-					} else {
-						$headers[$k] = $v;
-					}
-				}
-				// Cookies set with setcookie() (rewritten to Q_Response::setCookie)
-				// were never collected here, so they never reached the client.
-				foreach (\Q_WebServer_State::cookieHeaders() as $c) {
-					$headers['Set-Cookie'][] = $c;
-				}
-			}
-			$code = http_response_code();
-			if ($code && $code !== 200) $status = $code;
-
-			// Check Q_WebServer_State for status code (CLI SAPI ignores http_response_code)
-			if (class_exists('Q_WebServer_State', false)) {
-				$stateCode = \Q_WebServer_State::getStatusCode();
-				if ($stateCode && $stateCode !== 200) $status = $stateCode;
-			}
-
-			// Recover status from the Platform's own error state.
-			// Same fix as dispatchToQ: http_response_code() is a no-op under
-			// CLI SAPI, so the Platform's 412/424 errors arrive as 200.
-			if ($status === 200
-			and class_exists('Q_Response', false)
-			and method_exists('Q_Response', 'getErrors')) {
-				try {
-					foreach ((array) \Q_Response::getErrors() as $err) {
-						if (is_object($err) and !empty($err->httpResponseCode)) {
-							$status = (int) $err->httpResponseCode;
-							break;
+			try {
+				// Collect headers from native header() (works in fpm, no-op in CLI)
+				foreach (headers_list() as $h) {
+					if (strpos($h, ':') !== false) {
+						list($k, $v) = explode(':', $h, 2);
+						$k = trim($k);
+						if (strcasecmp($k, 'Set-Cookie') === 0) {
+							$headers['Set-Cookie'][] = trim($v);
+						} else {
+							$headers[$k] = trim($v);
 						}
 					}
-				} catch (\Throwable $ignore) {}
+				}
+				// Also collect headers from Q_WebServer_State (works in CLI/octane)
+				if (class_exists('Q_WebServer_State', false)) {
+					foreach (\Q_WebServer_State::getHeaders() as $k => $v) {
+						if ($k === 'Set-Cookie') {
+							$headers['Set-Cookie'] = array_merge(
+								(array) ($headers['Set-Cookie'] ?? array()), (array) $v);
+						} else {
+							$headers[$k] = $v;
+						}
+					}
+					// Cookies set with setcookie() (rewritten to Q_Response::setCookie)
+					// were never collected here, so they never reached the client.
+					foreach (\Q_WebServer_State::cookieHeaders() as $c) {
+						$headers['Set-Cookie'][] = $c;
+					}
+				}
+				$code = http_response_code();
+				if ($code && $code !== 200) $status = $code;
+
+				// Check Q_WebServer_State for status code (CLI SAPI ignores http_response_code)
+				if (class_exists('Q_WebServer_State', false)) {
+					$stateCode = \Q_WebServer_State::getStatusCode();
+					if ($stateCode && $stateCode !== 200) $status = $stateCode;
+				}
+
+				// Recover status from the Platform's own error state.
+				// Same fix as dispatchToQ: http_response_code() is a no-op under
+				// CLI SAPI, so the Platform's 412/424 errors arrive as 200.
+				if ($status === 200
+				and class_exists('Q_Response', false)
+				and method_exists('Q_Response', 'getErrors')) {
+					try {
+						foreach ((array) \Q_Response::getErrors() as $err) {
+							if (is_object($err) and !empty($err->httpResponseCode)) {
+								$status = (int) $err->httpResponseCode;
+								break;
+							}
+						}
+					} catch (\Throwable $ignore) {}
+				}
+			} catch (\Throwable $e) {
+				$status = 500;
+				if (ob_get_level()) ob_clean();
+				echo $e->getMessage(), ' in ', $e->getFile(), ':', $e->getLine();
+				if (Q_Config::get('Q', 'webserver', 'debug', false)) {
+					echo "\n\n", get_class($e), "\n", $e->getTraceAsString(), "\n";
+					for ($prev = $e->getPrevious(); $prev; $prev = $prev->getPrevious()) {
+						echo "\nCaused by ", get_class($prev), ': ',
+							$prev->getMessage(), ' in ', $prev->getFile(),
+							':', $prev->getLine(), "\n",
+							$prev->getTraceAsString(), "\n";
+					}
+				}
 			}
 		} else {
 			$status = $forceStatus;
