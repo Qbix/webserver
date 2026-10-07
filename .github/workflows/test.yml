@@ -28,11 +28,38 @@ jobs:
       - name: Main suite
         run: bash tests/run.sh --quick
 
+      - name: Compatibility stream regression
+        run: php tests/test_compat_namespace.php
+
       - name: SAPI suite
         run: php tests/testSapi.php
 
       - name: Working directory per request
         run: bash tests/working-directory.sh
+
+      - name: Autoloaders across requests
+        run: bash tests/autoloader-persistence.sh
+
+      - name: SCRIPT_NAME below the root
+        run: bash tests/script-name.sh
+
+      - name: Lazily initialised statics
+        run: bash tests/lazy-statics.sh
+
+      - name: Cookies and sessions
+        run: bash tests/cookies-sessions.sh
+
+      - name: Binary response bodies
+        run: bash tests/binary-response.sh
+
+      - name: phpinfo renderer
+        run: php tests/phpinfo.php
+
+      - name: Document root listing
+        run: bash tests/root-listing.sh
+
+      - name: Idle worker survival
+        run: bash tests/idle-worker.sh
 
       - name: End-to-end probe (standalone only)
         run: bash tests/run-probe.sh
