@@ -561,11 +561,11 @@ class Q_WebServer_Pool
 		$_SERVER['PHP_SELF'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
 
-		// Match PHP-FPM / built-in server: set cwd to the document root
-		// so relative paths in frameworks (Twig templates, etc.) resolve.
-		$docRoot = $_SERVER['DOCUMENT_ROOT'];
-		if ($docRoot !== '' && is_dir($docRoot)) {
-			chdir($docRoot);
+		// Match mod_php / PHP-FPM: set cwd to the script's directory so
+		// relative paths (template caches, require's) resolve beside it.
+		$scriptDir = dirname($req['scriptFilename']);
+		if ($scriptDir !== '' && is_dir($scriptDir)) {
+			chdir($scriptDir);
 		}
 
 		$_SERVER['SERVER_NAME'] = $req['headers']['host'] ?? 'localhost';
