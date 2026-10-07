@@ -34,6 +34,9 @@ jobs:
       - name: SAPI suite
         run: php tests/testSapi.php
 
+      - name: Working directory per request
+        run: bash tests/working-directory.sh
+
       - name: Autoloaders across requests
         run: bash tests/autoloader-persistence.sh
 
