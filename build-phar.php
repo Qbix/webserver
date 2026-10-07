@@ -51,6 +51,17 @@ if (is_dir($webDir)) {
 	}
 }
 
+// Add docs/ and README.md so the built-in viewer at /Q/docs works from the phar
+if (is_dir(__DIR__ . '/docs')) {
+	foreach (glob(__DIR__ . '/docs/*.md') as $doc) {
+		if (basename($doc) === 'outreach.md') continue; // internal notes
+		$phar->addFile($doc, 'docs/' . basename($doc));
+	}
+}
+if (is_file(__DIR__ . '/README.md')) {
+	$phar->addFile(__DIR__ . '/README.md', 'README.md');
+}
+
 $fileCount = $phar->count();
 
 // Minimal stub
