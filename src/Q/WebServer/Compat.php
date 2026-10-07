@@ -38,6 +38,7 @@ class Q_WebServer_Compat
 		'headers_list'         => 'Q_WebServer_Compat::_headers_list',
 		'header_remove'        => 'Q_WebServer_Compat::_header_remove',
 		'session_start'        => 'Q_WebServer_Compat::_session_start',
+		'session_id'           => 'Q_WebServer_Compat::_session_id',
 		'session_write_close'  => 'Q_WebServer_Compat::_session_write_close',
 		'session_regenerate_id'=> 'Q_WebServer_Compat::_session_regenerate_id',
 		'session_destroy'      => 'Q_WebServer_Compat::_session_destroy',
@@ -48,6 +49,7 @@ class Q_WebServer_Compat
 		'ini_set'              => 'Q_WebServer_Compat::_ini_set',
 		'set_time_limit'       => 'Q_WebServer_Compat::_set_time_limit',
 		'getallheaders'        => 'Q_WebServer_Compat::_getallheaders',
+		'phpinfo'              => 'Q_WebServer_Compat::_phpinfo',
 		'apache_request_headers' => 'Q_WebServer_Compat::_getallheaders',
 		// Octane safety — lifecycle functions that leak state in persistent workers
 		'register_shutdown_function' => 'Q_WebServer_Compat::_register_shutdown_function',
@@ -58,6 +60,27 @@ class Q_WebServer_Compat
 		'spl_autoload_register'=> 'Q_WebServer_Compat::_spl_autoload_register',
 		'spl_autoload_unregister' => 'Q_WebServer_Compat::_spl_autoload_unregister',
 		'putenv'               => 'Q_WebServer_Compat::_putenv',
+		'stream_wrapper_unregister' => 'Q_WebServer_Compat::_stream_wrapper_unregister',
+		'define'               => 'Q_WebServer_Compat::_define',
+		// SAPI detection — frameworks check php_sapi_name() and is_cli()
+		// to route requests; the server runs under CLI SAPI but serves HTTP.
+		'php_sapi_name'        => 'Q_WebServer_Compat::_php_sapi_name',
+		// Output buffer safety — protect Qbix's non-removable capture buffer.
+		// ob_get_level() is adjusted so loops like `while (ob_get_level() > 0)`
+		// terminate instead of spinning forever on the unremovable buffer.
+		'ob_end_flush'         => 'Q_WebServer_Compat::_ob_end_flush',
+		'ob_end_clean'         => 'Q_WebServer_Compat::_ob_end_clean',
+		'ob_get_clean'         => 'Q_WebServer_Compat::_ob_get_clean',
+		'ob_get_level'         => 'Q_WebServer_Compat::_ob_get_level',
+	);
+
+	/**
+	 * Constant replacements: built-in constant → expression.
+	 * These are replaced when used as bare constants (no parentheses).
+	 * Keys are uppercase constant names.
+	 */
+	private static $constantReplacements = array(
+		'PHP_SAPI' => "\\Q_WebServer_Compat::_php_sapi_name()",
 	);
 
 	/** @var array In-memory transform cache: realpath → ['source' => ..., 'mtime' => ...] */
@@ -74,6 +97,13 @@ class Q_WebServer_Compat
 
 	/** @var bool Whether a session is currently active */
 	private static $sessionActive = false;
+
+	/**
+	 * The session id this layer manages. PHP's own session machinery is
+	 * not used, so its session_id() is not the place to keep it.
+	 * @var string
+	 */
+	private static $sessionId = '';
 
 	/** @var string Current session file path */
 	private static $sessionFile = '';
@@ -199,12 +229,26 @@ class Q_WebServer_Compat
 		}
 		self::$errorHandlerStack = array();
 
-		// ── Restore autoloader stack to boot state ──
-		if (self::$bootAutoloadersCaptured) {
-			foreach (self::$requestAutoloaders as $loader) {
-				spl_autoload_unregister($loader);
-			}
-		}
+		// ── Autoloaders stay registered ──
+		// They used to be unregistered here, to hand the next request the
+		// boot-time stack. But a class declared during a request stays
+		// declared, and an application registers its autoloader behind a
+		// guard on exactly that:
+		//
+		//     if (!class_exists('ezpAutoloader', false)) {
+		//         class ezpAutoloader { ... }
+		//         spl_autoload_register(array('ezpAutoloader', 'autoload'));
+		//     }
+		//
+		// Second request: the class is still there, the block is skipped,
+		// the autoloader is not registered again -- and nothing can be
+		// loaded any more. eZ Publish answered the first request and then
+		// reported "Class eZDB not found" for every one after it.
+		//
+		// Removing half of the pair is what breaks; keeping both matches
+		// what the worker actually is. An autoloader that closes over one
+		// request's state would be a problem, but that is rare, and far
+		// rarer than the guarded registration this used to break.
 		self::$requestAutoloaders = array();
 
 		// ── Restore environment variables ──
@@ -246,9 +290,34 @@ class Q_WebServer_Compat
 		self::$sessionActive = false;
 		self::$sessionFile = '';
 		self::$sessionFp = null;
+		self::$sessionId = '';
 		self::$requestHeaders = array();
 
 		@stream_wrapper_restore('file');
+	}
+
+	/**
+	 * Run captured shutdown callbacks and flush an open session, whether or
+	 * not init() ran in this process. Rewritten code calls the shims either
+	 * way, so a single-use worker forked before compat was initialized still
+	 * holds callbacks and session data that must not be dropped.
+	 * @method finishRequest
+	 * @static
+	 */
+	static function finishRequest()
+	{
+		$callbacks = self::$shutdownCallbacks;
+		self::$shutdownCallbacks = array();
+		foreach ($callbacks as $entry) {
+			try {
+				call_user_func_array($entry[0], $entry[1]);
+			} catch (\Throwable $e) {
+				// Shutdown callbacks must not kill the worker
+			}
+		}
+		if (self::$sessionActive) {
+			self::_session_write_close();
+		}
 	}
 
 	/**
@@ -292,14 +361,71 @@ class Q_WebServer_Compat
 
 		$tokens = token_get_all($source);
 		$count = count($tokens);
-		$out = '';
+		// One element per token, joined at the end. Not `$out .= ...`: on
+		// PHP 8.3's function JIT with hot-loop counters (opcache.jit=1235,
+		// which shivammathur/setup-php turns on by default), entering the
+		// compiled loop mid-run doubled the accumulated string, so a file
+		// came out with its first lines repeated and failed to parse. The
+		// array form never triggers it, and indexing by token lets the
+		// backslash-strip below remove the separator token itself.
+		$out = array();
 		$changed = false;
 
 		for ($i = 0; $i < $count; $i++) {
 			$token = $tokens[$i];
 
 			if (!is_array($token)) {
-				$out .= $token;
+				$out[$i] = $token;
+				continue;
+			}
+
+			// ── require / require_once context-aware transforms ──
+			//
+			// In persistent workers, a front controller is re-included every
+			// request. Two problems arise:
+			//
+			// 1. `$app = require_once 'bootstrap/app.php'` returns `true` on
+			//    re-inclusion instead of the app instance → fatal.
+			//    Fix: assigned require_once → require (always re-executes).
+			//
+			// 2. `require 'Yii.php'` re-defines classes on re-inclusion →
+			//    "Cannot redeclare class" fatal.
+			//    Fix: standalone require → require_once (skip on re-inclusion).
+			//
+			// Same logic applies to include/include_once variants.
+			if ($token[0] === T_REQUIRE_ONCE || $token[0] === T_INCLUDE_ONCE) {
+				$isExpression = false;
+				for ($j = $i - 1; $j >= 0; $j--) {
+					if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+					if ($tokens[$j] === '=' || $tokens[$j] === '(') { $isExpression = true; }
+					break;
+				}
+				if ($isExpression) {
+					// $var = require_once → $var = require
+					$out[$i] = ($token[0] === T_REQUIRE_ONCE ? 'require' : 'include');
+					$changed = true;
+					continue;
+				}
+				$out[$i] = $token[1];
+				continue;
+			}
+			if ($token[0] === T_REQUIRE || $token[0] === T_INCLUDE) {
+				$isExpression = false;
+				for ($j = $i - 1; $j >= 0; $j--) {
+					if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+					// '=' means assigned ($var = require ...) — return value matters.
+					// '(' means expression context ((require ...)(...)) — return value matters.
+					// '.', '??' etc. also mean expression context but are rare.
+					if ($tokens[$j] === '=' || $tokens[$j] === '(') { $isExpression = true; }
+					break;
+				}
+				if (!$isExpression) {
+					// standalone require → require_once  (idempotent)
+					$out[$i] = ($token[0] === T_REQUIRE ? 'require_once' : 'include_once');
+					$changed = true;
+					continue;
+				}
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -311,12 +437,31 @@ class Q_WebServer_Compat
 				// \header(), \setcookie(), etc. — strip the leading backslash
 				$name = strtolower(ltrim($token[1], '\\'));
 			} else {
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
 			if (!isset(self::$replacements[$name])) {
-				$out .= $token[1];
+				// Not a function we replace — check if it's a constant
+				$constName = $token[1]; // constants are case-sensitive
+				if (isset(self::$constantReplacements[$constName])) {
+					// Make sure it's not preceded by '::' or '->' or 'const'
+					$prevCheck = $i - 1;
+					while ($prevCheck >= 0 && is_array($tokens[$prevCheck]) && $tokens[$prevCheck][0] === T_WHITESPACE) $prevCheck--;
+					$isQualified = ($prevCheck >= 0 && (
+						(is_array($tokens[$prevCheck]) && (
+							$tokens[$prevCheck][0] === T_DOUBLE_COLON
+							|| $tokens[$prevCheck][0] === T_OBJECT_OPERATOR
+							|| $tokens[$prevCheck][0] === T_CONST
+						))
+					));
+					if (!$isQualified) {
+						$out[$i] = self::$constantReplacements[$constName];
+						$changed = true;
+						continue;
+					}
+				}
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -330,11 +475,14 @@ class Q_WebServer_Compat
 					break;
 				}
 				if ($hasParen) {
-					$out .= self::$replacements[$name];
+					// Leading backslash: the shim class is global, and an
+					// unqualified name inside `namespace Foo;` would resolve
+					// to Foo\Q_WebServer_Compat and fatal.
+					$out[$i] = '\\' . self::$replacements[$name];
 					$changed = true;
 					continue;
 				}
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -343,7 +491,7 @@ class Q_WebServer_Compat
 			// Must NOT have '->' or '::' before it (that's a method call)
 			// Must NOT have 'function' before it (that's a definition)
 			if (!self::isGlobalFunctionCall($tokens, $i, $count)) {
-				$out .= $token[1];
+				$out[$i] = $token[1];
 				continue;
 			}
 
@@ -352,14 +500,14 @@ class Q_WebServer_Compat
 			$prevIdx = $i - 1;
 			while ($prevIdx >= 0 && is_array($tokens[$prevIdx]) && $tokens[$prevIdx][0] === T_WHITESPACE) $prevIdx--;
 			if ($prevIdx >= 0 && is_array($tokens[$prevIdx]) && $tokens[$prevIdx][0] === T_NS_SEPARATOR) {
-				$out = substr($out, 0, -1); // remove the trailing '\'
+				$out[$prevIdx] = ''; // drop the '\' token
 			}
 
-			$out .= self::$replacements[$name];
+			$out[$i] = '\\' . self::$replacements[$name];
 			$changed = true;
 		}
 
-		$result = $changed ? $out : $source;
+		$result = $changed ? implode('', $out) : $source;
 
 		// Save to cache
 		if ($changed && $filePath) {
@@ -558,6 +706,33 @@ class Q_WebServer_Compat
 	}
 
 	/**
+	 * Replacement for phpinfo().
+	 *
+	 * phpinfo() renders an HTML page under mod_php and fpm, but the CLI-family
+	 * SAPIs — phpmicro included — emit plain text instead, and the choice is a
+	 * SAPI flag no ini setting reaches. Q_WebServer_PhpInfo parses that text
+	 * back into the familiar tables.
+	 */
+	static function _phpinfo($flags = INFO_ALL)
+	{
+		ob_start();
+		phpinfo($flags);
+		echo self::phpinfoAsHtml((string) ob_get_clean());
+		return true;
+	}
+
+	/**
+	 * Render phpinfo() output as HTML. Markup is returned unchanged, so this
+	 * is safe to call whatever the SAPI produced.
+	 * @param {string} $out Raw phpinfo() output
+	 * @return {string}
+	 */
+	static function phpinfoAsHtml($out)
+	{
+		return Q_WebServer_PhpInfo::render($out);
+	}
+
+	/**
 	 * Replacement for setcookie().
 	 */
 	static function _setcookie(
@@ -645,6 +820,32 @@ class Q_WebServer_Compat
 	 * Replacement for session_start().
 	 * File-based sessions with proper locking for concurrent requests.
 	 */
+	/**
+	 * Replacement for session_id().
+	 *
+	 * Reports, and before the session starts sets, the id this layer uses.
+	 * The native function is no use here: it refuses to set once output has
+	 * begun, and it would answer for a session that is never started.
+	 *
+	 * @param {string} $id New id, or null to only read
+	 * @return {string|false} The previous id, or false if it could not be set
+	 */
+	static function _session_id($id = null)
+	{
+		$previous = self::$sessionId;
+		if ($id !== null) {
+			if (self::$sessionActive) {
+				trigger_error(
+					'session_id(): Session ID cannot be changed when a session is active',
+					E_USER_WARNING
+				);
+				return false;
+			}
+			self::$sessionId = (string) $id;
+		}
+		return $previous;
+	}
+
 	static function _session_start($options = array())
 	{
 		if (self::$sessionActive) return true;
@@ -658,14 +859,21 @@ class Q_WebServer_Compat
 		$maxLifetime = (int) ($options['gc_maxlifetime']
 			?? self::_ini_get('session.gc_maxlifetime')
 			?: 1440);
-		$id = $_COOKIE[$name] ?? '';
+		// An id set by session_id() before the session starts wins over
+		// the cookie, which is what PHP does.
+		$id = self::$sessionId ?: ($_COOKIE[$name] ?? '');
 
 		if (!$id || !preg_match('/^[a-zA-Z0-9,-]{22,256}$/', $id)) {
 			$id = bin2hex(random_bytes(16));
 			self::_setcookie($name, $id, 0, '/');
 		}
 
-		session_id($id);
+		// Deliberately not session_id($id): this layer runs the session
+		// itself, PHP's own is never started, and the native setter refuses
+		// once output has begun -- which under a persistent worker it has,
+		// so every session_start() printed "Session ID cannot be changed
+		// after headers have already been sent" into the response body.
+		self::$sessionId = $id;
 		self::$sessionFile = $savePath . DIRECTORY_SEPARATOR . 'sess_' . $id;
 
 		// Read with exclusive lock (held until write_close)
@@ -720,7 +928,7 @@ class Q_WebServer_Compat
 		if (!self::$sessionActive) return false;
 
 		$oldFile = self::$sessionFile;
-		$oldId = session_id();
+		$oldId = self::$sessionId;
 		$newId = bin2hex(random_bytes(16));
 
 		// Write current data and release lock on old file
@@ -739,8 +947,8 @@ class Q_WebServer_Compat
 			@unlink($oldFile);
 		}
 
-		// Set new ID
-		session_id($newId);
+		// Set new ID — ours, for the same reason as in _session_start()
+		self::$sessionId = $newId;
 		$savePath = dirname(self::$sessionFile);
 		self::$sessionFile = $savePath . DIRECTORY_SEPARATOR . 'sess_' . $newId;
 
@@ -1013,6 +1221,47 @@ class Q_WebServer_Compat
 	}
 
 	/**
+	 * Replacement for stream_wrapper_unregister().
+	 *
+	 * Hardened applications drop the phar wrapper -- eZ Publish, Drupal and
+	 * others have done it since the 2018 phar deserialisation work:
+	 *
+	 *     if (PHP_SAPI !== 'cli' && in_array('phar', stream_get_wrappers())) {
+	 *         stream_wrapper_unregister('phar');
+	 *     }
+	 *
+	 * Under a single-file build the server itself lives in that phar and
+	 * autoloads its own classes from phar:// paths, so the call takes the
+	 * server down with it. Not visibly: the classes already preloaded keep
+	 * working and only a request that needs a new one fails, with whatever
+	 * that request happened to be looking for -- "Class eZDB not found" for
+	 * a missing autoloader, nothing pointing at the wrapper. And a worker
+	 * outlives the request, so one page view degrades every later request
+	 * that worker handles, for every site it serves.
+	 *
+	 * So phar and file are kept. The call reports success, because an
+	 * application that hardens itself has no way to carry on if it fails and
+	 * nothing useful to do about a refusal.
+	 *
+	 * The application's intent is not served by this, and cannot be while
+	 * the server runs from a phar: the wrapper it wants gone is the one the
+	 * runtime is read through. What that hardening protects against --
+	 * deserialisation via an attacker-supplied phar:// path -- remains worth
+	 * handling where such paths are accepted.
+	 *
+	 * @param {string} $protocol
+	 * @return {boolean}
+	 */
+	static function _stream_wrapper_unregister($protocol)
+	{
+		$p = strtolower((string) $protocol);
+		if ($p === 'phar' or $p === 'file') {
+			return true;
+		}
+		return stream_wrapper_unregister($protocol);
+	}
+
+	/**
 	 * Replacement for putenv().
 	 * Records the previous value so shutdown() can restore it.
 	 */
@@ -1030,6 +1279,107 @@ class Q_WebServer_Compat
 			self::$requestEnvVars[$key] = ($old === false) ? false : $old;
 		}
 		return putenv($setting);
+	}
+
+	/**
+	 * Safe replacement for define().
+	 * Guards against "Constant already defined" errors that occur when
+	 * a front controller is re-included in persistent workers (no-boot mode).
+	 * Silently returns false if the constant already exists.
+	 *
+	 * @param string $name
+	 * @param mixed  $value
+	 * @param bool   $case_insensitive  Deprecated in PHP 8
+	 * @return bool
+	 */
+	static function _define($name, $value, $case_insensitive = false)
+	{
+		if (defined($name)) {
+			return false;
+		}
+		return define($name, $value, $case_insensitive);
+	}
+
+	// ── SAPI spoofing ────────────────────────────────────
+
+	/**
+	 * Return 'cli-server' instead of 'cli' so frameworks treat this
+	 * as an HTTP context rather than a console command.
+	 */
+	static function _php_sapi_name()
+	{
+		if (class_exists('Q_WebServer_Pool', false)) {
+			return 'cli-server';
+		}
+		return php_sapi_name();
+	}
+
+	// ── Output buffer safety ─────────────────────────────
+
+	/**
+	 * Safe ob_end_flush: refuses to remove Qbix's capture buffer.
+	 * Frameworks that loop `while (ob_get_level() > 0) ob_end_flush()`
+	 * would otherwise spin forever or destroy the response body.
+	 */
+	static function _ob_end_flush()
+	{
+		if (class_exists('Q_WebServer_Pool', false)
+			&& Q_WebServer_Pool::$bufferLevel > 0
+			&& ob_get_level() <= Q_WebServer_Pool::$bufferLevel
+		) {
+			return false; // Protect Qbix's non-removable buffer
+		}
+		return @ob_end_flush();
+	}
+
+	/**
+	 * Safe ob_end_clean: refuses to remove Qbix's capture buffer.
+	 */
+	static function _ob_end_clean()
+	{
+		if (class_exists('Q_WebServer_Pool', false)
+			&& Q_WebServer_Pool::$bufferLevel > 0
+			&& ob_get_level() <= Q_WebServer_Pool::$bufferLevel
+		) {
+			return false;
+		}
+		return @ob_end_clean();
+	}
+
+	/**
+	 * Safe ob_get_clean: refuses to remove Qbix's capture buffer.
+	 * Returns the buffer contents without removing it if at Qbix's level.
+	 */
+	static function _ob_get_clean()
+	{
+		if (class_exists('Q_WebServer_Pool', false)
+			&& Q_WebServer_Pool::$bufferLevel > 0
+			&& ob_get_level() <= Q_WebServer_Pool::$bufferLevel
+		) {
+			// Return contents but don't remove the buffer
+			$contents = ob_get_contents();
+			@ob_clean();
+			return $contents;
+		}
+		return ob_get_clean();
+	}
+
+	/**
+	 * Adjusted ob_get_level: hides Qbix's capture buffer from framework code.
+	 * Frameworks use `while (ob_get_level() > 0)` loops — without this,
+	 * those loops spin forever because the protected buffer can't be removed.
+	 */
+	static function _ob_get_level()
+	{
+		$level = ob_get_level();
+		if (class_exists('Q_WebServer_Pool', false)
+			&& Q_WebServer_Pool::$bufferLevel > 0
+		) {
+			// Subtract Qbix's buffer from the reported level so
+			// frameworks see 0 when only Qbix's buffer remains
+			return max(0, $level - Q_WebServer_Pool::$bufferLevel);
+		}
+		return $level;
 	}
 
 	// ── Multipart form-data parser ──────────────────────
@@ -1251,7 +1601,23 @@ class Q_WebServer_Compat
 	 * Load a framework preset config.
 	 * Presets set compat.skipSourceCodeTransform, compat.rewrite, compat.ini, etc.
 	 *
-	 * @param string $preset Preset name: 'laravel', 'symfony', 'wordpress', 'drupal'
+	 * @param string $preset Preset name
+	 *
+	 * Each preset enables the source rewriter and URL rewriting for its
+	 * framework. The boot adapter (Q_WebServer_Boot) uses the preset name
+	 * to pick the right adapter, which forks workers after the framework's
+	 * bootstrap:
+	 *
+	 *   laravel      — fork after Kernel::bootstrap() (providers, container, routes)
+	 *   symfony      — fork after Kernel::boot() (bundles, compiled container)
+	 *   wordpress    — fork after wp-load.php (plugins, theme, init hooks)
+	 *   drupal       — fork after DrupalKernel::boot() (modules, services)
+	 *   cakephp      — fork after Application::bootstrap() (plugins, middleware)
+	 *   codeigniter  — fork after CI4 system bootstrap (services, config)
+	 *   yii          — fork after Application constructor (components, modules)
+	 *   slim/mezzio  — fork after middleware pipeline + route configuration
+	 *   joomla       — fork after framework.php (extensions, plugins)
+	 *   magento      — fork after Bootstrap::create() (DI, modules, area)
 	 */
 	static function loadPreset($preset)
 	{
@@ -1302,6 +1668,96 @@ class Q_WebServer_Compat
 					'max_execution_time' => '240',
 				),
 			),
+			'cakephp' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '10M',
+					'post_max_size' => '12M',
+					'memory_limit' => '256M',
+					'max_execution_time' => '60',
+				),
+			),
+			'codeigniter' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '10M',
+					'post_max_size' => '12M',
+					'memory_limit' => '256M',
+					'max_execution_time' => '60',
+				),
+			),
+			'yii' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '10M',
+					'post_max_size' => '12M',
+					'memory_limit' => '256M',
+					'max_execution_time' => '60',
+				),
+			),
+			'slim' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '10M',
+					'post_max_size' => '12M',
+					'memory_limit' => '128M',
+					'max_execution_time' => '30',
+				),
+			),
+			'mezzio' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '10M',
+					'post_max_size' => '12M',
+					'memory_limit' => '128M',
+					'max_execution_time' => '30',
+				),
+			),
+			'joomla' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '32M',
+					'post_max_size' => '32M',
+					'memory_limit' => '256M',
+					'max_execution_time' => '300',
+				),
+			),
+			'magento' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '32M',
+					'post_max_size' => '32M',
+					'memory_limit' => '756M',
+					'max_execution_time' => '600',
+				),
+			),
+			'nextcloud' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '512M',
+					'post_max_size' => '512M',
+					'memory_limit' => '512M',
+					'max_execution_time' => '300',
+				),
+			),
+			'owncloud' => array(
+				'enabled' => true,
+				'rewrite' => 'index.php',
+				'ini' => array(
+					'upload_max_filesize' => '512M',
+					'post_max_size' => '512M',
+					'memory_limit' => '512M',
+					'max_execution_time' => '300',
+				),
+			),
 		);
 
 		if (!isset($presets[$preset])) {
@@ -1311,6 +1767,8 @@ class Q_WebServer_Compat
 		}
 
 		Q_Config::merge(array('Q' => array('compat' => $presets[$preset])));
+		// Remembered so Q_WebServer_Boot can pick the framework's boot adapter
+		Q_Config::set('Q', 'compat', 'preset', $preset);
 		return true;
 	}
 
@@ -1649,6 +2107,9 @@ class Q_WebServer_Compat
  */
 class Q_WebServer_CompatFileWrapper
 {
+	/** @var resource Stream context — PHP assigns this dynamically; declaring it
+	 *  suppresses 1800+ E_DEPRECATED warnings per request on PHP 8.2+. */
+	public $context;
 	/** @var resource The underlying file handle */
 	private $handle;
 	/** @var string Buffered transformed content for reading */
@@ -1657,8 +2118,19 @@ class Q_WebServer_CompatFileWrapper
 	private $position = 0;
 	/** @var bool Whether this file was transformed (reading from buffer) */
 	private $transformed = false;
+	/** @var string Underlying path for transformed stream metadata */
+	private $realPath = '';
+	/** @var array|false Metadata for the underlying file */
+	private $stat = false;
 	/** @var resource Directory handle */
 	private $dirHandle;
+
+	/** @var int Number of stream_open calls this request (diagnostic) */
+	public static $__openCount = 0;
+	/** @var int Number of url_stat calls this request (diagnostic) */
+	public static $__statCount = 0;
+	/** @var int Number of stat-cache hits this request (diagnostic) */
+	public static $__statCacheHits = 0;
 
 	// We need to restore the real file:// wrapper for actual file ops,
 	// then re-register ours. This prevents infinite recursion.
@@ -1674,8 +2146,10 @@ class Q_WebServer_CompatFileWrapper
 
 	public function stream_open($path, $mode, $options, &$opened_path)
 	{
+		self::$__openCount++;
 		// Strip file:// prefix if present
 		$realPath = preg_replace('/^file:\/\//', '', $path);
+		$this->realPath = $realPath;
 
 		// Only transform PHP files opened for reading (include/require)
 		$shouldTransform = (
@@ -1699,6 +2173,9 @@ class Q_WebServer_CompatFileWrapper
 				$this->buffer = $cached;
 				$this->position = 0;
 				$this->transformed = true;
+				self::unwrap();
+				$this->stat = @stat($realPath);
+				self::rewrap();
 				$opened_path = $realPath;
 				return true;
 			}
@@ -1724,6 +2201,7 @@ class Q_WebServer_CompatFileWrapper
 					$this->buffer = $transformed;
 					$this->position = 0;
 					$this->transformed = true;
+					$this->stat = @stat($realPath);
 					self::rewrap();
 					$opened_path = $realPath;
 					return true;
@@ -1782,7 +2260,10 @@ class Q_WebServer_CompatFileWrapper
 	public function stream_stat()
 	{
 		if ($this->transformed) {
-			return array('size' => strlen($this->buffer));
+			$stat = $this->stat;
+			if ($stat === false) return false;
+			$stat[7] = $stat['size'] = strlen($this->buffer);
+			return $stat;
 		}
 		self::unwrap();
 		$stat = fstat($this->handle);
@@ -1807,7 +2288,25 @@ class Q_WebServer_CompatFileWrapper
 	public function stream_lock($operation)
 	{
 		if ($this->transformed) return true;
+		// PHP calls stream_lock(0) to ask whether locking is supported
+		// (file_put_contents(..., LOCK_EX) does this). flock() rejects 0 with
+		// a ValueError, which broke every locked write through this wrapper,
+		// including Laravel's file sessions and file cache.
+		$op = $operation & ~LOCK_NB;
+		if ($op === 0) return true;
+		if ($op !== LOCK_SH && $op !== LOCK_EX && $op !== LOCK_UN) return false;
 		return flock($this->handle, $operation);
+	}
+
+	public function stream_truncate($newSize)
+	{
+		if ($this->transformed) return false;
+		return ftruncate($this->handle, $newSize);
+	}
+
+	public function stream_cast($castAs)
+	{
+		return $this->transformed ? false : $this->handle;
 	}
 
 	public function stream_flush()
@@ -1818,17 +2317,42 @@ class Q_WebServer_CompatFileWrapper
 
 	// ── Required for file_exists, is_file, stat, etc. ──
 
+	/** @var array Per-request stat cache to avoid repeated unwrap/rewrap cycles */
+	private static $statCache = array();
+	/** @var int Generation counter — incremented on reset to invalidate cache */
+	private static $statGen = 0;
+
+	/** Clear stat cache between requests */
+	public static function clearStatCache()
+	{
+		self::$statCache = array();
+		self::$statGen++;
+	}
+
 	public function url_stat($path, $flags)
 	{
+		self::$__statCount++;
 		$realPath = preg_replace('/^file:\/\//', '', $path);
+		// Per-request stat cache: file_exists() and is_file() are called
+		// repeatedly on the same paths during a single request (179+ times
+		// for Laravel's /json). Each goes through the expensive unwrap/rewrap
+		// cycle. Caching avoids that for all but the first call per path.
+		$cacheKey = $realPath . '|' . ($flags & STREAM_URL_STAT_LINK ? 'L' : 'S');
+		if (isset(self::$statCache[$cacheKey])) {
+			self::$__statCacheHits = (self::$__statCacheHits ?? 0) + 1;
+			return self::$statCache[$cacheKey];
+		}
 		self::unwrap();
+		$fn = ($flags & STREAM_URL_STAT_LINK) ? 'lstat' : 'stat';
 		if ($flags & STREAM_URL_STAT_QUIET) {
-			$stat = @stat($realPath);
+			$stat = @$fn($realPath);
 		} else {
-			$stat = stat($realPath);
+			$stat = $fn($realPath);
 		}
 		self::rewrap();
-		return $stat ?: false;
+		$result = $stat ?: false;
+		self::$statCache[$cacheKey] = $result;
+		return $result;
 	}
 
 	// ── Directory operations ──

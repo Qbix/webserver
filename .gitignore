@@ -19,3 +19,5 @@ bin/qbixserver
 qbixserver-linux-*
 qbixserver-macos-*
 qbixserver-windows-*
+keys/mesh.crt
+keys/mesh.key

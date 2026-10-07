@@ -65,7 +65,7 @@ class Q_WebServer_Panel
 			$route = substr($path, 7);
 			if ($route === 'auth/setup' || $route === 'auth/login') {
 				$result = self::handleAuthApi($route, $parsed);
-				Q_WebServer::sendResponse($client, $result['status'] ?? 200,
+				Q_WebServer::sendResponse($client, self::httpStatus($result),
 					json_encode($result), 'application/json');
 				return true;
 			}
@@ -79,8 +79,14 @@ class Q_WebServer_Panel
 			}
 
 			$result = self::handleApi($path, $parsed);
-			Q_WebServer::sendResponse($client, $result['status'] ?? 200,
-				json_encode($result), 'application/json');
+			if (!empty($result['_raw'])) {
+				Q_WebServer::sendResponse($client, 200,
+					$result['body'], $result['contentType'],
+					array('Cache-Control' => 'public, max-age=3600'));
+			} else {
+				Q_WebServer::sendResponse($client, self::httpStatus($result),
+					json_encode($result), 'application/json');
+			}
 			return true;
 		}
 
@@ -88,13 +94,30 @@ class Q_WebServer_Panel
 	}
 
 	/**
+	 * HTTP status for an API result. Results use a numeric 'status' to set the
+	 * response code, but some carry a descriptive 'status' of their own (a
+	 * proxied peer response with {"status":"ok"}, a peer's "connected" state).
+	 * Passing that string through produced "HTTP/1.1 ok" and crashed the
+	 * metrics recorder, which took the whole server down.
+	 */
+	private static function httpStatus($result)
+	{
+		$s = is_array($result) ? ($result['status'] ?? null) : null;
+		if (is_int($s) || (is_string($s) && ctype_digit($s))) {
+			$s = (int) $s;
+			if ($s >= 100 && $s <= 599) return $s;
+		}
+		return 200;
+	}
+
+	/**
 	 * Get the panel config file path
 	 */
-	private static function panelConfigPath()
+	static function panelConfigPath()
 	{
 		return defined('APP_DIR')
 			? APP_DIR . '/local/panel.json'
-			: sys_get_temp_dir() . '/qbix-panel.json';
+			: qbix_data_path('local/panel.json');
 	}
 
 	/**
@@ -132,6 +155,7 @@ class Q_WebServer_Panel
 				return array('error' => 'Failed to write config to ' . $configPath);
 			}
 			@chmod($configPath, 0600);
+			clearstatcache(true, $configPath);
 			return array('ok' => true, 'token' => $token);
 		}
 
@@ -183,6 +207,7 @@ class Q_WebServer_Panel
 	private static function checkAuth($parsed)
 	{
 		$configPath = self::panelConfigPath();
+		clearstatcache(true, $configPath);
 		if (!file_exists($configPath)) {
 			return array('ok' => false, 'needsSetup' => true,
 				'error' => 'No password set. Call auth/setup first.');
@@ -273,6 +298,12 @@ class Q_WebServer_Panel
 				return self::apiServeApp($parsed);
 			case 'apps/setdir':
 				return self::apiSetAppsDir($parsed);
+			case 'apps/icon':
+				return self::apiAppIcon($parsed);
+			case 'apps/logs':
+				return self::apiAppLogs($parsed);
+			case 'apps/files':
+				return self::apiAppFiles($parsed);
 			case 'scripts':
 				return self::apiListScripts($parsed);
 			case 'scripts/run':
@@ -307,10 +338,80 @@ class Q_WebServer_Panel
 				return self::apiRemoveDomain($parsed);
 			case 'domains/provision':
 				return self::apiProvisionCert($parsed);
+			case 'domains/hosts':
+				return self::apiHostsFile();
+			case 'domains/hosts/add':
+				return self::apiHostsAdd($parsed);
+			case 'autohost':
+				require_once dirname(__DIR__) . '/WebServer/Autohost.php';
+				return Q_WebServer_Autohost::status();
+			case 'autohost/toggle':
+				return self::apiAutohostToggle($parsed);
+			case 'watchdog':
+				require_once dirname(__DIR__) . '/WebServer/Watchdog.php';
+				return Q_WebServer_Watchdog::status();
+			case 'attestation':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				return Q_WebServer_Trust::attestation();
+			case 'attestation/sign':
+				return self::apiAttestationSign($parsed);
+			case 'attestation/verify':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				$qp = [];
+				if (is_string($parsed['query'] ?? null)) parse_str($parsed['query'], $qp);
+				elseif (is_array($parsed['query'] ?? null)) $qp = $parsed['query'];
+				$m = (int) ($qp['m'] ?? 0) ?: null;
+				return Q_WebServer_Trust::verifyBinary(null, $m);
+			case 'attestation/publish-rekor':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				$bp = realpath($_SERVER['SCRIPT_FILENAME'] ?? $GLOBALS['argv'][0]);
+				$uuid = Q_WebServer_Trust::publishToRekor($bp);
+				return $uuid
+					? ['published' => true, 'uuid' => $uuid, 'url' => "https://search.sigstore.dev/?uuid=$uuid"]
+					: ['status' => 500, 'error' => 'Failed. Sign the binary first.'];
+			case 'trust':
+				require_once dirname(__DIR__) . '/WebServer/Trust.php';
+				return Q_WebServer_Trust::status();
+			case 'trust/verify':
+				return self::apiTrustVerify($parsed);
+			case 'metrics':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				return Q_WebServer_Metrics::status();
+			case 'metrics/history':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$minutes = (int) ($qp['minutes'] ?? 60);
+				return ['stats' => Q_WebServer_Metrics::recentStats(min($minutes, 1440))];
+			case 'metrics/summary':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$hours = (int) ($qp['hours'] ?? 24);
+				return Q_WebServer_Metrics::summary(min($hours, 720));
+			case 'metrics/flow':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$limit = (int) ($qp['limit'] ?? 50);
+				return ['edges' => Q_WebServer_Metrics::flow(min($limit, 200))];
+			case 'metrics/pages':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$limit = (int) ($qp['limit'] ?? 20);
+				return ['pages' => Q_WebServer_Metrics::topPages(min($limit, 100))];
+			case 'metrics/pageflow':
+				require_once dirname(__DIR__) . '/WebServer/Metrics.php';
+				$qp = self::queryParams($parsed);
+				$path = $qp['path'] ?? '/';
+				return Q_WebServer_Metrics::pageFlow($path);
+			case 'cache/clear':
+				return self::apiClearCache();
 			case 'workers':
 				return self::apiWorkerStatus();
 			case 'workers/resize':
 				return self::apiWorkerResize($parsed);
+			case 'workers/recycle':
+				return self::apiWorkerRecycle($parsed);
+			case 'workers/detail':
+				return self::apiWorkerDetail();
 			case 'logs':
 				return self::apiLogs($parsed);
 			case 'cron':
@@ -339,6 +440,39 @@ class Q_WebServer_Panel
 				return self::apiQbixPluginInstall($parsed);
 			case 'qbix/plugins/schema':
 				return self::apiQbixPluginSchema($parsed);
+			// ── Mobile Build ──────────────
+			case 'mobile/toolchains':
+				return self::apiMobileToolchains();
+			case 'mobile/toolchain/install':
+				return self::apiMobileToolchainInstall($parsed);
+			case 'mobile/prepare':
+				return self::apiMobilePrepare($parsed);
+			case 'mobile/build':
+				return self::apiMobileBuild($parsed);
+			case 'mobile/builds':
+				return self::apiMobileBuilds($parsed);
+			case 'mobile/config':
+				return self::apiMobileConfig($parsed);
+			// ── Transport / Nearby ──────────────
+			case 'transport/peers':
+			case 'transport/register':
+			case 'transport/unregister':
+			case 'transport/heartbeat':
+			case 'transport/message':
+			case 'transport/event':
+			case 'transport/config':
+			case 'transport/status':
+			case 'transport/connect':
+			case 'transport/request':
+				require_once dirname(__DIR__) . '/WebServer/Transport.php';
+				$tAction = substr($route, 10); // strip 'transport/'
+				$tData = !empty($parsed['body']) ? json_decode($parsed['body'], true) : array();
+				if (!is_array($tData)) $tData = array();
+				// $parsed['query'] is the raw query string, not an array
+				$tQuery = $parsed['query'] ?? array();
+				if (!is_array($tQuery)) { $qp = array(); parse_str((string) $tQuery, $qp); $tQuery = $qp; }
+				$tData = array_merge($tData, $tQuery);
+				return Q_WebServer_Transport::handleApi($tAction, $tData);
 			default:
 				return array('status' => 404, 'error' => 'Unknown endpoint');
 		}
@@ -350,6 +484,9 @@ class Q_WebServer_Panel
 			? json_decode($parsed['body'], true) : array();
 		$configPath = self::panelConfigPath();
 		$config = json_decode(file_get_contents($configPath), true);
+		if (!is_array($config) || !isset($config['passwordHash'])) {
+			return array('error' => 'Panel config file is missing or corrupted');
+		}
 
 		$oldPw = $body['oldPassword'] ?? '';
 		$newPw = $body['newPassword'] ?? '';
@@ -362,9 +499,16 @@ class Q_WebServer_Panel
 		}
 
 		$config['passwordHash'] = password_hash($newPw, PASSWORD_DEFAULT);
-		// Invalidate all other sessions
-		$currentToken = $parsed['headers']['x-panel-token']
-			?? $parsed['cookies']['Q_panel_token'] ?? '';
+		// Invalidate all other sessions — find current token from all sources (matching checkAuth)
+		$currentToken = '';
+		$authH = $parsed['headers']['authorization'] ?? '';
+		if (strpos($authH, 'Bearer ') === 0) {
+			$currentToken = substr($authH, 7);
+		}
+		if (empty($currentToken)) {
+			$currentToken = $parsed['headers']['x-panel-token']
+				?? $parsed['cookies']['Q_panel_token'] ?? '';
+		}
 		$config['sessions'] = array();
 		if ($currentToken) {
 			$config['sessions'][$currentToken] = time() + 86400 * 7;
@@ -378,8 +522,15 @@ class Q_WebServer_Panel
 	{
 		$configPath = self::panelConfigPath();
 		$config = json_decode(file_get_contents($configPath), true);
-		$token = $parsed['headers']['x-panel-token']
-			?? $parsed['cookies']['Q_panel_token'] ?? '';
+		$token = '';
+		$authH = $parsed['headers']['authorization'] ?? '';
+		if (strpos($authH, 'Bearer ') === 0) {
+			$token = substr($authH, 7);
+		}
+		if (empty($token)) {
+			$token = $parsed['headers']['x-panel-token']
+				?? $parsed['cookies']['Q_panel_token'] ?? '';
+		}
 		if ($token && isset($config['sessions'][$token])) {
 			unset($config['sessions'][$token]);
 			if (!is_dir(dirname($configPath))) @mkdir(dirname($configPath), 0700, true);
@@ -426,6 +577,9 @@ class Q_WebServer_Panel
 			$hasScripts = is_dir($appDir . DS . 'scripts');
 			$isQbixApp = $hasConfig && isset($config['Q']);
 
+			$iconPath = self::resolveAppIcon($appDir, $config);
+			$fileBrowse = Q_Config::get('Q', 'webserver', 'panel', 'fileBrowser', $name, false);
+
 			$apps[] = array(
 				'name' => $appName,
 				'dir' => $appDir,
@@ -440,10 +594,307 @@ class Q_WebServer_Panel
 				'isQbixApp' => $isQbixApp,
 				'serving' => (self::$servingApp === $name),
 				'forkPerRequest' => $localConfig['Q']['webserver']['forkPerRequest'] ?? $config['Q']['webserver']['forkPerRequest'] ?? null,
+				'hasIcon' => $iconPath !== null,
+				'fileBrowse' => $fileBrowse,
 			);
 		}
 
 		return array('apps' => $apps, 'appsDir' => $appsDir);
+	}
+
+	/**
+	 * Resolve the icon/logo for an app directory.
+	 * Checks in order: config Q.icon → web/img/logo.png → web/img/logo/* →
+	 * web/favicon.ico → web/favicon.png. Returns null if nothing found locally.
+	 * @method resolveAppIcon
+	 * @static
+	 * @param {string} $appDir Absolute path to the app directory
+	 * @param {array|null} $config Parsed config/app.json, or null
+	 * @return {string|null} Relative path within the app dir (e.g. "web/img/logo.png"), or null
+	 */
+	static function resolveAppIcon($appDir, $config = null)
+	{
+		// 1. Config override (future: Q.icon in config)
+		$iconPath = $config['Q']['icon'] ?? null;
+		if ($iconPath) {
+			$full = $appDir . DS . $iconPath;
+			if (is_file($full)) return $iconPath;
+		}
+
+		// 2. web/img/logo.png (exact)
+		$webDir = $appDir . DS . 'web';
+		$logo = $webDir . DS . 'img' . DS . 'logo.png';
+		if (is_file($logo)) return 'web/img/logo.png';
+
+		// 3. web/img/logo/* (prefer logo.png, then first image found)
+		$logoDir = $webDir . DS . 'img' . DS . 'logo';
+		if (is_dir($logoDir)) {
+			if (is_file($logoDir . DS . 'logo.png')) return 'web/img/logo/logo.png';
+			$exts = array('png', 'jpg', 'jpeg', 'svg', 'gif', 'webp', 'ico');
+			foreach (scandir($logoDir) as $f) {
+				if ($f[0] === '.') continue;
+				$ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+				if (in_array($ext, $exts)) {
+					return 'web/img/logo/' . $f;
+				}
+			}
+		}
+
+		// 4. web/favicon.ico or web/favicon.png
+		foreach (array('favicon.ico', 'favicon.png') as $fav) {
+			if (is_file($webDir . DS . $fav)) return 'web/' . $fav;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Serve an app's icon file. Returns the raw bytes with appropriate content-type.
+	 * @method apiAppIcon
+	 * @static
+	 */
+	static function apiAppIcon($parsed)
+	{
+		$query = $parsed['query'] ?? '';
+		if (is_string($query)) parse_str($query, $params);
+		else $params = $query;
+		$appDirName = basename($params['app'] ?? '');
+		if (!$appDirName) return array('status' => 400, 'error' => 'app parameter required');
+
+		$appsDir = self::appsDir();
+		$appDir = $appsDir . DS . $appDirName;
+		if (!is_dir($appDir)) return array('status' => 404, 'error' => 'App not found');
+
+		$configFile = $appDir . DS . 'config' . DS . 'app.json';
+		$config = file_exists($configFile) ? json_decode(file_get_contents($configFile), true) : null;
+		$iconPath = self::resolveAppIcon($appDir, $config);
+
+		if (!$iconPath) {
+			// Return a default SVG icon
+			return array(
+				'_raw' => true,
+				'contentType' => 'image/svg+xml',
+				'body' => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="10" fill="#334155"/><text x="24" y="30" text-anchor="middle" fill="#94a3b8" font-size="20" font-family="system-ui">Q</text></svg>'
+			);
+		}
+
+		$file = $appDir . DS . str_replace('/', DS, $iconPath);
+		if (!is_file($file)) return array('status' => 404, 'error' => 'Icon file missing');
+
+		$ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+		$types = array(
+			'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+			'gif' => 'image/gif', 'svg' => 'image/svg+xml', 'webp' => 'image/webp',
+			'ico' => 'image/x-icon'
+		);
+		$ct = $types[$ext] ?? 'application/octet-stream';
+
+		return array(
+			'_raw' => true,
+			'contentType' => $ct,
+			'body' => file_get_contents($file)
+		);
+	}
+
+	/**
+	 * List log files available for an app.
+	 * Scans the app's configured logs directory.
+	 * @method apiAppLogs
+	 * @static
+	 */
+	static function apiAppLogs($parsed)
+	{
+		$query = $parsed['query'] ?? '';
+		if (is_string($query)) parse_str($query, $params);
+		else $params = $query;
+		$appDirName = basename($params['app'] ?? '');
+		$logFile = $params['file'] ?? '';
+		$lines = max(1, min((int)($params['lines'] ?? 50), 500));
+
+		if (!$appDirName) return array('status' => 400, 'error' => 'app parameter required');
+
+		$appsDir = self::appsDir();
+		$appDir = $appsDir . DS . $appDirName;
+		if (!is_dir($appDir)) return array('status' => 404, 'error' => 'App not found');
+
+		// Look for logs in several standard locations
+		$logDirs = array();
+		foreach (array('files/Q/logs', 'local/logs', 'logs') as $sub) {
+			$d = $appDir . DS . str_replace('/', DS, $sub);
+			if (is_dir($d)) $logDirs[$sub] = $d;
+		}
+
+		// If a specific file is requested, tail it
+		if ($logFile) {
+			// Security: prevent path traversal
+			$logFile = str_replace('\\', '/', $logFile);
+			if (strpos($logFile, '..') !== false) {
+				return array('status' => 400, 'error' => 'Invalid path');
+			}
+			// Find the file in one of the log directories
+			$found = null;
+			foreach ($logDirs as $sub => $d) {
+				$candidate = $d . DS . str_replace('/', DS, $logFile);
+				if (is_file($candidate)) {
+					$full = realpath($candidate);
+					// Ensure it's actually inside the app dir
+					if (strpos($full, realpath($appDir)) === 0) {
+						$found = $full;
+					}
+					break;
+				}
+			}
+			if (!$found) return array('lines' => array(), 'exists' => false);
+
+			// Tail efficiently
+			$result = array();
+			$fp = fopen($found, 'r');
+			if ($fp) {
+				$size = filesize($found);
+				$chunk = min($size, $lines * 512);
+				fseek($fp, max(0, $size - $chunk));
+				$content = fread($fp, $chunk);
+				fclose($fp);
+				$allLines = explode("\n", trim($content));
+				$result = array_slice($allLines, -$lines);
+			}
+			return array('lines' => $result, 'exists' => true, 'size' => filesize($found));
+		}
+
+		// List available log files
+		$files = array();
+		foreach ($logDirs as $sub => $d) {
+			self::scanLogDir($d, $sub, $files, $appDir);
+		}
+		// Sort by modification time descending
+		usort($files, function($a, $b) { return $b['mtime'] - $a['mtime']; });
+
+		return array('logDirs' => array_keys($logDirs), 'files' => $files);
+	}
+
+	/**
+	 * Recursively scan a directory for log files.
+	 * @method scanLogDir
+	 * @static
+	 * @param {string} $dir Directory to scan
+	 * @param {string} $prefix Prefix for display paths
+	 * @param {array} &$files Accumulator for found files
+	 * @param {string} $appDir Root app dir for security check
+	 * @param {int} $depth Current recursion depth
+	 */
+	private static function scanLogDir($dir, $prefix, &$files, $appDir, $depth = 0)
+	{
+		if ($depth > 3) return; // limit depth
+		$logExts = array('log', 'txt', 'err', 'out');
+		foreach (scandir($dir) as $f) {
+			if ($f[0] === '.') continue;
+			$full = $dir . DS . $f;
+			if (is_dir($full)) {
+				self::scanLogDir($full, $prefix . '/' . $f, $files, $appDir, $depth + 1);
+			} elseif (is_file($full)) {
+				$ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+				// Include .log files and common log naming patterns
+				if (in_array($ext, $logExts) || preg_match('/\.log\.\d+$/', $f)) {
+					$files[] = array(
+						'name' => $f,
+						'path' => $prefix . '/' . $f,
+						'size' => filesize($full),
+						'mtime' => filemtime($full),
+					);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Browse files in an app directory. Only works if enabled in config
+	 * for the specific app: Q.webserver.panel.fileBrowser.<appDirName> = true
+	 * @method apiAppFiles
+	 * @static
+	 */
+	static function apiAppFiles($parsed)
+	{
+		$query = $parsed['query'] ?? '';
+		if (is_string($query)) parse_str($query, $params);
+		else $params = $query;
+		$appDirName = basename($params['app'] ?? '');
+		$subPath = $params['path'] ?? '';
+
+		if (!$appDirName) return array('status' => 400, 'error' => 'app parameter required');
+
+		// Check config permission
+		$allowed = Q_Config::get('Q', 'webserver', 'panel', 'fileBrowser', $appDirName, false);
+		if (!$allowed) {
+			return array('status' => 403, 'error' => 'File browsing not enabled for this app. Set Q.webserver.panel.fileBrowser.' . $appDirName . ' = true in config.');
+		}
+
+		$appsDir = self::appsDir();
+		$appDir = $appsDir . DS . $appDirName;
+		if (!is_dir($appDir)) return array('status' => 404, 'error' => 'App not found');
+
+		// Security: prevent path traversal
+		$subPath = str_replace('\\', '/', $subPath);
+		if (strpos($subPath, '..') !== false) {
+			return array('status' => 400, 'error' => 'Invalid path');
+		}
+
+		$target = $subPath ? $appDir . DS . str_replace('/', DS, $subPath) : $appDir;
+		$realTarget = realpath($target);
+		if (!$realTarget || strpos($realTarget, realpath($appDir)) !== 0) {
+			return array('status' => 400, 'error' => 'Invalid path');
+		}
+
+		// If it's a file, return file info and contents (for text files)
+		if (is_file($realTarget)) {
+			$size = filesize($realTarget);
+			$ext = strtolower(pathinfo($realTarget, PATHINFO_EXTENSION));
+			$textExts = array('php','js','json','css','html','htm','txt','md','xml','yaml','yml',
+				'ini','cfg','conf','log','sql','sh','bat','env','htaccess','gitignore','handlebars');
+			$isText = in_array($ext, $textExts) || $size === 0;
+			$content = null;
+			if ($isText && $size < 524288) { // 512KB limit for text preview
+				$content = file_get_contents($realTarget);
+			}
+			return array(
+				'type' => 'file',
+				'name' => basename($realTarget),
+				'path' => $subPath,
+				'size' => $size,
+				'mtime' => filemtime($realTarget),
+				'ext' => $ext,
+				'isText' => $isText,
+				'content' => $content,
+			);
+		}
+
+		// It's a directory: list contents
+		if (!is_dir($realTarget)) {
+			return array('status' => 404, 'error' => 'Path not found');
+		}
+
+		$items = array();
+		foreach (scandir($realTarget) as $f) {
+			if ($f === '.') continue;
+			$full = $realTarget . DS . $f;
+			$isDir = is_dir($full);
+			$items[] = array(
+				'name' => $f,
+				'isDir' => $isDir,
+				'size' => $isDir ? null : filesize($full),
+				'mtime' => filemtime($full),
+			);
+		}
+		// Sort: directories first, then by name
+		usort($items, function($a, $b) {
+			if ($a['isDir'] !== $b['isDir']) return $b['isDir'] ? 1 : -1;
+			return strcasecmp($a['name'], $b['name']);
+		});
+
+		return array(
+			'type' => 'dir',
+			'path' => $subPath,
+			'items' => $items,
+		);
 	}
 
 	/**
@@ -453,7 +904,7 @@ class Q_WebServer_Panel
 	static function apiSetForkMode($parsed)
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
-		$appDirName = $body['app'] ?? '';
+		$appDirName = basename($body['app'] ?? '');
 		$forkMode = $body['forkPerRequest'] ?? null;
 
 		if (!$appDirName) return array('status' => 400, 'error' => 'App name required');
@@ -487,7 +938,7 @@ class Q_WebServer_Panel
 
 	static function apiCreateApp($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$name = preg_replace('/[^A-Za-z0-9_]/', '', $body['name'] ?? '');
 		if (!$name) return array('status' => 400, 'error' => 'App name required');
 
@@ -544,7 +995,7 @@ class Q_WebServer_Panel
 	static function apiListScripts($parsed)
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
-		$appName = $body['app'] ?? '';
+		$appName = basename($body['app'] ?? '');
 
 		$scripts = array();
 
@@ -589,12 +1040,20 @@ class Q_WebServer_Panel
 			return array('status' => 400, 'error' => 'app and script required');
 		}
 
+		// Prevent path traversal
+		$appName = basename($appName);
+		$scriptName = basename($scriptName);
+
 		$appDir = self::appsDir() . DS . $appName;
 		if (!is_dir($appDir)) {
 			return array('status' => 404, 'error' => "App '$appName' not found");
 		}
 
+		// Check app scripts/Q/ first, then platform scripts/
 		$scriptPath = $appDir . DS . 'scripts' . DS . 'Q' . DS . $scriptName . '.php';
+		if (!file_exists($scriptPath) && defined('Q_DIR')) {
+			$scriptPath = Q_DIR . DS . 'scripts' . DS . $scriptName . '.php';
+		}
 		if (!file_exists($scriptPath)) {
 			return array('status' => 404, 'error' => "Script '$scriptName' not found");
 		}
@@ -602,14 +1061,19 @@ class Q_WebServer_Panel
 		// Run script as subprocess
 		$argStr = '';
 		foreach ($args as $k => $v) {
+			if (!is_scalar($v)) continue; // skip arrays/objects
 			if (is_numeric($k)) {
-				$argStr .= ' ' . escapeshellarg($v);
+				$argStr .= ' ' . escapeshellarg((string) $v);
 			} else {
-				$argStr .= ' --' . $k . '=' . escapeshellarg($v);
+				// Sanitize key to prevent shell injection
+				$k = preg_replace('/[^a-zA-Z0-9_-]/', '', $k);
+				if ($k === '') continue;
+				$argStr .= ' --' . $k . '=' . escapeshellarg((string) $v);
 			}
 		}
 
-		$cmd = PHP_BINARY . ' ' . escapeshellarg($scriptPath) . $argStr . ' 2>&1';
+		$cmd = 'cd ' . escapeshellarg($appDir) . ' && '
+			. PHP_BINARY . ' ' . escapeshellarg($scriptPath) . $argStr . ' 2>&1';
 		$output = array();
 		$code = 0;
 		exec($cmd, $output, $code);
@@ -735,7 +1199,7 @@ class Q_WebServer_Panel
 
 	static function apiAddServer($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$name = preg_replace('/[^a-zA-Z0-9_-]/', '', $body['name'] ?? '');
 		if (!$name) return array('status' => 400, 'error' => 'Name required');
 		if (empty($body['host'])) return array('status' => 400, 'error' => 'Host required');
@@ -754,7 +1218,7 @@ class Q_WebServer_Panel
 
 	static function apiRemoveServer($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$name = $body['name'] ?? '';
 		$config = self::deployConfig();
 		unset($config['targets'][$name]);
@@ -764,7 +1228,7 @@ class Q_WebServer_Panel
 
 	static function apiDeploy($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$target = $body['target'] ?? '';
 		$config = self::deployConfig();
 		$t = $config['targets'][$target] ?? null;
@@ -772,7 +1236,7 @@ class Q_WebServer_Panel
 
 		$baseDir = defined('APP_DIR') ? APP_DIR : Q_WebServer::$rootDir . '..';
 		$dirs = $t['dirs'] ?? array('web', 'handlers', 'classes', 'config');
-		$sshKey = !empty($t['key']) ? " -e 'ssh -i " . escapeshellarg($t['key']) . "'" : '';
+		$sshKey = !empty($t['key']) ? " -e " . escapeshellarg('ssh -i ' . $t['key']) : '';
 		$remote = $t['user'] . '@' . $t['host'] . ':' . rtrim($t['path'], '/') . '/';
 
 		$total = 0;
@@ -820,7 +1284,7 @@ class Q_WebServer_Panel
 	 */
 	static function apiAddPlugin($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$name = preg_replace('/[^A-Za-z0-9_-]/', '', $body['name'] ?? '');
 		if (!$name) return array('status' => 400, 'error' => 'Plugin name required');
 
@@ -884,7 +1348,7 @@ class Q_WebServer_Panel
 
 	static function apiPlaygroundRun($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$code = $body['code'] ?? '';
 		if (!$code) return array('output' => '', 'ms' => 0);
 
@@ -951,6 +1415,21 @@ class Q_WebServer_Panel
 		return $result;
 	}
 
+	/**
+	 * Clear all in-memory caches and re-read config files.
+	 * @method apiClearCache
+	 * @static
+	 */
+	static function apiClearCache()
+	{
+		$cleared = Q_WebServer::clearCache();
+		return array(
+			'ok' => true,
+			'cleared' => $cleared,
+			'timestamp' => date('c'),
+		);
+	}
+
 	static function apiSystemInfo()
 	{
 		$platformDir = defined('Q_DIR') ? Q_DIR : null;
@@ -990,7 +1469,7 @@ class Q_WebServer_Panel
 	 */
 	static function apiInstallPlatform($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$dir = $body['dir'] ?? '';
 		if (!$dir) return array('status' => 400, 'error' => 'Directory required');
 
@@ -1047,7 +1526,7 @@ class Q_WebServer_Panel
 
 	static function apiServeApp($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$appName = preg_replace('/[^A-Za-z0-9_]/', '', $body['app'] ?? '');
 		$enable = !empty($body['enable']);
 
@@ -1083,7 +1562,7 @@ class Q_WebServer_Panel
 	 */
 	static function apiSetAppsDir($parsed)
 	{
-		$body = json_decode($parsed['body'], true);
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: [];
 		$dir = $body['dir'] ?? '';
 		if (!$dir || !is_dir($dir)) {
 			return array('status' => 400, 'error' => 'Directory does not exist: ' . $dir);
@@ -1144,7 +1623,7 @@ class Q_WebServer_Panel
 	static function apiFrameworkPackages($parsed)
 	{
 		$query = [];
-		if (!empty($parsed['query'])) parse_str($parsed['query'], $query);
+		if (!empty($parsed['query']) && is_string($parsed['query'])) parse_str($parsed['query'], $query);
 		$body = json_decode($parsed['body'] ?? '{}', true);
 		$framework = $body['framework'] ?? $query['framework'] ?? '';
 
@@ -1211,7 +1690,7 @@ class Q_WebServer_Panel
 
 			if ($wpCli) {
 				// wp-cli gives structured JSON
-				$pluginJson = shell_exec("cd " . escapeshellarg($wpDir) . " && $wpCli plugin list --format=json 2>/dev/null");
+				$pluginJson = shell_exec("cd " . escapeshellarg($wpDir) . " && " . escapeshellarg($wpCli) . " plugin list --format=json 2>/dev/null");
 				$plugins = json_decode($pluginJson ?: '[]', true) ?: [];
 				foreach ($plugins as $p) {
 					$packages[] = [
@@ -1223,7 +1702,7 @@ class Q_WebServer_Panel
 					];
 				}
 
-				$themeJson = shell_exec("cd " . escapeshellarg($wpDir) . " && $wpCli theme list --format=json 2>/dev/null");
+				$themeJson = shell_exec("cd " . escapeshellarg($wpDir) . " && " . escapeshellarg($wpCli) . " theme list --format=json 2>/dev/null");
 				$themes = json_decode($themeJson ?: '[]', true) ?: [];
 				foreach ($themes as $t) {
 					$packages[] = [
@@ -1286,7 +1765,7 @@ class Q_WebServer_Panel
 				}
 			}
 			if ($drush) {
-				$moduleJson = shell_exec("cd " . escapeshellarg($projectDir) . " && $drush pm:list --format=json 2>/dev/null");
+				$moduleJson = shell_exec("cd " . escapeshellarg($projectDir) . " && " . escapeshellarg($drush) . " pm:list --format=json 2>/dev/null");
 				$modules = json_decode($moduleJson ?: '{}', true) ?: [];
 				foreach ($modules as $name => $info) {
 					$packages[] = [
@@ -1408,6 +1887,7 @@ class Q_WebServer_Panel
 			if (!$wpCli) {
 				return ['status' => 400, 'error' => 'wp-cli not found. Install it: https://wp-cli.org/'];
 			}
+			$wpCliSafe = escapeshellarg($wpCli);
 			$cwd = $wpDir;
 			$pathFlag = ' --path=' . escapeshellarg($wpDir);
 
@@ -1420,16 +1900,16 @@ class Q_WebServer_Panel
 
 			switch ($action) {
 				case 'install':
-					$cmd = "$wpCli $type install " . escapeshellarg($package) . "$pathFlag"; break;
+					$cmd = "$wpCliSafe $type install " . escapeshellarg($package) . "$pathFlag"; break;
 				case 'activate':
-					$cmd = "$wpCli $type activate " . escapeshellarg($package) . "$pathFlag"; break;
+					$cmd = "$wpCliSafe $type activate " . escapeshellarg($package) . "$pathFlag"; break;
 				case 'deactivate':
-					$cmd = "$wpCli $type deactivate " . escapeshellarg($package) . "$pathFlag"; break;
+					$cmd = "$wpCliSafe $type deactivate " . escapeshellarg($package) . "$pathFlag"; break;
 				case 'remove':
 				case 'delete':
-					$cmd = "$wpCli $type delete " . escapeshellarg($package) . "$pathFlag"; break;
+					$cmd = "$wpCliSafe $type delete " . escapeshellarg($package) . "$pathFlag"; break;
 				case 'update':
-					$cmd = "$wpCli $type update " . escapeshellarg($package) . "$pathFlag"; break;
+					$cmd = "$wpCliSafe $type update " . escapeshellarg($package) . "$pathFlag"; break;
 				default:
 					return ['status' => 400, 'error' => "Unknown action '$action' for WordPress"];
 			}
@@ -1442,20 +1922,21 @@ class Q_WebServer_Panel
 					$drush = $p; break;
 				}
 			}
+			$drushSafe = $drush ? escapeshellarg($drush) : null;
 
 			switch ($action) {
 				case 'install':
 				case 'enable':
-					if ($drush) {
-						$cmd = "$drush pm:install " . escapeshellarg($package) . " -y";
+					if ($drushSafe) {
+						$cmd = "$drushSafe pm:install " . escapeshellarg($package) . " -y";
 					} else {
 						$cmd = "composer require " . escapeshellarg("drupal/$package") . " --no-interaction";
 					}
 					break;
 				case 'remove':
 				case 'uninstall':
-					if ($drush) {
-						$cmd = "$drush pm:uninstall " . escapeshellarg($package) . " -y";
+					if ($drushSafe) {
+						$cmd = "$drushSafe pm:uninstall " . escapeshellarg($package) . " -y";
 					} else {
 						$cmd = "composer remove " . escapeshellarg("drupal/$package") . " --no-interaction";
 					}
@@ -1500,7 +1981,7 @@ class Q_WebServer_Panel
 		$body = json_decode($parsed['body'] ?? '{}', true);
 		$framework = $body['framework'] ?? '';
 		$source = trim($body['source'] ?? '');
-		$target = $body['target'] ?? '';
+		$target = basename($body['target'] ?? '');
 
 		if (!$source) return ['status' => 400, 'error' => 'No source URL provided'];
 
@@ -1651,6 +2132,25 @@ class Q_WebServer_Panel
 
 		$cmd = "cd " . escapeshellarg($appDir) . " && php " . escapeshellarg($installScript) . " $flags 2>&1";
 		$output = shell_exec($cmd);
+
+		// Bug 4 workaround: single-plugin install via -p can fail because
+		// $Q_Bootstrap_config_plugin_limit=1 prevents the target plugin's
+		// config from loading. Fall back to --plugins if -p failed.
+		if ($action === 'plugin' && $output !== null
+			&& (stripos($output, 'error') !== false || stripos($output, 'fatal') !== false)
+		) {
+			$fallbackFlags = '--plugins';
+			$fallbackCmd = "cd " . escapeshellarg($appDir)
+				. " && php " . escapeshellarg($installScript) . " $fallbackFlags 2>&1";
+			$fallbackOutput = shell_exec($fallbackCmd);
+			return [
+				'output' => $fallbackOutput,
+				'cmd' => "php scripts/Q/install.php $fallbackFlags",
+				'note' => "Single-plugin install (-p $plugin) failed; retried with --plugins",
+				'originalOutput' => $output,
+			];
+		}
+
 		return ['output' => $output, 'cmd' => "php scripts/Q/install.php $flags"];
 	}
 
@@ -1661,7 +2161,7 @@ class Q_WebServer_Panel
 	{
 		$body = json_decode($parsed['body'] ?? '{}', true);
 		$action = $body['action'] ?? 'install';
-		$target = $body['target'] ?? '';  // plugin name or 'app' or 'platform'
+		$target = basename($body['target'] ?? '');  // plugin name or 'app' or 'platform'
 
 		$rootDir = Q_WebServer::$rootDir;
 		$projectDir = dirname(rtrim($rootDir, DIRECTORY_SEPARATOR));
@@ -1740,6 +2240,8 @@ class Q_WebServer_Panel
 		$raw = implode("\n", $cleaned);
 		// Remove trailing commas before ] or }
 		$raw = preg_replace('/,\s*([\]\}])/', '$1', $raw);
+		// Normalize control characters (tabs, etc.) that break json_decode
+		$raw = str_replace(array("\t", "\r"), array('  ', ''), $raw);
 		return json_decode($raw, true);
 	}
 
@@ -1848,6 +2350,13 @@ class Q_WebServer_Panel
 					$dbPaths[] = $dbFile;
 				}
 				foreach (glob($dir . '/*.sqlite') as $dbFile) {
+					$dbPaths[] = $dbFile;
+				}
+				// Also scan db/ subdirectory (standard Qbix layout)
+				foreach (glob($dir . '/db/*.db') as $dbFile) {
+					$dbPaths[] = $dbFile;
+				}
+				foreach (glob($dir . '/db/*.sqlite') as $dbFile) {
 					$dbPaths[] = $dbFile;
 				}
 			}
@@ -2132,12 +2641,14 @@ class Q_WebServer_Panel
 				$cli = 'php bin/console';
 				break;
 			case 'wordpress':
-				$cli = self::which('wp') ? 'wp' : $projectDir . '/vendor/bin/wp';
+				$wpBin = self::which('wp') ? 'wp' : $projectDir . '/vendor/bin/wp';
+				$cli = escapeshellarg($wpBin);
 				$cwd = is_file($rootDir . 'wp-config.php') ? rtrim($rootDir, '/') : $projectDir;
 				$cli .= ' --path=' . escapeshellarg($cwd);
 				break;
 			case 'drupal':
-				$cli = self::which('drush') ? 'drush' : $projectDir . '/vendor/bin/drush';
+				$drushBin = self::which('drush') ? 'drush' : $projectDir . '/vendor/bin/drush';
+				$cli = escapeshellarg($drushBin);
 				break;
 			case 'joomla':
 				$cli = 'php cli/joomla.php';
@@ -2278,6 +2789,225 @@ class Q_WebServer_Panel
 		return $result;
 	}
 
+	// ── Hosts File API ──────────────────────────────────
+
+	/**
+	 * Get the system hosts file path for the current OS.
+	 */
+	static function hostsFilePath()
+	{
+		return PHP_OS_FAMILY === 'Windows'
+			? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+			: '/etc/hosts';
+	}
+
+	/**
+	 * Read and parse the system hosts file.
+	 * Returns entries as [{ip, hostname, line}] and the raw content.
+	 */
+	static function apiHostsFile()
+	{
+		$path = self::hostsFilePath();
+		if (!is_readable($path)) {
+			return ['error' => "Cannot read $path", 'entries' => [], 'writable' => false];
+		}
+		$raw = file_get_contents($path);
+		$entries = [];
+		foreach (explode("\n", $raw) as $i => $line) {
+			$trimmed = trim($line);
+			if ($trimmed === '' || $trimmed[0] === '#') continue;
+			$parts = preg_split('/\s+/', $trimmed);
+			if (count($parts) >= 2) {
+				$ip = array_shift($parts);
+				foreach ($parts as $host) {
+					if ($host === '' || $host[0] === '#') break;
+					$entries[] = ['ip' => $ip, 'hostname' => $host, 'line' => $i + 1];
+				}
+			}
+		}
+
+		// Cross-reference with configured domains
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		$configPath = self::panelConfigPath();
+		if (file_exists($configPath)) {
+			$panelConfig = json_decode(file_get_contents($configPath), true);
+			if (!empty($panelConfig['domains'])) {
+				$domains = array_merge($domains, $panelConfig['domains']);
+			}
+		}
+
+		$mapped = [];
+		$hostsMap = [];
+		foreach ($entries as $e) {
+			$hostsMap[$e['hostname']] = $e['ip'];
+		}
+		foreach ($domains as $name => $conf) {
+			$mapped[] = [
+				'domain' => $name,
+				'inHosts' => isset($hostsMap[$name]),
+				'hostsIp' => $hostsMap[$name] ?? null,
+			];
+		}
+
+		return [
+			'entries' => $entries,
+			'domains' => $mapped,
+			'path' => $path,
+			'writable' => is_writable($path),
+			'needsElevation' => !is_writable($path),
+		];
+	}
+
+	/**
+	 * Add an entry to /etc/hosts. Returns a shell command for elevation
+	 * if the server doesn't have write access (which is the normal case).
+	 */
+	static function apiHostsAdd($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$hostname = $body['hostname'] ?? '';
+		$ip = $body['ip'] ?? '127.0.0.1';
+
+		if (!$hostname || !preg_match('/^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/i', $hostname)) {
+			return ['status' => 400, 'error' => 'Invalid hostname'];
+		}
+		if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+			return ['status' => 400, 'error' => 'Invalid IP'];
+		}
+
+		// Check if already in hosts
+		$path = self::hostsFilePath();
+		if (is_readable($path)) {
+			$existing = file_get_contents($path);
+			if (preg_match('/^\s*' . preg_quote($ip, '/') . '\s+.*\b' . preg_quote($hostname, '/') . '\b/m', $existing)) {
+				return ['already' => true, 'hostname' => $hostname, 'ip' => $ip];
+			}
+			// Check for conflicting entry (different IP, same hostname)
+			if (preg_match('/^\s*(\S+)\s+.*\b' . preg_quote($hostname, '/') . '\b/m', $existing, $m)) {
+				return [
+					'conflict' => true,
+					'hostname' => $hostname,
+					'existingIp' => trim($m[1]),
+					'requestedIp' => $ip,
+				];
+			}
+		}
+
+		$entry = "$ip\t$hostname";
+
+		// Try direct write first
+		if (is_writable($path)) {
+			file_put_contents($path, "\n$entry\n", FILE_APPEND);
+			return ['added' => true, 'hostname' => $hostname, 'ip' => $ip];
+		}
+
+		// Return platform-specific elevation commands
+		$cmds = [];
+		if (PHP_OS_FAMILY === 'Darwin') {
+			$cmds['command'] = "sudo -- sh -c 'echo \"$entry\" >> /etc/hosts'";
+			$cmds['gui'] = "osascript -e 'do shell script \"echo \\\"$entry\\\" >> /etc/hosts\" with administrator privileges'";
+		} elseif (PHP_OS_FAMILY === 'Windows') {
+			$psCmd = "Add-Content -Path '$path' -Value '$entry'";
+			$cmds['command'] = "powershell -Command \"Start-Process powershell -Verb RunAs -ArgumentList '-Command $psCmd'\"";
+		} else {
+			$cmds['command'] = "sudo -- sh -c 'echo \"$entry\" >> /etc/hosts'";
+			$cmds['gui'] = "pkexec sh -c 'echo \"$entry\" >> /etc/hosts'";
+		}
+
+		return [
+			'needsElevation' => true,
+			'hostname' => $hostname,
+			'ip' => $ip,
+			'entry' => $entry,
+			'commands' => $cmds,
+		];
+	}
+
+	// ── Attestation & Trust API ─────────────────────────
+
+	static function apiAttestationSign($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$keyPem = $body['key'] ?? '';
+		$signer = $body['signer'] ?? 'panel-user';
+
+		if (!$keyPem) {
+			return ['status' => 400, 'error' => 'Provide a PEM private key in the "key" field'];
+		}
+
+		// Write key to temp file
+		$tmpKey = tempnam(sys_get_temp_dir(), 'qbix_sign_');
+		file_put_contents($tmpKey, $keyPem);
+
+		require_once dirname(__DIR__) . '/WebServer/Trust.php';
+		$binaryPath = realpath($_SERVER['SCRIPT_FILENAME'] ?? $GLOBALS['argv'][0]);
+		$result = Q_WebServer_Trust::signBinary($binaryPath, $tmpKey, $signer);
+		@unlink($tmpKey);
+
+		if (!$result) {
+			return ['status' => 500, 'error' => 'Signing failed — check key format'];
+		}
+		return [
+			'signed' => true,
+			'hash' => $result['binary_hash'],
+			'signers' => count($result['signatures']),
+		];
+	}
+
+	static function apiTrustVerify($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$dir = $body['dir'] ?? null;
+
+		require_once dirname(__DIR__) . '/WebServer/Trust.php';
+		if ($dir) {
+			$dir = realpath($dir);
+			if (!$dir || !is_dir($dir)) {
+				return ['status' => 400, 'error' => 'Directory not found'];
+			}
+			return Q_WebServer_Trust::verifyDirectory($dir);
+		}
+		// Verify all known directories
+		return Q_WebServer_Trust::status();
+	}
+
+	// ── Autohost API ────────────────────────────────────
+
+	static function apiAutohostToggle($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$configPath = self::panelConfigPath();
+		$config = is_file($configPath)
+			? json_decode(file_get_contents($configPath), true) : [];
+
+		if (isset($body['enabled'])) {
+			$config['autohost']['enabled'] = (bool) $body['enabled'];
+		}
+		if (isset($body['authorize'])) {
+			$config['autohost']['authorize'] = $body['authorize'];
+		}
+		if (isset($body['dnsCheck'])) {
+			$config['autohost']['dnsCheck'] = (bool) $body['dnsCheck'];
+		}
+		if (isset($body['acmeEmail'])) {
+			$config['autohost']['acmeEmail'] = $body['acmeEmail'];
+		}
+		if (isset($body['allowlist'])) {
+			$config['autohost']['allowlist'] = array_values(array_filter(
+				array_map('trim', explode("\n", $body['allowlist']))
+			));
+		}
+
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+		// Apply to runtime config
+		foreach ($config['autohost'] ?? [] as $k => $v) {
+			Q_Config::set('Q', 'webserver', 'autohost', $k, $v);
+		}
+
+		return ['saved' => true, 'autohost' => $config['autohost'] ?? []];
+	}
+
 	// ── Workers API ──────────────────────────────────────
 
 	static function apiWorkerStatus()
@@ -2306,7 +3036,6 @@ class Q_WebServer_Panel
 		if ($count < 1 || $count > 10000) {
 			return ['status' => 400, 'error' => 'Worker count must be 1-10000'];
 		}
-		// Worker resize requires pool support
 		$pool = Q_WebServer::$pool ?? null;
 		if (!$pool) {
 			return ['status' => 400, 'error' => 'No worker pool (in-process mode)'];
@@ -2318,12 +3047,42 @@ class Q_WebServer_Panel
 		return ['status' => 501, 'error' => 'Pool does not support dynamic resize yet'];
 	}
 
+	static function apiWorkerRecycle($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['status' => 400, 'error' => 'No worker pool'];
+		}
+		$index = $body['index'] ?? null;
+		if ($index !== null) {
+			// Recycle a specific worker
+			$result = $pool->recycleWorker((int) $index);
+			return ['worker' => (int) $index, 'result' => $result];
+		}
+		// Recycle all workers (rolling restart)
+		$result = $pool->recycleAll();
+		return ['recycled' => $result];
+	}
+
+	static function apiWorkerDetail()
+	{
+		$pool = Q_WebServer::$pool ?? null;
+		if (!$pool) {
+			return ['mode' => 'in-process', 'workers' => []];
+		}
+		return $pool->workerStats();
+	}
+
 	// ── Logs API ─────────────────────────────────────────
 
 	static function apiLogs($parsed)
 	{
-		$query = $parsed['query'] ?? [];
-		parse_str($query, $params);
+		$query = $parsed['query'] ?? '';
+		$params = [];
+		if (is_string($query) && $query !== '') {
+			parse_str($query, $params);
+		}
 		$lines = (int) ($params['lines'] ?? 50);
 		$lines = max(1, min($lines, 500));
 		$type = $params['type'] ?? 'access'; // access or error
@@ -2390,6 +3149,1142 @@ class Q_WebServer_Panel
 			return ['dispatched' => $name, 'handler' => $handler, 'pid' => $pid];
 		}
 		return ['status' => 501, 'error' => 'pcntl_fork not available'];
+	}
+
+	// ── Mobile Build API ─────────────────────────────────
+
+	static function apiMobileToolchains()
+	{
+		$tools = [];
+		$isMac = PHP_OS_FAMILY === 'Darwin';
+
+		// Xcode CLI tools
+		$xcode = ['name' => 'Xcode CLI Tools', 'id' => 'xcode', 'platform' => 'ios'];
+		if ($isMac) {
+			$path = self::which('xcodebuild');
+			if ($path) {
+				$ver = trim(shell_exec('xcodebuild -version 2>/dev/null | head -1') ?? '');
+				$xcode['installed'] = true;
+				$xcode['version'] = $ver ?: 'installed';
+				$xcode['path'] = $path;
+			} else {
+				$xcode['installed'] = false;
+				$xcode['hint'] = 'xcode-select --install';
+			}
+		} else {
+			$xcode['installed'] = false;
+			$xcode['hint'] = 'Requires macOS';
+			$xcode['unavailable'] = true;
+		}
+		$tools[] = $xcode;
+
+		// CocoaPods
+		$pods = ['name' => 'CocoaPods', 'id' => 'cocoapods', 'platform' => 'ios'];
+		if ($isMac) {
+			$path = self::which('pod');
+			if ($path) {
+				$ver = trim(shell_exec('pod --version 2>/dev/null') ?? '');
+				$pods['installed'] = true;
+				$pods['version'] = $ver ?: 'installed';
+			} else {
+				$pods['installed'] = false;
+				$pods['hint'] = 'sudo gem install cocoapods';
+			}
+		} else {
+			$pods['installed'] = false;
+			$pods['unavailable'] = true;
+		}
+		$tools[] = $pods;
+
+		// JDK
+		$jdk = ['name' => 'JDK', 'id' => 'jdk', 'platform' => 'android'];
+		$javaPath = self::which('javac');
+		if ($javaPath) {
+			$ver = trim(shell_exec('javac -version 2>&1') ?? '');
+			$jdk['installed'] = true;
+			$jdk['version'] = $ver ?: 'installed';
+		} else {
+			$jdk['installed'] = false;
+			$jdk['hint'] = $isMac ? 'brew install openjdk' : 'apt install default-jdk';
+		}
+		$tools[] = $jdk;
+
+		// Android SDK
+		$sdk = ['name' => 'Android SDK', 'id' => 'android-sdk', 'platform' => 'android'];
+		$androidHome = getenv('ANDROID_HOME') ?: getenv('ANDROID_SDK_ROOT') ?: '';
+		if ($androidHome && is_dir($androidHome)) {
+			$sdk['installed'] = true;
+			$sdk['path'] = $androidHome;
+			// Check for build-tools
+			$btDir = $androidHome . '/build-tools';
+			if (is_dir($btDir)) {
+				$versions = array_filter(scandir($btDir), function($d) use ($btDir) {
+					return $d !== '.' && $d !== '..' && is_dir($btDir . '/' . $d);
+				});
+				rsort($versions);
+				$sdk['version'] = $versions ? 'Build-tools ' . reset($versions) : 'installed';
+			} else {
+				$sdk['version'] = 'installed (no build-tools)';
+			}
+		} else {
+			// Check for sdkmanager in common locations
+			$sdkman = self::which('sdkmanager');
+			if ($sdkman) {
+				$sdk['installed'] = true;
+				$sdk['version'] = 'sdkmanager found';
+				$sdk['path'] = dirname(dirname($sdkman));
+			} else {
+				$sdk['installed'] = false;
+				$sdk['hint'] = 'Install Android Studio or use sdkmanager';
+			}
+		}
+		$tools[] = $sdk;
+
+		// Gradle
+		$gradle = ['name' => 'Gradle', 'id' => 'gradle', 'platform' => 'android'];
+		$gPath = self::which('gradle');
+		if ($gPath) {
+			$ver = trim(shell_exec('gradle --version 2>/dev/null | grep "^Gradle "') ?? '');
+			$gradle['installed'] = true;
+			$gradle['version'] = $ver ?: 'installed';
+		} else {
+			$gradle['installed'] = false;
+			$gradle['hint'] = 'gradlew wrapper is bundled with prepared projects';
+			$gradle['optional'] = true;
+		}
+		$tools[] = $gradle;
+
+		// Node.js (needed for both)
+		$node = ['name' => 'Node.js', 'id' => 'node', 'platform' => 'both'];
+		$nPath = self::which('node');
+		if ($nPath) {
+			$ver = trim(shell_exec('node --version 2>/dev/null') ?? '');
+			$node['installed'] = true;
+			$node['version'] = $ver ?: 'installed';
+		} else {
+			$node['installed'] = false;
+			$node['hint'] = 'Required for JS bundling';
+		}
+		$tools[] = $node;
+
+		return ['toolchains' => $tools, 'platform' => PHP_OS_FAMILY];
+	}
+
+	static function apiMobileToolchainInstall($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$id = $body['id'] ?? '';
+		$cmds = [
+			'xcode' => 'xcode-select --install',
+			'cocoapods' => 'sudo gem install cocoapods',
+			'jdk' => PHP_OS_FAMILY === 'Darwin' ? 'brew install openjdk' : 'sudo apt install -y default-jdk',
+		];
+		if (!isset($cmds[$id])) {
+			return ['status' => 400, 'error' => 'No install command for ' . $id];
+		}
+		$output = shell_exec($cmds[$id] . ' 2>&1');
+		return ['output' => $output, 'cmd' => $cmds[$id]];
+	}
+
+	static function apiMobileConfig($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$appDir = basename($body['appDir'] ?? '');
+		if (!$appDir) return ['status' => 400, 'error' => 'Missing appDir'];
+
+		$appsDir = self::appsDir();
+		if (!$appsDir) return ['status' => 400, 'error' => 'Apps directory not set'];
+		$fullDir = $appsDir . DS . $appDir;
+		if (!is_dir($fullDir)) return ['status' => 404, 'error' => 'App not found'];
+
+		$configFile = $fullDir . DS . 'local' . DS . 'mobile.json';
+
+		// GET — return current config
+		if (empty($body['config'])) {
+			$cfg = [];
+			if (file_exists($configFile)) {
+				$cfg = json_decode(file_get_contents($configFile), true) ?: [];
+			}
+			// Defaults
+			if (empty($cfg['bundleId'])) {
+				$cfg['bundleId'] = 'com.example.' . preg_replace('/[^a-z0-9]/', '', strtolower($appDir));
+			}
+			if (empty($cfg['appName'])) {
+				$cfg['appName'] = $appDir;
+			}
+			if (empty($cfg['version'])) $cfg['version'] = '1.0.0';
+			if (empty($cfg['buildNumber'])) $cfg['buildNumber'] = 1;
+
+			// Check for existing prepared projects
+			$cfg['iosPrepared'] = is_dir($fullDir . DS . 'mobile' . DS . 'ios');
+			$cfg['androidPrepared'] = is_dir($fullDir . DS . 'mobile' . DS . 'android');
+
+			return ['config' => $cfg];
+		}
+
+		// POST — save config
+		@mkdir(dirname($configFile), 0755, true);
+		$cfg = $body['config'];
+		$save = [
+			'bundleId' => $cfg['bundleId'] ?? '',
+			'appName' => $cfg['appName'] ?? $appDir,
+			'version' => $cfg['version'] ?? '1.0.0',
+			'buildNumber' => intval($cfg['buildNumber'] ?? 1),
+		];
+		file_put_contents($configFile, json_encode($save, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		return ['saved' => true, 'config' => $save];
+	}
+
+	static function apiMobilePrepare($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$appDir = basename($body['appDir'] ?? '');
+		$platform = $body['platform'] ?? '';
+		if (!$appDir || !in_array($platform, ['ios', 'android'])) {
+			return ['status' => 400, 'error' => 'Missing appDir or platform'];
+		}
+		$appsDir = self::appsDir();
+		if (!$appsDir) return ['status' => 400, 'error' => 'Apps directory not set'];
+		$fullDir = $appsDir . DS . $appDir;
+		if (!is_dir($fullDir)) return ['status' => 404, 'error' => 'App not found'];
+
+		// Load config
+		$configFile = $fullDir . DS . 'local' . DS . 'mobile.json';
+		$cfg = file_exists($configFile) ? json_decode(file_get_contents($configFile), true) : [];
+		$bundleId = $cfg['bundleId'] ?? 'com.example.' . preg_replace('/[^a-z0-9]/', '', strtolower($appDir));
+		$appName = $cfg['appName'] ?? $appDir;
+		$version = $cfg['version'] ?? '1.0.0';
+		$buildNum = intval($cfg['buildNumber'] ?? 1);
+
+		$mobileDir = $fullDir . DS . 'mobile' . DS . $platform;
+		@mkdir($mobileDir, 0755, true);
+
+		$log = [];
+
+		if ($platform === 'ios') {
+			return self::prepareIos($mobileDir, $fullDir, $bundleId, $appName, $version, $buildNum);
+		} else {
+			return self::prepareAndroid($mobileDir, $fullDir, $bundleId, $appName, $version, $buildNum);
+		}
+	}
+
+	private static function prepareIos($mobileDir, $appDir, $bundleId, $appName, $version, $buildNum)
+	{
+		$log = [];
+		$safeName = preg_replace('/[^A-Za-z0-9_]/', '', $appName) ?: 'QbixApp';
+
+		// Source dirs
+		$srcDir = $mobileDir . DS . $safeName;
+		$resDir = $srcDir . DS . 'Resources';
+		$pharDir = $srcDir . DS . 'Server';
+		@mkdir($srcDir, 0755, true);
+		@mkdir($resDir, 0755, true);
+		@mkdir($pharDir, 0755, true);
+
+		// ── xcodegen project.yml ───────────────────────
+		// Generates a real .xcodeproj via `xcodegen generate`
+		$bundlePrefix = implode('.', array_slice(explode('.', $bundleId), 0, -1));
+		$projectYml = "name: {$safeName}\noptions:\n"
+			. "  bundleIdPrefix: {$bundlePrefix}\n"
+			. "  deploymentTarget:\n    iOS: '15.0'\n"
+			. "targets:\n  {$safeName}:\n    type: application\n    platform: iOS\n"
+			. "    sources:\n      - path: {$safeName}\n"
+			. "        excludes:\n          - '**/*.phar'\n          - Resources\n          - Server\n"
+			. "    resources:\n      - path: {$safeName}/Resources\n      - path: {$safeName}/Server\n"
+			. "    settings:\n      base:\n"
+			. "        PRODUCT_BUNDLE_IDENTIFIER: {$bundleId}\n"
+			. "        MARKETING_VERSION: '{$version}'\n"
+			. "        CURRENT_PROJECT_VERSION: '{$buildNum}'\n"
+			. "        INFOPLIST_FILE: {$safeName}/Info.plist\n"
+			. "        SWIFT_VERSION: '5.9'\n"
+			. "        GENERATE_INFOPLIST_FILE: false\n"
+			. "        CODE_SIGN_STYLE: Automatic\n";
+		file_put_contents($mobileDir . DS . 'project.yml', $projectYml);
+		$log[] = 'Wrote project.yml (xcodegen spec)';
+
+		// ── Info.plist ─────────────────────────────────
+		$escapedName = htmlspecialchars($appName);
+		$plist = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+			. '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' . "\n"
+			. '<plist version="1.0">' . "\n" . '<dict>' . "\n"
+			. "\t<key>CFBundleDevelopmentRegion</key><string>en</string>\n"
+			. "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
+			. "\t<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>\n"
+			. "\t<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>\n"
+			. "\t<key>CFBundleDisplayName</key><string>{$escapedName}</string>\n"
+			. "\t<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>\n"
+			. "\t<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>\n"
+			. "\t<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>\n"
+			. "\t<key>CFBundlePackageType</key><string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>\n"
+			. "\t<key>LSRequiresIPhoneOS</key><true/>\n"
+			. "\t<key>UILaunchStoryboardName</key><string>LaunchScreen</string>\n"
+			. "\t<key>UIRequiredDeviceCapabilities</key>\n\t<array><string>arm64</string></array>\n"
+			. "\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n"
+			. "\t\t<string>UIInterfaceOrientationPortrait</string>\n"
+			. "\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n"
+			. "\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n"
+			. "\t<key>UIBackgroundModes</key>\n\t<array>\n"
+			. "\t\t<string>audio</string>\n"
+			. "\t\t<string>bluetooth-central</string>\n"
+			. "\t\t<string>bluetooth-peripheral</string>\n\t</array>\n"
+			. "\t<key>NSLocalNetworkUsageDescription</key>\n"
+			. "\t<string>Connects with nearby devices on your network.</string>\n"
+			. "\t<key>NSBonjourServices</key>\n\t<array><string>_qbix-server._tcp</string></array>\n"
+			. "\t<key>NSBluetoothAlwaysUsageDescription</key>\n"
+			. "\t<string>Connects with nearby devices over Bluetooth.</string>\n"
+			. "\t<key>NSBluetoothPeripheralUsageDescription</key>\n"
+			. "\t<string>Advertises this device to nearby peers over Bluetooth.</string>\n"
+			. "\t<key>NSAppTransportSecurity</key>\n\t<dict>\n"
+			. "\t\t<key>NSAllowsLocalNetworking</key><true/>\n\t</dict>\n"
+			. '</dict>' . "\n" . '</plist>';
+		file_put_contents($srcDir . DS . 'Info.plist', $plist);
+		$log[] = 'Wrote Info.plist';
+
+		// ── LaunchScreen.storyboard ────────────────────
+		$launch = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+			. '<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0"'
+			. ' toolsVersion="21701" targetRuntime="AppleSDK" propertyAccessControl="none"'
+			. ' useAutolayout="YES" launchScreen="YES" useTraitCollections="YES"'
+			. ' useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">' . "\n"
+			. '<scenes><scene sceneID="EHf-IW-A2E"><objects>' . "\n"
+			. '<viewController id="01J-lp-oVM" sceneMemberID="viewController">' . "\n"
+			. '<view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">' . "\n"
+			. '<rect key="frame" x="0" y="0" width="393" height="852"/>' . "\n"
+			. '<autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>' . "\n"
+			. '<color key="backgroundColor" systemColor="systemBackgroundColor"/>' . "\n"
+			. '</view></viewController>' . "\n"
+			. '<placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1"'
+			. ' userLabel="First Responder" sceneMemberID="firstResponder"/>' . "\n"
+			. '</objects></scene></scenes></document>';
+		file_put_contents($resDir . DS . 'LaunchScreen.storyboard', $launch);
+		$log[] = 'Wrote LaunchScreen.storyboard';
+
+		// ── PhpBridge.swift ─────────────────────────────
+		$phpBridge = 'import Foundation' . "\n"
+			. '#if canImport(Darwin)' . "\n"
+			. 'import Darwin' . "\n"
+			. '#endif' . "\n\n"
+			. '/// Unpacks the bundled Qbix Server phar and starts PHP on localhost.' . "\n"
+			. '///' . "\n"
+			. '/// The CI builds a `qbixserver-ios-arm64` micro binary (a self-executing' . "\n"
+			. '/// PHP+phar combo produced by static-php-cli). This bridge copies it from' . "\n"
+			. '/// the app bundle to a writable directory, then launches it via posix_spawn' . "\n"
+			. '/// listening on 127.0.0.1:<port>.' . "\n"
+			. '///' . "\n"
+			. '/// Uses posix_spawn instead of Foundation.Process because Process is' . "\n"
+			. '/// unavailable on iOS. posix_spawn is available on both iOS and macOS.' . "\n"
+			. '///' . "\n"
+			. '/// If the micro binary is not bundled (dev builds), falls back to looking' . "\n"
+			. '/// for a system `php` on PATH (Simulator only).' . "\n"
+			. 'class PhpBridge {' . "\n"
+			. '    static let shared = PhpBridge()' . "\n\n"
+			. '    private var pid: pid_t = 0' . "\n"
+			. '    private(set) var port: UInt16 = 0' . "\n"
+			. '    private let serverDir: URL' . "\n\n"
+			. '    private init() {' . "\n"
+			. '        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]' . "\n"
+			. '        serverDir = docs.appendingPathComponent("qbix-server", isDirectory: true)' . "\n"
+			. '        try? FileManager.default.createDirectory(at: serverDir, withIntermediateDirectories: true)' . "\n"
+			. '    }' . "\n\n"
+			. '    /// Start the PHP server. Returns the port it listens on.' . "\n"
+			. '    func start() -> UInt16 {' . "\n"
+			. '        if pid > 0 { return port }' . "\n"
+			. '        port = findFreePort()' . "\n\n"
+			. '        let bundle = Bundle.main' . "\n"
+			. '        var phpExe = ""' . "\n"
+			. '        var args: [String] = []' . "\n\n"
+			. '        // Option 1: micro binary (self-executing phar, production)' . "\n"
+			. '        if let microPath = bundle.path(forResource: "qbixserver-ios-arm64", ofType: nil)' . "\n"
+			. '            ?? bundle.path(forResource: "qbixserver", ofType: nil) {' . "\n"
+			. '            let dest = serverDir.appendingPathComponent("qbixserver").path' . "\n"
+			. '            try? FileManager.default.removeItem(atPath: dest)' . "\n"
+			. '            try? FileManager.default.copyItem(atPath: microPath, toPath: dest)' . "\n"
+			. '            _ = chmod(dest, 0o755)' . "\n"
+			. '            phpExe = dest' . "\n"
+			. '            args = [dest, "-S", "127.0.0.1:\\(port)"]' . "\n"
+			. '        }' . "\n"
+			. '        // Option 2: phar + system php (dev/simulator)' . "\n"
+			. '        else if let pharPath = bundle.path(forResource: "qbixserver", ofType: "phar") {' . "\n"
+			. '            let dest = serverDir.appendingPathComponent("qbixserver.phar").path' . "\n"
+			. '            try? FileManager.default.removeItem(atPath: dest)' . "\n"
+			. '            try? FileManager.default.copyItem(atPath: pharPath, toPath: dest)' . "\n"
+			. '            phpExe = "/usr/bin/php"' . "\n"
+			. '            args = [phpExe, dest, "-S", "127.0.0.1:\\(port)"]' . "\n"
+			. '        } else {' . "\n"
+			. '            print("[PhpBridge] No server binary or phar found in bundle")' . "\n"
+			. '            return 0' . "\n"
+			. '        }' . "\n\n"
+			. '        // Copy web assets from bundle' . "\n"
+			. '        if let srcPath = bundle.path(forResource: "src", ofType: nil) {' . "\n"
+			. '            let destSrc = serverDir.appendingPathComponent("src").path' . "\n"
+			. '            try? FileManager.default.removeItem(atPath: destSrc)' . "\n"
+			. '            try? FileManager.default.copyItem(atPath: srcPath, toPath: destSrc)' . "\n"
+			. '        }' . "\n\n"
+			. '        // Launch via posix_spawn (Process is unavailable on iOS)' . "\n"
+			. '        var cArgs = args.map { strdup($0) } + [nil]' . "\n"
+			. '        defer { cArgs.forEach { if let p = $0 { free(p) } } }' . "\n\n"
+			. '        // Set working directory via file actions' . "\n"
+			. '        var fileActions: posix_spawn_file_actions_t?' . "\n"
+			. '        posix_spawn_file_actions_init(&fileActions)' . "\n"
+			. '        defer { posix_spawn_file_actions_destroy(&fileActions) }' . "\n\n"
+			. '        // Redirect stdout/stderr to /dev/null in production' . "\n"
+			. '        let devNull = open("/dev/null", O_WRONLY)' . "\n"
+			. '        if devNull >= 0 {' . "\n"
+			. '            posix_spawn_file_actions_adddup2(&fileActions, devNull, STDOUT_FILENO)' . "\n"
+			. '            posix_spawn_file_actions_adddup2(&fileActions, devNull, STDERR_FILENO)' . "\n"
+			. '        }' . "\n\n"
+			. '        var spawnPid: pid_t = 0' . "\n"
+			. '        let oldDir = FileManager.default.currentDirectoryPath' . "\n"
+			. '        FileManager.default.changeCurrentDirectoryPath(serverDir.path)' . "\n"
+			. '        let env = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }' . "\n"
+			. '        var cEnv = env.map { strdup($0) } + [nil]' . "\n"
+			. '        defer { cEnv.forEach { if let p = $0 { free(p) } } }' . "\n"
+			. '        let result = posix_spawn(&spawnPid, phpExe, &fileActions, nil, &cArgs, &cEnv)' . "\n"
+			. '        FileManager.default.changeCurrentDirectoryPath(oldDir)' . "\n"
+			. '        if devNull >= 0 { close(devNull) }' . "\n\n"
+			. '        if result != 0 {' . "\n"
+			. '            print("[PhpBridge] posix_spawn failed: \\(result)")' . "\n"
+			. '            return 0' . "\n"
+			. '        }' . "\n"
+			. '        pid = spawnPid' . "\n"
+			. '        print("[PhpBridge] Started on 127.0.0.1:\\(port), pid=\\(pid)")' . "\n\n"
+			. '        // Wait for server to accept connections (up to 3 seconds)' . "\n"
+			. '        waitForServer()' . "\n"
+			. '        return port' . "\n"
+			. '    }' . "\n\n"
+			. '    func stop() {' . "\n"
+			. '        if pid > 0 {' . "\n"
+			. '            kill(pid, SIGTERM)' . "\n"
+			. '            pid = 0' . "\n"
+			. '        }' . "\n"
+			. '    }' . "\n\n"
+			. '    /// Poll until the server accepts a TCP connection, or timeout.' . "\n"
+			. '    private func waitForServer() {' . "\n"
+			. '        for _ in 0..<30 {' . "\n"
+			. '            let fd = socket(AF_INET, SOCK_STREAM, 0)' . "\n"
+			. '            guard fd >= 0 else { Thread.sleep(forTimeInterval: 0.1); continue }' . "\n"
+			. '            var addr = sockaddr_in()' . "\n"
+			. '            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)' . "\n"
+			. '            addr.sin_family = sa_family_t(AF_INET)' . "\n"
+			. '            addr.sin_port = port.bigEndian' . "\n"
+			. '            addr.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian' . "\n"
+			. '            let ok = withUnsafePointer(to: &addr) {' . "\n"
+			. '                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {' . "\n"
+			. '                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))' . "\n"
+			. '                }' . "\n"
+			. '            }' . "\n"
+			. '            close(fd)' . "\n"
+			. '            if ok == 0 { return }' . "\n"
+			. '            Thread.sleep(forTimeInterval: 0.1)' . "\n"
+			. '        }' . "\n"
+			. '        print("[PhpBridge] Timeout waiting for server on port \\(port)")' . "\n"
+			. '    }' . "\n\n"
+			. '    private func findFreePort() -> UInt16 {' . "\n"
+			. '        var addr = sockaddr_in()' . "\n"
+			. '        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)' . "\n"
+			. '        addr.sin_family = sa_family_t(AF_INET)' . "\n"
+			. '        addr.sin_port = 0' . "\n"
+			. '        addr.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian' . "\n"
+			. '        let fd = socket(AF_INET, SOCK_STREAM, 0)' . "\n"
+			. '        guard fd >= 0 else { return 8080 }' . "\n"
+			. '        defer { close(fd) }' . "\n"
+			. '        var bindAddr = addr' . "\n"
+			. '        let bindResult = withUnsafePointer(to: &bindAddr) {' . "\n"
+			. '            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {' . "\n"
+			. '                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))' . "\n"
+			. '            }' . "\n"
+			. '        }' . "\n"
+			. '        guard bindResult == 0 else { return 8080 }' . "\n"
+			. '        var nameLen = socklen_t(MemoryLayout<sockaddr_in>.size)' . "\n"
+			. '        withUnsafeMutablePointer(to: &bindAddr) {' . "\n"
+			. '            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {' . "\n"
+			. '                getsockname(fd, $0, &nameLen)' . "\n"
+			. '            }' . "\n"
+			. '        }' . "\n"
+			. '        return UInt16(bigEndian: bindAddr.sin_port)' . "\n"
+			. '    }' . "\n"
+			. '}' . "\n";
+		file_put_contents($srcDir . DS . 'PhpBridge.swift', $phpBridge);
+		$log[] = 'Wrote PhpBridge.swift';
+
+		// ── AppDelegate.swift ──────────────────────────
+		$appDelegate = 'import UIKit' . "\n\n"
+			. '@main' . "\n"
+			. 'class AppDelegate: UIResponder, UIApplicationDelegate {' . "\n"
+			. '    var window: UIWindow?' . "\n\n"
+			. '    func application(_ application: UIApplication,' . "\n"
+			. '                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {' . "\n"
+			. '        let port = PhpBridge.shared.start()' . "\n"
+			. '        guard port > 0 else {' . "\n"
+			. '            print("Failed to start PHP server")' . "\n"
+			. '            return true' . "\n"
+			. '        }' . "\n\n"
+			. '        // Start transport manager for peer discovery' . "\n"
+			. '        TransportManager.shared.start(port: Int(port))' . "\n\n"
+			. '        // Keep alive in background via silent audio' . "\n"
+			. '        BackgroundKeepAlive.shared.start()' . "\n\n"
+			. '        let frame: CGRect' . "\n"
+			. '        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {' . "\n"
+			. '            frame = scene.screen.bounds' . "\n"
+			. '        } else {' . "\n"
+			. '            frame = UIScreen.main.bounds' . "\n"
+			. '        }' . "\n"
+			. '        window = UIWindow(frame: frame)' . "\n"
+			. '        let vc = WebViewController(port: port)' . "\n"
+			. '        window?.rootViewController = vc' . "\n"
+			. '        window?.makeKeyAndVisible()' . "\n"
+			. '        return true' . "\n"
+			. '    }' . "\n\n"
+			. '    func applicationWillTerminate(_ application: UIApplication) {' . "\n"
+			. '        TransportManager.shared.stop()' . "\n"
+			. '        PhpBridge.shared.stop()' . "\n"
+			. '    }' . "\n"
+			. '}' . "\n";
+		file_put_contents($srcDir . DS . 'AppDelegate.swift', $appDelegate);
+		$log[] = 'Wrote AppDelegate.swift';
+
+		// ── WebViewController.swift ────────────────────
+		$webVC = 'import UIKit' . "\n" . 'import WebKit' . "\n\n"
+			. 'class WebViewController: UIViewController, WKNavigationDelegate {' . "\n"
+			. '    private var webView: WKWebView!' . "\n"
+			. '    private let port: UInt16' . "\n\n"
+			. '    init(port: UInt16) {' . "\n"
+			. '        self.port = port' . "\n"
+			. '        super.init(nibName: nil, bundle: nil)' . "\n"
+			. '    }' . "\n"
+			. '    required init?(coder: NSCoder) { fatalError() }' . "\n\n"
+			. '    override func viewDidLoad() {' . "\n"
+			. '        super.viewDidLoad()' . "\n"
+			. '        let config = WKWebViewConfiguration()' . "\n"
+			. '        config.allowsInlineMediaPlayback = true' . "\n"
+			. '        webView = WKWebView(frame: view.bounds, configuration: config)' . "\n"
+			. '        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]' . "\n"
+			. '        webView.navigationDelegate = self' . "\n"
+			. '        webView.scrollView.contentInsetAdjustmentBehavior = .automatic' . "\n"
+			. '        view.addSubview(webView)' . "\n"
+			. '        let url = URL(string: "http://127.0.0.1:\\(port)/")!' . "\n"
+			. '        webView.load(URLRequest(url: url))' . "\n"
+			. '    }' . "\n\n"
+			. '    override var prefersStatusBarHidden: Bool { false }' . "\n"
+			. '    override var preferredStatusBarStyle: UIStatusBarStyle { .default }' . "\n\n"
+			. '    // Open external links in Safari' . "\n"
+			. '    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,' . "\n"
+			. '                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {' . "\n"
+			. '        if let url = navigationAction.request.url,' . "\n"
+			. '           url.host != "127.0.0.1" && url.scheme?.hasPrefix("http") == true {' . "\n"
+			. '            UIApplication.shared.open(url)' . "\n"
+			. '            decisionHandler(.cancel)' . "\n"
+			. '        } else {' . "\n"
+			. '            decisionHandler(.allow)' . "\n"
+			. '        }' . "\n"
+			. '    }' . "\n"
+			. '}' . "\n";
+		file_put_contents($srcDir . DS . 'WebViewController.swift', $webVC);
+		$log[] = 'Wrote WebViewController.swift';
+
+		// Copy transport files from mobile/ios/ if available
+		$mobileRoot = defined('Q_DIR') ? Q_DIR . DS . 'mobile' . DS . 'ios' : null;
+		$hasTransport = false;
+		if ($mobileRoot && is_dir($mobileRoot)) {
+			foreach (['TransportManager.swift', 'BackgroundKeepAlive.swift'] as $f) {
+				if (file_exists($mobileRoot . DS . $f)) {
+					copy($mobileRoot . DS . $f, $srcDir . DS . $f);
+					$log[] = 'Copied ' . $f;
+					$hasTransport = true;
+				}
+			}
+		}
+		if (!$hasTransport) {
+			// Generate minimal stubs so AppDelegate compiles without the full transport layer
+			$stubTM = 'import Foundation' . "\n\n"
+				. '/// Minimal stub — replace with the full TransportManager from mobile/ios/' . "\n"
+				. 'class TransportManager {' . "\n"
+				. '    static let shared = TransportManager()' . "\n"
+				. '    func start(port: Int) {}' . "\n"
+				. '    func stop() {}' . "\n"
+				. '}' . "\n";
+			file_put_contents($srcDir . DS . 'TransportManager.swift', $stubTM);
+			$stubKA = 'import Foundation' . "\n\n"
+				. '/// Minimal stub — replace with the full BackgroundKeepAlive from mobile/ios/' . "\n"
+				. 'class BackgroundKeepAlive {' . "\n"
+				. '    static let shared = BackgroundKeepAlive()' . "\n"
+				. '    func start() {}' . "\n"
+				. '    func stop() {}' . "\n"
+				. '}' . "\n";
+			file_put_contents($srcDir . DS . 'BackgroundKeepAlive.swift', $stubKA);
+			$log[] = 'Wrote TransportManager/BackgroundKeepAlive stubs (replace with full versions from mobile/ios/)';
+		}
+
+		// ── .gitignore ─────────────────────────────────
+		file_put_contents($mobileDir . DS . '.gitignore',
+			"*.xcodeproj\n*.xcworkspace\nPods/\nbuild/\nDerivedData/\n.DS_Store\n");
+		$log[] = 'Wrote .gitignore';
+
+		// Try to generate .xcodeproj via xcodegen
+		$xcodegen = self::which('xcodegen');
+		if ($xcodegen) {
+			$out = shell_exec('cd ' . escapeshellarg($mobileDir) . ' && xcodegen generate 2>&1');
+			$log[] = 'Ran xcodegen: ' . trim($out);
+		} else {
+			$log[] = 'Install xcodegen to auto-generate .xcodeproj: brew install xcodegen';
+			$log[] = 'Then run: cd ' . $mobileDir . ' && xcodegen generate';
+		}
+
+		return ['prepared' => true, 'platform' => 'ios', 'path' => $mobileDir, 'log' => $log];
+	}
+
+	private static function prepareAndroid($mobileDir, $appDir, $bundleId, $appName, $version, $buildNum)
+	{
+		$log = [];
+
+		// app/src/main/java/<package>/
+		$pkgPath = str_replace('.', DS, $bundleId);
+		$javaDir = $mobileDir . DS . 'app' . DS . 'src' . DS . 'main' . DS . 'java' . DS . $pkgPath;
+		$resDir = $mobileDir . DS . 'app' . DS . 'src' . DS . 'main' . DS . 'res' . DS . 'values';
+		$assetsDir = $mobileDir . DS . 'app' . DS . 'src' . DS . 'main' . DS . 'assets';
+		@mkdir($javaDir, 0755, true);
+		@mkdir($resDir, 0755, true);
+		@mkdir($assetsDir, 0755, true);
+
+		// settings.gradle.kts (Kotlin DSL — modern default)
+		$settings = "pluginManagement {\n"
+			. "    repositories {\n"
+			. "        google()\n"
+			. "        mavenCentral()\n"
+			. "        gradlePluginPortal()\n"
+			. "    }\n"
+			. "}\n"
+			. "dependencyResolutionManagement {\n"
+			. "    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n"
+			. "    repositories {\n"
+			. "        google()\n"
+			. "        mavenCentral()\n"
+			. "    }\n"
+			. "}\n\n"
+			. "rootProject.name = " . json_encode($appName) . "\n"
+			. "include(\":app\")\n";
+		file_put_contents($mobileDir . DS . 'settings.gradle.kts', $settings);
+		$log[] = 'Wrote settings.gradle.kts';
+
+		// Top-level build.gradle.kts
+		$topGradle = "plugins {\n"
+			. "    id(\"com.android.application\") version \"8.2.2\" apply false\n"
+			. "    id(\"org.jetbrains.kotlin.android\") version \"1.9.22\" apply false\n"
+			. "}\n";
+		file_put_contents($mobileDir . DS . 'build.gradle.kts', $topGradle);
+		$log[] = 'Wrote build.gradle.kts (top-level)';
+
+		// app/build.gradle.kts
+		$appGradle = "plugins {\n"
+			. "    id(\"com.android.application\")\n"
+			. "    id(\"org.jetbrains.kotlin.android\")\n"
+			. "}\n\n"
+			. "android {\n"
+			. "    namespace = " . json_encode($bundleId) . "\n"
+			. "    compileSdk = 34\n"
+			. "    defaultConfig {\n"
+			. "        applicationId = " . json_encode($bundleId) . "\n"
+			. "        minSdk = 26\n"
+			. "        targetSdk = 34\n"
+			. "        versionCode = " . $buildNum . "\n"
+			. "        versionName = " . json_encode($version) . "\n"
+			. "    }\n"
+			. "    buildTypes {\n"
+			. "        release { isMinifyEnabled = false }\n"
+			. "    }\n"
+			. "    compileOptions {\n"
+			. "        sourceCompatibility = JavaVersion.VERSION_17\n"
+			. "        targetCompatibility = JavaVersion.VERSION_17\n"
+			. "    }\n"
+			. "    kotlinOptions { jvmTarget = \"17\" }\n"
+			. "    // Include the phar and src/ in APK assets\n"
+			. "    sourceSets {\n"
+			. "        getByName(\"main\") {\n"
+			. "            assets.srcDirs(\"src/main/assets\")\n"
+			. "        }\n"
+			. "    }\n"
+			. "}\n\n"
+			. "dependencies {\n"
+			. "    implementation(\"androidx.core:core-ktx:1.12.0\")\n"
+			. "    implementation(\"androidx.appcompat:appcompat:1.6.1\")\n"
+			. "    implementation(\"androidx.webkit:webkit:1.9.0\")\n"
+			. "}\n";
+		@mkdir($mobileDir . DS . 'app', 0755, true);
+		file_put_contents($mobileDir . DS . 'app' . DS . 'build.gradle.kts', $appGradle);
+		$log[] = 'Wrote app/build.gradle.kts';
+
+		// AndroidManifest.xml
+		$escapedName = htmlspecialchars($appName);
+		$manifest = '<?xml version="1.0" encoding="utf-8"?>' . "\n"
+			. '<manifest xmlns:android="http://schemas.android.com/apk/res/android">' . "\n"
+			. '    <uses-permission android:name="android.permission.INTERNET" />' . "\n"
+			. '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' . "\n"
+			. '    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />' . "\n"
+			. '    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />' . "\n"
+			. '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />' . "\n"
+			. '    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />' . "\n"
+			. '    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />' . "\n"
+			. '    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />' . "\n"
+			. '    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />' . "\n"
+			. '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />' . "\n"
+			. '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />' . "\n"
+			. '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />' . "\n"
+			. '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />' . "\n"
+			. '    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />' . "\n"
+			. '    <application' . "\n"
+			. '        android:label="' . $escapedName . '"' . "\n"
+			. '        android:icon="@mipmap/ic_launcher"' . "\n"
+			. '        android:usesCleartextTraffic="true"' . "\n"
+			. '        android:theme="@style/Theme.AppCompat.Light.NoActionBar">' . "\n"
+			. '        <activity android:name=".MainActivity" android:exported="true">' . "\n"
+			. '            <intent-filter>' . "\n"
+			. '                <action android:name="android.intent.action.MAIN" />' . "\n"
+			. '                <category android:name="android.intent.category.LAUNCHER" />' . "\n"
+			. '            </intent-filter>' . "\n"
+			. '        </activity>' . "\n"
+			. '        <service android:name=".QbixServerService"' . "\n"
+			. '            android:foregroundServiceType="dataSync" android:exported="false" />' . "\n"
+			. '    </application>' . "\n"
+			. '</manifest>';
+		@mkdir($mobileDir . DS . 'app' . DS . 'src' . DS . 'main', 0755, true);
+		file_put_contents($mobileDir . DS . 'app' . DS . 'src' . DS . 'main' . DS . 'AndroidManifest.xml', $manifest);
+		$log[] = 'Wrote AndroidManifest.xml';
+
+		// PhpBridge.kt — unpacks phar from assets and starts PHP process
+		$phpBridge = "package {$bundleId}\n\n"
+			. "import android.content.Context\n"
+			. "import java.io.File\n"
+			. "import java.io.FileOutputStream\n"
+			. "import java.net.ServerSocket\n\n"
+			. "/**\n"
+			. " * Extracts the Qbix Server phar/binary from APK assets and starts it\n"
+			. " * as a subprocess on 127.0.0.1:<port>.\n"
+			. " *\n"
+			. " * The CI produces either a standalone micro binary (qbixserver-android-arm64)\n"
+			. " * or a .phar that needs a PHP runtime. The micro binary is self-contained.\n"
+			. " */\n"
+			. "object PhpBridge {\n"
+			. "    private var process: java.lang.Process? = null\n"
+			. "    var port: Int = 0\n"
+			. "        private set\n\n"
+			. "    fun start(context: Context): Int {\n"
+			. "        if (process != null) return port\n"
+			. "        port = findFreePort()\n\n"
+			. "        val serverDir = File(context.filesDir, \"qbix-server\")\n"
+			. "        serverDir.mkdirs()\n\n"
+			. "        // Try micro binary first, then phar\n"
+			. "        val binaryName = \"qbixserver-android-arm64\"\n"
+			. "        val pharName = \"qbixserver.phar\"\n"
+			. "        val exe = extractAsset(context, binaryName, serverDir)\n"
+			. "            ?: extractAsset(context, pharName, serverDir)\n"
+			. "        if (exe == null) {\n"
+			. "            android.util.Log.e(\"PhpBridge\", \"No server binary or phar in assets\")\n"
+			. "            return 0\n"
+			. "        }\n"
+			. "        exe.setExecutable(true)\n\n"
+			. "        // Extract src/ and web/ directories\n"
+			. "        extractDir(context, \"src\", serverDir)\n"
+			. "        extractDir(context, \"web\", serverDir)\n\n"
+			. "        val cmd = if (exe.name.endsWith(\".phar\")) {\n"
+			. "            // phar needs a PHP runtime — look for one on PATH or bundled\n"
+			. "            val phpBin = File(serverDir, \"php\").takeIf { it.exists() }?.absolutePath ?: \"php\"\n"
+			. "            listOf(phpBin, exe.absolutePath, \"-S\", \"127.0.0.1:\$port\")\n"
+			. "        } else {\n"
+			. "            listOf(exe.absolutePath, \"-S\", \"127.0.0.1:\$port\")\n"
+			. "        }\n\n"
+			. "        val pb = ProcessBuilder(cmd)\n"
+			. "            .directory(serverDir)\n"
+			. "            .redirectErrorStream(true)\n"
+			. "        process = pb.start()\n"
+			. "        android.util.Log.i(\"PhpBridge\", \"Started on 127.0.0.1:\$port\")\n"
+			. "        return port\n"
+			. "    }\n\n"
+			. "    fun stop() {\n"
+			. "        process?.destroy()\n"
+			. "        process = null\n"
+			. "    }\n\n"
+			. "    private fun extractAsset(context: Context, name: String, dir: File): File? {\n"
+			. "        return try {\n"
+			. "            val dest = File(dir, name)\n"
+			. "            context.assets.open(name).use { input ->\n"
+			. "                FileOutputStream(dest).use { output -> input.copyTo(output) }\n"
+			. "            }\n"
+			. "            dest\n"
+			. "        } catch (e: Exception) { null }\n"
+			. "    }\n\n"
+			. "    private fun extractDir(context: Context, dirName: String, dest: File) {\n"
+			. "        try {\n"
+			. "            val files = context.assets.list(dirName) ?: return\n"
+			. "            val targetDir = File(dest, dirName)\n"
+			. "            targetDir.mkdirs()\n"
+			. "            for (f in files) {\n"
+			. "                val sub = \"\$dirName/\$f\"\n"
+			. "                val subFiles = context.assets.list(sub)\n"
+			. "                if (subFiles != null && subFiles.isNotEmpty()) {\n"
+			. "                    extractDir(context, sub, dest)\n"
+			. "                } else {\n"
+			. "                    context.assets.open(sub).use { input ->\n"
+			. "                        FileOutputStream(File(targetDir, f)).use { output -> input.copyTo(output) }\n"
+			. "                    }\n"
+			. "                }\n"
+			. "            }\n"
+			. "        } catch (_: Exception) {}\n"
+			. "    }\n\n"
+			. "    private fun findFreePort(): Int {\n"
+			. "        return try {\n"
+			. "            ServerSocket(0).use { it.localPort }\n"
+			. "        } catch (_: Exception) { 8080 }\n"
+			. "    }\n"
+			. "}\n";
+		file_put_contents($javaDir . DS . 'PhpBridge.kt', $phpBridge);
+		$log[] = 'Wrote PhpBridge.kt';
+
+		// MainActivity.kt
+		$mainActivity = "package {$bundleId}\n\n"
+			. "import android.content.Intent\n"
+			. "import android.os.Bundle\n"
+			. "import android.webkit.WebView\n"
+			. "import android.webkit.WebViewClient\n"
+			. "import android.webkit.WebChromeClient\n"
+			. "import android.webkit.WebSettings\n"
+			. "import androidx.appcompat.app.AppCompatActivity\n"
+			. "import kotlin.concurrent.thread\n\n"
+			. "class MainActivity : AppCompatActivity() {\n"
+			. "    private lateinit var webView: WebView\n\n"
+			. "    override fun onCreate(savedInstanceState: Bundle?) {\n"
+			. "        super.onCreate(savedInstanceState)\n\n"
+			. "        // Set up WebView first (shows blank while server starts)\n"
+			. "        webView = WebView(this)\n"
+			. "        webView.settings.javaScriptEnabled = true\n"
+			. "        webView.settings.domStorageEnabled = true\n"
+			. "        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW\n"
+			. "        webView.webViewClient = WebViewClient()\n"
+			. "        webView.webChromeClient = WebChromeClient()\n"
+			. "        setContentView(webView)\n\n"
+			. "        // Start PHP server off the main thread to avoid ANR\n"
+			. "        thread {\n"
+			. "            val port = PhpBridge.start(this)\n"
+			. "            if (port <= 0) return@thread\n\n"
+			. "            // Wait for server to accept connections (up to 3s)\n"
+			. "            for (i in 0 until 30) {\n"
+			. "                try {\n"
+			. "                    java.net.Socket(\"127.0.0.1\", port).close()\n"
+			. "                    break\n"
+			. "                } catch (_: Exception) { Thread.sleep(100) }\n"
+			. "            }\n\n"
+			. "            runOnUiThread {\n"
+			. "                // Start foreground service + transport manager\n"
+			. "                val intent = Intent(this, QbixServerService::class.java)\n"
+			. "                intent.putExtra(QbixServerService.EXTRA_PORT, port)\n"
+			. "                startForegroundService(intent)\n\n"
+			. "                webView.loadUrl(\"http://127.0.0.1:\$port/\")\n"
+			. "            }\n"
+			. "        }\n"
+			. "    }\n\n"
+			. "    @Suppress(\"DEPRECATION\")\n"
+			. "    override fun onBackPressed() {\n"
+			. "        if (webView.canGoBack()) {\n"
+			. "            webView.goBack()\n"
+			. "        } else {\n"
+			. "            super.onBackPressed()\n"
+			. "        }\n"
+			. "    }\n\n"
+			. "    override fun onDestroy() {\n"
+			. "        stopService(android.content.Intent(this, QbixServerService::class.java))\n"
+			. "        PhpBridge.stop()\n"
+			. "        super.onDestroy()\n"
+			. "    }\n"
+			. "}\n";
+		file_put_contents($javaDir . DS . 'MainActivity.kt', $mainActivity);
+		$log[] = 'Wrote MainActivity.kt';
+
+		// Copy transport files from mobile/android/ if available
+		$mobileRoot = defined('Q_DIR') ? Q_DIR . DS . 'mobile' . DS . 'android' : null;
+		if ($mobileRoot && is_dir($mobileRoot)) {
+			foreach (['TransportManager.kt', 'QbixServerService.kt'] as $f) {
+				if (file_exists($mobileRoot . DS . $f)) {
+					$content = file_get_contents($mobileRoot . DS . $f);
+					// Rewrite package declaration
+					$content = preg_replace('/^package\s+\S+/m', 'package ' . $bundleId, $content, 1);
+					// Rewrite imports referencing the original package
+					$content = str_replace('com.qbix.server.transport.', $bundleId . '.', $content);
+					$content = str_replace('com.qbix.server.', $bundleId . '.', $content);
+					file_put_contents($javaDir . DS . $f, $content);
+					$log[] = 'Copied ' . $f;
+				}
+			}
+		} else {
+			$log[] = 'Note: Copy TransportManager.kt and QbixServerService.kt from mobile/android/ into ' . $pkgPath . '/';
+		}
+
+		// QbixServerService.kt (minimal version if not copied)
+		if (!file_exists($javaDir . DS . 'QbixServerService.kt')) {
+			$svc = "package {$bundleId}\n\n"
+				. "import android.app.*\nimport android.content.Intent\n"
+				. "import android.content.pm.ServiceInfo\nimport android.os.Build\n"
+				. "import android.os.IBinder\n"
+				. "import androidx.core.app.NotificationCompat\n\n"
+				. "class QbixServerService : Service() {\n"
+				. "    companion object {\n"
+				. "        const val CHANNEL_ID = \"qbix_server\"\n"
+				. "        const val NOTIFICATION_ID = 1\n"
+				. "        const val EXTRA_PORT = \"port\"\n"
+				. "    }\n\n"
+				. "    override fun onCreate() {\n"
+				. "        super.onCreate()\n"
+				. "        val channel = NotificationChannel(CHANNEL_ID, \"Qbix Server\",\n"
+				. "            NotificationManager.IMPORTANCE_LOW)\n"
+				. "        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)\n"
+				. "    }\n\n"
+				. "    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {\n"
+				. "        val port = intent?.getIntExtra(EXTRA_PORT, 8080) ?: 8080\n"
+				. "        val notification = NotificationCompat.Builder(this, CHANNEL_ID)\n"
+				. "            .setContentTitle(\"Qbix Server\")\n"
+				. "            .setContentText(\"Running on port \$port\")\n"
+				. "            .setSmallIcon(android.R.drawable.ic_dialog_info)\n"
+				. "            .setOngoing(true).build()\n"
+				. "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {\n"
+				. "            startForeground(NOTIFICATION_ID, notification,\n"
+				. "                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)\n"
+				. "        } else {\n"
+				. "            startForeground(NOTIFICATION_ID, notification)\n"
+				. "        }\n"
+				. "        return START_STICKY\n"
+				. "    }\n\n"
+				. "    override fun onBind(intent: Intent?): IBinder? = null\n"
+				. "}\n";
+			file_put_contents($javaDir . DS . 'QbixServerService.kt', $svc);
+			$log[] = 'Wrote QbixServerService.kt (minimal)';
+		}
+
+		// strings.xml — Android XML escapes apostrophes with backslash, not HTML entities
+		$androidName = str_replace(
+			["&", "<", ">", "'", "\""],
+			["&amp;", "&lt;", "&gt;", "\\'", "&quot;"],
+			$appName
+		);
+		$strings = '<?xml version="1.0" encoding="utf-8"?>' . "\n"
+			. '<resources><string name="app_name">' . $androidName . '</string></resources>';
+		file_put_contents($resDir . DS . 'strings.xml', $strings);
+		$log[] = 'Wrote res/values/strings.xml';
+
+		// Generate a default launcher icon (simple colored circle with first letter)
+		$mipmapDir = dirname($resDir) . DS . 'mipmap-hdpi';
+		@mkdir($mipmapDir, 0755, true);
+		$iconXml = '<?xml version="1.0" encoding="utf-8"?>' . "\n"
+			. '<vector xmlns:android="http://schemas.android.com/apk/res/android"' . "\n"
+			. '    android:width="108dp" android:height="108dp"' . "\n"
+			. '    android:viewportWidth="108" android:viewportHeight="108">' . "\n"
+			. '    <path android:fillColor="#4A90D9"' . "\n"
+			. '        android:pathData="M54,54m-40,0a40,40 0,1,1 80,0a40,40 0,1,1 -80,0" />' . "\n"
+			. '</vector>';
+		$drawableDir = dirname($resDir) . DS . 'drawable';
+		@mkdir($drawableDir, 0755, true);
+		file_put_contents($drawableDir . DS . 'ic_launcher.xml', $iconXml);
+		// Provide a mipmap alias so @mipmap/ic_launcher resolves
+		file_put_contents($mipmapDir . DS . 'ic_launcher.xml', $iconXml);
+		$log[] = 'Wrote default launcher icon';
+
+		// gradle.properties
+		file_put_contents($mobileDir . DS . 'gradle.properties',
+			"android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2048m\n");
+		$log[] = 'Wrote gradle.properties';
+
+		// Gradle wrapper
+		$wrapperDir = $mobileDir . DS . 'gradle' . DS . 'wrapper';
+		@mkdir($wrapperDir, 0755, true);
+		file_put_contents($wrapperDir . DS . 'gradle-wrapper.properties',
+			"distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\n"
+			. "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n"
+			. "zipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\n");
+		$log[] = 'Wrote gradle-wrapper.properties';
+
+		// gradlew script — lightweight wrapper that uses system Gradle or downloads it
+		$gradlew = '#!/bin/sh' . "\n"
+			. 'set -e' . "\n"
+			. 'APP_HOME=$(cd "$(dirname "$0")" && pwd -P)' . "\n"
+			. 'GRADLE_VERSION="8.5"' . "\n"
+			. 'GRADLE_DIR="$HOME/.gradle/wrapper/dists/gradle-${GRADLE_VERSION}-bin"' . "\n"
+			. 'GRADLE_ZIP_URL="https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"' . "\n"
+			. '' . "\n"
+			. '# Try system gradle first' . "\n"
+			. 'if command -v gradle >/dev/null 2>&1; then' . "\n"
+			. '    exec gradle --project-dir "$APP_HOME" "$@"' . "\n"
+			. 'fi' . "\n"
+			. '' . "\n"
+			. '# Download Gradle if not cached' . "\n"
+			. 'if [ ! -d "$GRADLE_DIR/gradle-${GRADLE_VERSION}" ]; then' . "\n"
+			. '    echo "Downloading Gradle ${GRADLE_VERSION}..."' . "\n"
+			. '    mkdir -p "$GRADLE_DIR"' . "\n"
+			. '    TMPZIP=$(mktemp)' . "\n"
+			. '    curl -fsSL "$GRADLE_ZIP_URL" -o "$TMPZIP" || wget -q "$GRADLE_ZIP_URL" -O "$TMPZIP"' . "\n"
+			. '    unzip -qo "$TMPZIP" -d "$GRADLE_DIR"' . "\n"
+			. '    rm -f "$TMPZIP"' . "\n"
+			. 'fi' . "\n"
+			. '' . "\n"
+			. 'exec "$GRADLE_DIR/gradle-${GRADLE_VERSION}/bin/gradle" --project-dir "$APP_HOME" "$@"' . "\n";
+		file_put_contents($mobileDir . DS . 'gradlew', $gradlew);
+		chmod($mobileDir . DS . 'gradlew', 0755);
+		$log[] = 'Wrote gradlew';
+
+		// .gitignore
+		file_put_contents($mobileDir . DS . '.gitignore',
+			".gradle/\nbuild/\napp/build/\nlocal.properties\n*.apk\n*.aab\n.DS_Store\n");
+		$log[] = 'Wrote .gitignore';
+
+		return ['prepared' => true, 'platform' => 'android', 'path' => $mobileDir, 'log' => $log];
+	}
+
+
+
+	static function apiMobileBuild($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$appDir = basename($body['appDir'] ?? '');
+		$platform = $body['platform'] ?? '';
+		$buildType = $body['buildType'] ?? 'debug';
+		if (!$appDir || !in_array($platform, ['ios', 'android'])) {
+			return ['status' => 400, 'error' => 'Missing appDir or platform'];
+		}
+		$appsDir = self::appsDir();
+		if (!$appsDir) return ['status' => 400, 'error' => 'Apps directory not set'];
+		$fullDir = $appsDir . DS . $appDir;
+		$mobileDir = $fullDir . DS . 'mobile' . DS . $platform;
+		if (!is_dir($mobileDir)) {
+			return ['status' => 400, 'error' => 'Project not prepared. Run Prepare first.'];
+		}
+
+		$configFile = $fullDir . DS . 'local' . DS . 'mobile.json';
+		$cfg = file_exists($configFile) ? json_decode(file_get_contents($configFile), true) : [];
+		$appName = $cfg['appName'] ?? $appDir;
+		$log = [];
+		$artifact = null;
+
+		if ($platform === 'ios') {
+			if (!self::which('xcodebuild')) {
+				return ['status' => 400, 'error' => 'xcodebuild not found — install Xcode CLI tools'];
+			}
+			$safeName = preg_replace('/[^A-Za-z0-9_]/', '', $appName) ?: 'QbixApp';
+			$xcodeproj = $mobileDir . DS . $safeName . '.xcodeproj';
+			if (!is_dir($xcodeproj)) {
+				return ['status' => 400, 'error' => $safeName . '.xcodeproj not found. Run xcodegen first: cd ' . $mobileDir . ' && xcodegen generate'];
+			}
+			$scheme = $safeName;
+			$archiveDir = $mobileDir . DS . 'build';
+			@mkdir($archiveDir, 0755, true);
+
+			$sdk = ($buildType === 'release') ? 'iphoneos' : 'iphonesimulator';
+			$cmd = 'cd ' . escapeshellarg($mobileDir)
+				. ' && xcodebuild -project ' . escapeshellarg($safeName . '.xcodeproj')
+				. ' -scheme ' . escapeshellarg($scheme)
+				. ' -configuration ' . ($buildType === 'release' ? 'Release' : 'Debug')
+				. ' -sdk ' . $sdk
+				. ' -derivedDataPath ' . escapeshellarg($archiveDir)
+				. ' build 2>&1';
+			$output = shell_exec($cmd);
+			$success = strpos($output, '** BUILD SUCCEEDED **') !== false;
+
+			if ($success) {
+				// Find the .app
+				$appPath = trim(shell_exec('find ' . escapeshellarg($archiveDir)
+					. ' -name "*.app" -type d 2>/dev/null | head -1') ?? '');
+				if ($appPath) $artifact = $appPath;
+			}
+
+			$log[] = $output;
+			self::recordMobileBuild($fullDir, $platform, $buildType, $success, $artifact);
+			return ['success' => $success, 'platform' => 'ios', 'output' => $output, 'artifact' => $artifact];
+
+		} else {
+			// Android — use gradlew if available, else gradle
+			$gradlew = $mobileDir . DS . 'gradlew';
+			if (file_exists($gradlew)) {
+				chmod($gradlew, 0755);
+			}
+			$gradleCmd = file_exists($gradlew) ? './gradlew' : 'gradle';
+			$task = $buildType === 'release' ? 'assembleRelease' : 'assembleDebug';
+
+			$cmd = 'cd ' . escapeshellarg($mobileDir) . ' && ' . $gradleCmd . ' ' . $task . ' 2>&1';
+			$output = shell_exec($cmd);
+			$success = strpos($output, 'BUILD SUCCESSFUL') !== false;
+
+			if ($success) {
+				$apkPath = trim(shell_exec('find ' . escapeshellarg($mobileDir)
+					. '/app/build/outputs -name "*.apk" -type f 2>/dev/null | head -1') ?? '');
+				if ($apkPath) $artifact = $apkPath;
+			}
+
+			$log[] = $output;
+			self::recordMobileBuild($fullDir, $platform, $buildType, $success, $artifact);
+			return ['success' => $success, 'platform' => 'android', 'output' => $output, 'artifact' => $artifact];
+		}
+	}
+
+	private static function recordMobileBuild($appFullDir, $platform, $buildType, $success, $artifact)
+	{
+		$histFile = $appFullDir . DS . 'local' . DS . 'mobile-builds.json';
+		$history = file_exists($histFile) ? json_decode(file_get_contents($histFile), true) : [];
+		if (!is_array($history)) $history = [];
+		$history[] = [
+			'platform' => $platform,
+			'buildType' => $buildType,
+			'success' => $success,
+			'artifact' => $artifact,
+			'timestamp' => date('c'),
+		];
+		// Keep last 50
+		if (count($history) > 50) $history = array_slice($history, -50);
+		@mkdir(dirname($histFile), 0755, true);
+		file_put_contents($histFile, json_encode($history, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+	}
+
+	static function apiMobileBuilds($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$qp = self::queryParams($parsed);
+		$appDir = basename($body['appDir'] ?? ($qp['appDir'] ?? ''));
+		if (!$appDir) return ['status' => 400, 'error' => 'Missing appDir'];
+		$appsDir = self::appsDir();
+		if (!$appsDir) return ['builds' => [], 'artifacts' => []];
+		$fullDir = $appsDir . DS . $appDir;
+
+		$histFile = $fullDir . DS . 'local' . DS . 'mobile-builds.json';
+		$history = file_exists($histFile) ? json_decode(file_get_contents($histFile), true) : [];
+
+		// Gather current artifacts
+		$artifacts = [];
+		foreach (['ios', 'android'] as $p) {
+			$buildDir = $fullDir . DS . 'mobile' . DS . $p . DS . 'build';
+			if (!is_dir($buildDir)) {
+				$buildDir = $fullDir . DS . 'mobile' . DS . $p . DS . 'app' . DS . 'build' . DS . 'outputs';
+			}
+			if (!is_dir($buildDir)) continue;
+			$ext = $p === 'ios' ? '*.app' : '*.apk';
+			$found = trim(shell_exec('find ' . escapeshellarg($buildDir) . ' -name "' . $ext . '" 2>/dev/null | head -5') ?? '');
+			foreach (array_filter(explode("\n", $found)) as $path) {
+				$artifacts[] = [
+					'platform' => $p,
+					'path' => $path,
+					'size' => is_file($path) ? filesize($path) : null,
+					'modified' => is_file($path) ? date('c', filemtime($path)) : null,
+				];
+			}
+		}
+
+		return ['builds' => $history ?: [], 'artifacts' => $artifacts];
+	}
+
+	/**
+	 * Parse $parsed['query'] into an associative array regardless of whether
+	 * the webserver layer passes it as a raw string or already-parsed array.
+	 */
+	static function queryParams($parsed)
+	{
+		$q = $parsed['query'] ?? '';
+		if (is_array($q)) return $q;
+		$p = [];
+		if (is_string($q) && $q !== '') parse_str($q, $p);
+		return $p;
 	}
 
 	static function appsDir()
@@ -2492,9 +4387,11 @@ class Q_WebServer_Panel
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0a0b14;--sfc:rgba(22,24,40,.7);--sfc-solid:#161828;--bdr:rgba(255,255,255,.06);
 --txt:#e1e4ed;--dim:#6b7089;--ac:#7c5cfc;--ac2:#a78bfa;--grn:#4ade80;--yel:#fbbf24;
---red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08)}
+--red:#f87171;--cyn:#22d3ee;--glow:rgba(124,92,252,.08);
+--fg:#e1e4ed;--card:rgba(22,24,40,.7);--border:rgba(255,255,255,.06);--brd:rgba(255,255,255,.06);--warn:#fbbf24}
 @media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--sfc:rgba(255,255,255,.85);--sfc-solid:#fff;--bdr:rgba(0,0,0,.08);
---txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05)}}
+--txt:#1a1a2e;--dim:#6b7089;--glow:rgba(124,92,252,.05);
+--fg:#1a1a2e;--card:rgba(255,255,255,.85);--border:rgba(0,0,0,.08);--brd:rgba(0,0,0,.08);--warn:#d97706}}
 body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
   background:var(--bg);color:var(--txt);font-size:14px;min-height:100vh;
   background-image:
@@ -2536,14 +4433,52 @@ body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;
 /* ── App rows ── */
 .app-row{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:10px;
   margin-bottom:6px;background:rgba(255,255,255,.02);border:1px solid transparent;
-  transition:all .15s}
+  transition:all .15s;cursor:pointer}
 .app-row:hover{background:rgba(255,255,255,.04);border-color:var(--bdr)}
+.app-icon{width:36px;height:36px;border-radius:8px;flex-shrink:0;object-fit:cover;
+  background:rgba(255,255,255,.05);border:1px solid var(--bdr)}
 .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .dot.on{background:var(--grn);box-shadow:0 0 8px rgba(74,222,128,.4)}
 .dot.off{background:var(--dim)}
-.app-name{font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-info{flex:1;min-width:0}
+.app-name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .app-url{color:var(--dim);font-size:12px;font-family:'SF Mono',monospace;
-  flex-shrink:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px}
+.app-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
+.app-badge{font-size:10px;background:rgba(255,255,255,.06);padding:1px 6px;border-radius:3px;color:var(--dim)}
+/* ── App detail panel ── */
+.app-detail{background:var(--card);border:1px solid var(--bdr);border-radius:12px;padding:20px;margin-bottom:12px}
+.app-detail h3{font-size:16px;margin-bottom:14px;display:flex;align-items:center;gap:10px}
+.app-detail .back-btn{cursor:pointer;font-size:18px;opacity:.6;transition:opacity .15s}
+.app-detail .back-btn:hover{opacity:1}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.detail-card{background:rgba(255,255,255,.03);border:1px solid var(--bdr);border-radius:8px;padding:12px}
+.detail-card .label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.detail-card .val{font-size:18px;font-weight:700}
+.detail-tabs{display:flex;gap:0;border-bottom:1px solid var(--bdr);margin-bottom:14px}
+.detail-tab{padding:8px 14px;font-size:12px;cursor:pointer;border-bottom:2px solid transparent;color:var(--dim);transition:all .15s}
+.detail-tab:hover{color:var(--txt)}
+.detail-tab.active{color:var(--ac);border-bottom-color:var(--ac)}
+/* ── Log viewer enhanced ── */
+.log-tree{max-height:300px;overflow-y:auto;margin-bottom:12px}
+.log-file{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;cursor:pointer;
+  font-size:12px;font-family:'SF Mono',monospace;transition:background .1s}
+.log-file:hover{background:rgba(255,255,255,.05)}
+.log-file.active{background:rgba(124,92,252,.15);color:var(--ac)}
+.log-size{color:var(--dim);font-size:10px;margin-left:auto}
+/* ── File browser ── */
+.file-breadcrumb{display:flex;flex-wrap:wrap;gap:2px;align-items:center;font-size:12px;margin-bottom:10px;color:var(--dim)}
+.file-breadcrumb span{cursor:pointer;color:var(--ac);transition:opacity .15s}
+.file-breadcrumb span:hover{opacity:.8}
+.file-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;
+  font-size:13px;transition:background .1s}
+.file-item:hover{background:rgba(255,255,255,.05)}
+.file-item .icon{width:18px;text-align:center;flex-shrink:0}
+.file-item .fname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .fsize{font-size:11px;color:var(--dim);font-family:'SF Mono',monospace}
+.file-preview{max-height:500px;overflow:auto;font-size:12px;padding:14px;
+  background:rgba(0,0,0,.3);border-radius:8px;white-space:pre-wrap;word-break:break-all;
+  font-family:'SF Mono',monospace;line-height:1.5}
 
 /* ── Buttons ── */
 .btn{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;border:none;
@@ -2627,9 +4562,14 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   .content{padding:16px}
   .card{padding:14px;border-radius:10px}
   .app-row{flex-wrap:wrap;gap:8px;padding:12px}
-  .app-name{width:100%;flex:none}
-  .app-url{width:100%;flex:none;max-width:none;margin-top:-4px}
+  .app-icon{width:32px;height:32px;border-radius:6px}
+  .app-info{width:calc(100% - 56px)}
+  .app-name{font-size:14px}
+  .app-url{max-width:none;font-size:11px}
   .btn-row{width:100%;justify-content:flex-start;margin-top:4px}
+  .detail-grid{grid-template-columns:repeat(2,1fr)}
+  .detail-tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .file-breadcrumb{font-size:11px}
   .form-row{flex-direction:column;gap:6px}
   .form-row label{min-width:0}
   .grid-2{grid-template-columns:1fr}
@@ -2640,6 +4580,10 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   .tab{padding:10px 10px;font-size:11px}
   .btn{padding:6px 12px;font-size:11px}
   .stat-val{font-size:17px}
+  .app-icon{width:28px;height:28px}
+  .detail-grid{grid-template-columns:1fr}
+  .detail-tab{padding:8px 10px;font-size:11px}
+  .file-preview{font-size:10px;padding:10px}
 }
 /* safe area for notched phones */
 @supports(padding-top: env(safe-area-inset-top)){
@@ -2652,17 +4596,21 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="status"><span class="pulse"></span> Running</div>
 </div>
 <div class="tabs">
-  <div class="tab active" onclick="showTab('apps')">Apps</div>
-  <div class="tab" onclick="showTab('domains')">Domains</div>
-  <div class="tab" onclick="showTab('scripts')">Scripts</div>
-  <div class="tab" onclick="showTab('plugins')">Plugins</div>
-  <div class="tab" onclick="showTab('workers')">Workers</div>
-  <div class="tab" onclick="showTab('logs')">Logs</div>
-  <div class="tab" onclick="showTab('cron')">Cron</div>
-  <div class="tab" onclick="showTab('frameworks')">Frameworks</div>
-  <div class="tab" onclick="showTab('playground')">Playground</div>
-  <div class="tab" onclick="showTab('system')">System</div>
-  <div class="tab" onclick="showTab('servers')">Servers</div>
+  <div class="tab active" onclick="showTab('apps',event)">Apps</div>
+  <div class="tab" onclick="showTab('domains',event)">Domains</div>
+  <div class="tab" onclick="showTab('autohost',event)">Autohost</div>
+  <div class="tab" onclick="showTab('security',event)">Security</div>
+  <div class="tab" onclick="showTab('scripts',event)">Scripts</div>
+  <div class="tab" onclick="showTab('plugins',event)">Plugins</div>
+  <div class="tab" onclick="showTab('workers',event)">Workers</div>
+  <div class="tab" onclick="showTab('logs',event)">Logs</div>
+  <div class="tab" onclick="showTab('cron',event)">Cron</div>
+  <div class="tab" onclick="showTab('frameworks',event)">Frameworks</div>
+  <div class="tab" onclick="showTab('playground',event)">Playground</div>
+  <div class="tab" onclick="showTab('system',event)">System</div>
+  <div class="tab" onclick="showTab('servers',event)">Servers</div>
+  <div class="tab" onclick="showTab('nearby',event)">Nearby</div>
+  <div class="tab" onclick="showTab('mobile',event)">Mobile</div>
 </div>
 
 <!-- APPS TAB -->
@@ -2705,6 +4653,47 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <div class="form-row"><label>TLS</label><select id="dom-tls"><option value="auto">Auto (ACME)</option><option value="manual">Manual (drop certs)</option><option value="self-signed">Self-signed</option><option value="">HTTP only</option></select></div>
     <button onclick="addDomain()">Add Domain</button>
   </div>
+  <div id="hosts-info"></div>
+</div>
+
+<!-- SECURITY TAB -->
+<div id="tab-security" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Security &amp; Attestation</h2>
+
+  <div id="sec-attestation"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Sign Binary</h3>
+    <p style="font-size:12px;color:var(--dim);margin-bottom:12px">Paste a PEM private key to add your signature to this binary. Multiple signers can sign independently for M-of-N verification.</p>
+    <div class="form-row"><label>Signer name</label><input id="sec-signer" placeholder="alice@example.com"></div>
+    <div class="form-row"><label>Private key (PEM)</label><textarea id="sec-key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;..." style="font-size:11px;font-family:monospace"></textarea></div>
+    <button class="btn btn-primary" onclick="signBinary()">Sign</button>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3 style="font-size:14px;margin-bottom:12px">Verify</h3>
+    <div class="form-row"><label>Required signatures (M)</label><input id="sec-m" type="number" min="1" value="1" style="width:60px"></div>
+    <button class="btn btn-primary" onclick="verifyBinary()">Verify</button>
+    <div id="sec-verify-result" style="margin-top:12px"></div>
+  </div>
+
+  <div id="sec-trust" style="margin-top:16px"></div>
+</div>
+
+<!-- AUTOHOST TAB -->
+<div id="tab-autohost" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Autohost</h2>
+  <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Auto-provision domains when a new Host header arrives. Customer points DNS at your server, first request triggers cert provisioning and config setup.</p>
+  <div class="card" style="margin-bottom:16px">
+    <div class="form-row"><label>Enabled</label><select id="ah-enabled" onchange="saveAutohost()"><option value="0">Off</option><option value="1">On</option></select></div>
+    <div class="form-row"><label>Authorization</label><select id="ah-authorize" onchange="saveAutohost()"><option value="open">Open (any hostname)</option><option value="allowlist">Allowlist (patterns)</option></select></div>
+    <div class="form-row" id="ah-allowlist-row" style="display:none"><label>Allowlist</label><textarea id="ah-allowlist" rows="3" placeholder="*.example.com&#10;app.acme.com" style="font-size:12px"></textarea></div>
+    <div class="form-row"><label>DNS check</label><select id="ah-dns"><option value="1">Verify DNS points here</option><option value="0">Skip (trust all)</option></select></div>
+    <div class="form-row"><label>ACME email</label><input id="ah-email" placeholder="admin@example.com"></div>
+    <button class="btn btn-primary" onclick="saveAutohost()">Save</button>
+  </div>
+  <div id="ah-status"></div>
+  <div id="ah-log"></div>
 </div>
 
 <!-- SCRIPTS TAB -->
@@ -2775,8 +4764,12 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <h2 style="font-size:16px;margin-bottom:16px">System Info</h2>
   <div class="grid-2" id="system-info"></div>
 
-  <div style="margin-top:16px">
+  <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn btn-ghost" style="font-size:12px" onclick="clearServerCache()">Clear Cache</button>
     <button class="btn btn-ghost" style="font-size:12px" onclick="var f=document.getElementById('phpinfo-frame');f.style.display=f.style.display==='none'?'block':'none';if(f.style.display==='block')f.src='/Q/phpinfo'">Show phpinfo()</button>
+  </div>
+  <div id="cache-clear-result" style="display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:12px;background:var(--card);border:1px solid var(--brd)"></div>
+  <div>
     <iframe id="phpinfo-frame" style="display:none;width:100%;height:500px;border:1px solid var(--brd);border-radius:6px;margin-top:8px;background:#fff"></iframe>
   </div>
 
@@ -2810,6 +4803,127 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div id="servers-list"></div>
 </div>
 
+<!-- NEARBY TAB -->
+<div id="tab-nearby" class="content hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:16px">Nearby Peers</h2>
+    <button class="btn btn-ghost" onclick="loadNearby()">Refresh</button>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <p style="font-size:12px;color:var(--dim);margin-bottom:8px">This server's mesh identity:</p>
+    <div id="nearby-identity" style="font-family:monospace;font-size:11px;word-break:break-all;color:var(--accent)">Loading...</div>
+  </div>
+  <div id="nearby-transports" class="card" style="margin-bottom:14px">
+    <h3 style="margin-bottom:8px">Transports</h3>
+    <div id="nearby-transport-list">Loading...</div>
+  </div>
+  <div id="nearby-peers">
+    <p style="color:var(--dim)">Scanning for nearby peers...</p>
+  </div>
+  <div id="nearby-sessions" class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Encrypted Sessions</h3>
+    <div id="nearby-session-list">None</div>
+  </div>
+  <div id="nearby-routes" class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Routing Table</h3>
+    <div id="nearby-route-list">No routes</div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3 style="margin-bottom:8px">Connect to Peer</h3>
+    <div style="display:flex;gap:8px">
+      <input id="nearby-connect-addr" type="text" placeholder="http://192.168.1.50:8080"
+        style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px">
+      <button class="btn" onclick="connectToPeer()">Connect</button>
+    </div>
+    <div id="nearby-connect-result" style="font-size:12px;margin-top:6px;color:var(--dim)"></div>
+  </div>
+</div>
+
+<!-- MOBILE TAB -->
+<div id="tab-mobile" class="content hidden">
+  <h2 style="font-size:16px;margin-bottom:16px">Mobile Builds</h2>
+
+  <!-- Toolchain Status -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="font-size:14px">Toolchains</h3>
+      <button class="btn btn-ghost" onclick="loadToolchains()" style="font-size:12px">↻ Refresh</button>
+    </div>
+    <div id="mobile-toolchains"><p style="color:var(--dim);font-size:12px">Detecting…</p></div>
+  </div>
+
+  <!-- App Selector -->
+  <div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:14px;margin-bottom:10px">Build App</h3>
+    <div class="form-row">
+      <label>App</label>
+      <select id="mobile-app" onchange="loadMobileApp(this.value)" style="flex:1">
+        <option value="">Select an app…</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Per-App Mobile Panel (shown after app selection) -->
+  <div id="mobile-app-panel" style="display:none">
+    <!-- Mobile Config -->
+    <div class="card" style="margin-bottom:16px">
+      <h3 style="font-size:14px;margin-bottom:10px">App Configuration</h3>
+      <div class="form-row"><label>Bundle ID</label><input id="mobile-bundle-id" placeholder="com.example.myapp" style="flex:1"></div>
+      <div class="form-row"><label>App Name</label><input id="mobile-app-name" placeholder="My App" style="flex:1"></div>
+      <div class="form-row"><label>Version</label><input id="mobile-version" placeholder="1.0.0" style="flex:1;max-width:120px"></div>
+      <div class="form-row"><label>Build #</label><input id="mobile-build-num" type="number" placeholder="1" style="flex:1;max-width:80px"></div>
+      <div style="margin-top:10px">
+        <button class="btn btn-ghost" onclick="saveMobileConfig()" style="font-size:12px">Save Config</button>
+        <span id="mobile-config-status" style="font-size:11px;color:var(--dim);margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- Platform Cards -->
+    <div class="grid-2" style="margin-bottom:16px">
+      <!-- iOS Card -->
+      <div class="card" id="mobile-ios-card">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:20px">🍎</span>
+          <h3 style="font-size:14px;flex:1">iOS</h3>
+          <span id="mobile-ios-status" style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.06);color:var(--dim)">—</span>
+        </div>
+        <div id="mobile-ios-info" style="font-size:12px;color:var(--dim);margin-bottom:10px">Requires macOS with Xcode CLI tools</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-ghost" onclick="mobilePrepare('ios')" id="mobile-ios-prepare" style="font-size:12px">📁 Prepare Project</button>
+          <button class="btn btn-ghost" onclick="mobileBuild('ios')" id="mobile-ios-build" style="font-size:12px">🔨 Build</button>
+        </div>
+        <pre id="mobile-ios-output" style="display:none;max-height:300px;overflow:auto;font-size:11px;padding:10px;background:rgba(0,0,0,.3);border-radius:6px;white-space:pre-wrap;word-break:break-all;margin-top:10px"></pre>
+      </div>
+      <!-- Android Card -->
+      <div class="card" id="mobile-android-card">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:20px">🤖</span>
+          <h3 style="font-size:14px;flex:1">Android</h3>
+          <span id="mobile-android-status" style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.06);color:var(--dim)">—</span>
+        </div>
+        <div id="mobile-android-info" style="font-size:12px;color:var(--dim);margin-bottom:10px">Requires Android SDK and JDK</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-ghost" onclick="mobilePrepare('android')" id="mobile-android-prepare" style="font-size:12px">📁 Prepare Project</button>
+          <button class="btn btn-ghost" onclick="mobileBuild('android')" id="mobile-android-build" style="font-size:12px">🔨 Build</button>
+        </div>
+        <pre id="mobile-android-output" style="display:none;max-height:300px;overflow:auto;font-size:11px;padding:10px;background:rgba(0,0,0,.3);border-radius:6px;white-space:pre-wrap;word-break:break-all;margin-top:10px"></pre>
+      </div>
+    </div>
+
+    <!-- Build Artifacts -->
+    <div class="card" style="margin-bottom:16px">
+      <h3 style="font-size:14px;margin-bottom:10px">Build Artifacts</h3>
+      <div id="mobile-artifacts"><p style="color:var(--dim);font-size:12px">No builds yet.</p></div>
+    </div>
+
+    <!-- Build History -->
+    <div class="card">
+      <h3 style="font-size:14px;margin-bottom:10px">Build History</h3>
+      <div id="mobile-history"><p style="color:var(--dim);font-size:12px">No build history.</p></div>
+    </div>
+  </div>
+</div>
+
 <!-- FRAMEWORKS TAB -->
 <div id="tab-frameworks" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Framework Management</h2>
@@ -2826,14 +4940,18 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
     <button onclick="resizeWorkers()">Resize</button>
     <p style="font-size:11px;color:var(--dim);margin-top:8px">Takes effect gradually as workers finish their current requests.</p>
   </div>
+  <div id="worker-detail"></div>
 </div>
 
 <!-- LOGS TAB -->
 <div id="tab-logs" class="content hidden">
   <h2 style="font-size:16px;margin-bottom:16px">Logs</h2>
-  <div style="display:flex;gap:8px;margin-bottom:12px">
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
     <button class="btn btn-primary" onclick="loadLogs('access')">Access Log</button>
     <button class="btn btn-ghost" onclick="loadLogs('error')">Error Log</button>
+    <select id="log-app-select" style="padding:6px;background:var(--card);color:var(--txt);border:1px solid var(--bdr);border-radius:6px;font-size:12px" onchange="loadAppLogFiles(this.value)">
+      <option value="">App logs…</option>
+    </select>
     <select id="log-lines" style="margin-left:auto;padding:6px;background:var(--card);color:var(--txt);border:1px solid var(--bdr);border-radius:6px">
       <option value="50">50 lines</option>
       <option value="100">100 lines</option>
@@ -2841,6 +4959,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
       <option value="500">500 lines</option>
     </select>
   </div>
+  <div id="log-file-tree" class="log-tree hidden"></div>
   <pre id="logs-output" style="max-height:500px;overflow:auto;font-size:11px;padding:12px;background:rgba(0,0,0,.3);border-radius:8px;white-space:pre-wrap;word-break:break-all"></pre>
 </div>
 
@@ -2874,13 +4993,21 @@ function setToken(t) {
 }
 
 async function api(path, body) {
-  var headers = {'Content-Type':'application/json'};
+  var headers = {};
   var t = getToken();
   if (t) headers['X-Panel-Token'] = t;
-  var r = await fetch(API+'/'+path, body
-    ? {method:'POST', headers:headers, body:JSON.stringify(body)}
-    : {headers:headers});
-  var data = await r.json();
+  var opts;
+  if (body) {
+    headers['Content-Type'] = 'application/json';
+    opts = {method:'POST', headers:headers, body:JSON.stringify(body)};
+  } else {
+    opts = {headers:headers};
+  }
+  var r = await fetch(API+'/'+path, opts);
+  var data;
+  try { data = await r.json(); } catch(e) {
+    throw new Error('Server returned non-JSON response (HTTP ' + r.status + ')');
+  }
   if (data.error && (data.needsSetup || r.status === 401)) {
     showAuthScreen(data.needsSetup);
     throw new Error('auth');
@@ -3082,63 +5209,503 @@ function showNodeDialog() {
 }
 
 // Tabs
-function showTab(name) {
+function showTab(name, ev) {
   document.querySelectorAll('[id^=tab-]').forEach(function(el) { el.classList.add('hidden'); });
   document.getElementById('tab-'+name).classList.remove('hidden');
   document.querySelectorAll('.tab').forEach(function(el) { el.classList.remove('active'); });
-  event.target.classList.add('active');
+  var t = (ev && ev.target) || document.querySelector('.tab[onclick*="\''+name+'\'"]');
+  if (t) t.classList.add('active');
   if (name==='apps') loadApps();
   if (name==='plugins') loadPlugins();
   if (name==='system') loadSystem();
   if (name==='servers') loadServers();
+  if (name==='nearby') loadNearby();
   if (name==='domains') loadDomains();
+  if (name==='autohost') loadAutohost();
+  if (name==='security') loadSecurity();
   if (name==='workers') loadWorkers();
   if (name==='logs') loadLogs('access');
   if (name==='cron') loadCron();
   if (name==='frameworks') loadFrameworks();
   if (name==='scripts') loadAppSelect();
+  if (name==='mobile') { loadToolchains(); loadMobileAppSelect(); }
 }
 
 // Apps
+var _appsData = [];
 async function loadApps() {
   var d = await api('apps');
+  _appsData = d.apps || [];
   var el = document.getElementById('apps-list');
-  // Show appsDir
   document.getElementById('apps-dir-path').textContent = d.appsDir || '(not set)';
-  if (!d.apps || !d.apps.length) {
+  // Also populate the logs app dropdown
+  var logSel = document.getElementById('log-app-select');
+  if (logSel) {
+    logSel.innerHTML = '<option value="">App logs\u2026</option>' + _appsData.map(function(a){
+      return '<option value="'+escHtml(a.dirName)+'">'+escHtml(a.name)+'</option>';
+    }).join('');
+  }
+  if (!_appsData.length) {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No apps found in this directory. Click + New App to create one.</p></div>';
     return;
   }
-  el.innerHTML = d.apps.map(function(a) {
+  renderAppList(el);
+}
+function renderAppList(el) {
+  el.innerHTML = _appsData.map(function(a) {
     var isServing = a.serving;
     var badges = [];
     if (a.hasWeb) badges.push('web');
     if (a.hasHandlers) badges.push('handlers');
     if (a.hasClasses) badges.push('classes');
     if (a.isQbixApp) badges.push('qbix');
-    var badgeHtml = badges.map(function(b){return '<span style="font-size:10px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;color:var(--dim)">'+b+'</span>'}).join(' ');
-    var statusText = isServing ? '<span style="color:var(--grn)">serving on this port</span>'
-      : (a.url ? a.url : (a.configured ? 'configured' : 'not configured'));
-    var forkLabel = a.forkPerRequest === true ? 'fork' : (a.forkPerRequest === false ? 'persistent' : 'auto');
-    var forkColor = a.forkPerRequest === true ? 'var(--yel)' : (a.forkPerRequest === false ? 'var(--grn)' : 'var(--dim)');
-    var forkHtml = '<select style="font-size:10px;padding:1px 4px;background:var(--card);color:' + forkColor + ';border:1px solid var(--brd);border-radius:3px;cursor:pointer" onchange="setForkMode(\'' + a.dirName + '\',this.value)">'
-      + '<option value="auto"' + (a.forkPerRequest === null ? ' selected' : '') + '>auto</option>'
-      + '<option value="false"' + (a.forkPerRequest === false ? ' selected' : '') + '>persistent workers</option>'
-      + '<option value="true"' + (a.forkPerRequest === true ? ' selected' : '') + '>fork per request</option>'
-      + '</select>';
+    var badgeHtml = badges.map(function(b){return '<span class="app-badge">'+b+'</span>'}).join('');
+    var statusText = isServing ? '<span style="color:var(--grn)">serving</span>'
+      : (a.url ? '<span>'+a.url+'</span>' : (a.configured ? 'configured' : '<span style="color:var(--yel)">not configured</span>'));
+    var iconUrl = '/Q/api/apps/icon?app=' + encodeURIComponent(a.dirName);
     return ''
-    + '<div class="app-row">'
+    + '<div class="app-row" onclick="showAppDetail(\''+a.dirName+'\')">'
+    + '<img class="app-icon" src="'+iconUrl+'" alt="" onerror="this.style.display=\'none\'">'
     + '<span class="dot '+(isServing?'on':(a.configured?'on':'off'))+'"></span>'
-    + '<span class="app-name">'+a.name+'</span>'
-    + '<span class="app-url">'+statusText+' '+badgeHtml+' '+forkHtml+'</span>'
-    + '<div class="btn-row">'
+    + '<div class="app-info">'
+    + '<div class="app-name">'+escHtml(a.name)+'</div>'
+    + '<div class="app-url">'+statusText+'</div>'
+    + (badgeHtml ? '<div class="app-badges">'+badgeHtml+'</div>' : '')
+    + '</div>'
+    + '<div class="btn-row" onclick="event.stopPropagation()">'
     + (a.hasWeb && !isServing ? '<button class="btn btn-sm btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
     + (isServing ? '<button class="btn btn-sm btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop</button>' : '')
-    + (a.isQbixApp && a.hasScripts && !a.configured ? '<button class="btn btn-sm btn-grn" onclick="configureApp(\''+a.dirName+'\',\''+a.name+'\')">Configure</button>' : '')
-    + '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+a.dir+'\',\'folder\')">📂</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="openFolder(\''+a.dir+'\',\'vscode\')">VS</button>'
     + '</div></div>';
   }).join('');
+}
+function fmtBytes(b) {
+  if (b == null) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
+}
+async function showAppDetail(dirName) {
+  var a = _appsData.find(function(x){return x.dirName===dirName});
+  if (!a) return;
+  var el = document.getElementById('apps-list');
+  var isServing = a.serving;
+  var iconUrl = '/Q/api/apps/icon?app=' + encodeURIComponent(a.dirName);
+  var forkColor = a.forkPerRequest === true ? 'var(--yel)' : (a.forkPerRequest === false ? 'var(--grn)' : 'var(--dim)');
+  var forkHtml = '<select style="font-size:11px;padding:2px 6px;background:var(--card);color:'+forkColor+';border:1px solid var(--bdr);border-radius:4px;cursor:pointer" onchange="setForkMode(\''+a.dirName+'\',this.value)">'
+    + '<option value="auto"'+(a.forkPerRequest===null?' selected':'')+'>auto</option>'
+    + '<option value="false"'+(a.forkPerRequest===false?' selected':'')+'>persistent</option>'
+    + '<option value="true"'+(a.forkPerRequest===true?' selected':'')+'>fork</option></select>';
+  var html = '<div class="app-detail">'
+    + '<h3><span class="back-btn" onclick="loadApps()">\u2190</span>'
+    + '<img class="app-icon" src="'+iconUrl+'" alt="" style="width:28px;height:28px" onerror="this.style.display=\'none\'">'
+    + escHtml(a.name) + '</h3>'
+    + '<div class="detail-grid">'
+    + '<div class="detail-card"><div class="label">Status</div><div class="val" style="font-size:14px;color:'+(isServing?'var(--grn)':'var(--dim)')+'">'+(isServing?'Serving':'Idle')+'</div></div>'
+    + '<div class="detail-card"><div class="label">URL</div><div class="val" style="font-size:13px;word-break:break-all">'+(a.url||'none')+'</div></div>'
+    + '<div class="detail-card"><div class="label">Plugins</div><div class="val" style="font-size:14px">'+(a.plugins.length?a.plugins.join(', '):'none')+'</div></div>'
+    + '<div class="detail-card"><div class="label">Fork mode</div><div class="val" style="font-size:14px">'+forkHtml+'</div></div>'
+    + '</div>'
+    + '<div class="detail-tabs">'
+    + '<div class="detail-tab active" onclick="showDetailPane(this,\'detail-actions-'+dirName+'\')">Actions</div>'
+    + (a.hasScripts ? '<div class="detail-tab" onclick="showDetailPane(this,\'detail-scripts-'+dirName+'\');loadDetailScripts(\''+dirName+'\')">Scripts</div>' : '')
+    + '<div class="detail-tab" onclick="showDetailPane(this,\'detail-logs-'+dirName+'\');loadDetailLogs(\''+dirName+'\')">Logs</div>'
+    + (a.fileBrowse ? '<div class="detail-tab" onclick="showDetailPane(this,\'detail-files-'+dirName+'\');browseFiles(\''+dirName+'\',\'\')">Files</div>' : '')
+    + '</div>'
+    + '<div id="detail-actions-'+dirName+'">'
+    + '<div class="btn-row" style="gap:8px;margin-top:8px">'
+    + (a.hasWeb && !isServing ? '<button class="btn btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
+    + (isServing ? '<button class="btn btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop Serving</button>' : '')
+    + (a.isQbixApp && a.hasScripts && !a.configured ? '<button class="btn btn-grn" onclick="configureApp(\''+escHtml(a.dirName)+'\',\''+escHtml(a.name)+'\')">Configure</button>' : '')
+    + '<button class="btn btn-ghost" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'folder\')">\uD83D\uDCC2 Open Folder</button>'
+    + '<button class="btn btn-ghost" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'vscode\')">VS Code</button>'
+    + '</div></div>'
+    + (a.hasScripts ? '<div id="detail-scripts-'+dirName+'" class="hidden"></div>' : '')
+    + '<div id="detail-logs-'+dirName+'" class="hidden"></div>'
+    + (a.fileBrowse ? '<div id="detail-files-'+dirName+'" class="hidden"></div>' : '')
+    + '</div>';
+  el.innerHTML = html;
+}
+function showDetailPane(tab, paneId) {
+  var parent = tab.closest('.app-detail');
+  parent.querySelectorAll('.detail-tab').forEach(function(t){t.classList.remove('active')});
+  tab.classList.add('active');
+  // Hide all panes inside this detail
+  parent.querySelectorAll('[id^="detail-"]').forEach(function(p){
+    if (p.id.startsWith('detail-actions-') || p.id.startsWith('detail-scripts-') || p.id.startsWith('detail-logs-') || p.id.startsWith('detail-files-'))
+      p.classList.add('hidden');
+  });
+  var pane = document.getElementById(paneId);
+  if (pane) pane.classList.remove('hidden');
+}
+async function loadDetailLogs(dirName) {
+  var pane = document.getElementById('detail-logs-'+dirName);
+  if (!pane) return;
+  pane.innerHTML = '<p style="color:var(--dim);font-size:12px">Loading log files\u2026</p>';
+  try {
+    var r = await api('apps/logs?app='+encodeURIComponent(dirName));
+    if (r.error) { pane.innerHTML='<p style="color:var(--red)">'+escHtml(r.error)+'</p>'; return; }
+    if (!r.files || !r.files.length) {
+      pane.innerHTML='<p style="color:var(--dim);font-size:12px">No log files found. Checked: '+(r.logDirs||[]).join(', ')+'</p>';
+      return;
+    }
+    var html = '<div class="log-tree">' + r.files.map(function(f){
+      return '<div class="log-file" onclick="viewDetailLog(\''+dirName+'\',\''+f.path.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',this)">'
+        + '<span>\uD83D\uDCC4</span><span>'+escHtml(f.path)+'</span><span class="log-size">'+fmtBytes(f.size)+'</span></div>';
+    }).join('') + '</div>'
+    + '<pre id="detail-log-output-'+dirName+'" style="max-height:400px;overflow:auto;font-size:11px;padding:12px;background:rgba(0,0,0,.3);border-radius:8px;white-space:pre-wrap;word-break:break-all;margin-top:10px"></pre>';
+    pane.innerHTML = html;
+  } catch(e) { pane.innerHTML='<p style="color:var(--red)">'+escHtml(e.message)+'</p>'; }
+}
+async function viewDetailLog(dirName, filePath, el) {
+  // Highlight active
+  if (el) {
+    el.parentNode.querySelectorAll('.log-file').forEach(function(f){f.classList.remove('active')});
+    el.classList.add('active');
+  }
+  var out = document.getElementById('detail-log-output-'+dirName);
+  if (!out) return;
+  out.textContent = 'Loading\u2026';
+  var lines = document.getElementById('log-lines') ? document.getElementById('log-lines').value : 100;
+  var r = await api('apps/logs?app='+encodeURIComponent(dirName)+'&file='+encodeURIComponent(filePath)+'&lines='+lines);
+  if (!r.exists) { out.textContent = 'Log file not found'; return; }
+  out.textContent = r.lines.join('\n');
+  out.scrollTop = out.scrollHeight;
+}
+async function browseFiles(dirName, subPath) {
+  var pane = document.getElementById('detail-files-'+dirName);
+  if (!pane) return;
+  pane.innerHTML = '<p style="color:var(--dim);font-size:12px">Loading\u2026</p>';
+  try {
+    var r = await api('apps/files?app='+encodeURIComponent(dirName)+'&path='+encodeURIComponent(subPath));
+    if (r.error) { pane.innerHTML='<p style="color:var(--red);font-size:12px">'+escHtml(r.error)+'</p>'; return; }
+    if (r.type === 'file') {
+      // Show file contents
+      var parts = subPath.split('/');
+      parts.pop();
+      var parentPath = parts.join('/');
+      var html = '<div class="file-breadcrumb">'
+        + '<span onclick="browseFiles(\''+dirName+'\',\'\')">root</span>';
+      var crumbs = subPath.split('/').filter(Boolean);
+      var cumul = '';
+      for (var i=0;i<crumbs.length-1;i++) {
+        cumul += (cumul?'/':'') + crumbs[i];
+        html += ' / <span onclick="browseFiles(\''+dirName+'\',\''+cumul+'\')">'+crumbs[i]+'</span>';
+      }
+      html += ' / '+crumbs[crumbs.length-1]+'</div>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        + '<span style="font-size:11px;color:var(--dim)">'+fmtBytes(r.size)+'</span>'
+        + '<button class="btn btn-sm btn-ghost" onclick="browseFiles(\''+dirName+'\',\''+parentPath+'\')">\u2190 Back</button></div>';
+      if (r.isText && r.content !== null) {
+        html += '<pre class="file-preview">'+escHtml(r.content)+'</pre>';
+      } else {
+        html += '<p style="color:var(--dim);font-size:12px">Binary file ('+r.ext+'), '+fmtBytes(r.size)+'</p>';
+      }
+      pane.innerHTML = html;
+      return;
+    }
+    // Directory listing
+    var html = '<div class="file-breadcrumb">';
+    if (subPath) {
+      html += '<span onclick="browseFiles(\''+dirName+'\',\'\')">root</span>';
+      var crumbs = subPath.split('/').filter(Boolean);
+      var cumul = '';
+      for (var i=0;i<crumbs.length;i++) {
+        cumul += (cumul?'/':'') + crumbs[i];
+        if (i < crumbs.length-1) html += ' / <span onclick="browseFiles(\''+dirName+'\',\''+cumul+'\')">'+crumbs[i]+'</span>';
+        else html += ' / '+crumbs[i];
+      }
+    } else {
+      html += 'root';
+    }
+    html += '</div>';
+    html += r.items.map(function(f){
+      var path = subPath ? subPath+'/'+f.name : f.name;
+      var icon = f.name === '..' ? '\u2B06' : (f.isDir ? '\uD83D\uDCC1' : '\uD83D\uDCC4');
+      return '<div class="file-item" onclick="browseFiles(\''+dirName+'\',\''+path.replace(/\\\\/g,"\\\\\\\\").replace(/'/g,"\\'")+'\');">'
+        + '<span class="icon">'+icon+'</span>'
+        + '<span class="fname">'+f.name+'</span>'
+        + (f.isDir ? '' : '<span class="fsize">'+fmtBytes(f.size)+'</span>')
+        + '</div>';
+    }).join('');
+    pane.innerHTML = html;
+  } catch(e) { pane.innerHTML='<p style="color:var(--red)">'+escHtml(e.message)+'</p>'; }
+}
+// Script modules — dedicated UI with options for each common script
+// t:'h'=header, 'c'=checkbox, 'x'=text, 's'=select; f=flag, l=label, p=placeholder, o=options
+var _scriptModules = {
+  install: {
+    desc:'Install/upgrade database schemas, plugins, composer and npm packages', icon:'⚙️',
+    opts:[
+      {t:'h',label:'Quick'},
+      {t:'c',f:'--all',l:'All (app + plugins + composer + npm)'},
+      {t:'h',label:'Components'},
+      {t:'c',f:'--app',l:'App schemas'},
+      {t:'c',f:'--plugins',l:'All plugins'},
+      {t:'c',f:'--composer',l:'Composer packages'},
+      {t:'c',f:'--npm',l:'NPM packages'},
+      {t:'x',f:'-p',l:'Specific plugin',p:'PluginName'},
+      {t:'h',label:'Database'},
+      {t:'x',f:'-s',l:'SQL connection',p:'connection name'},
+      {t:'x',f:'--group',l:'File group',p:'group name or id'},
+      {t:'h',label:'Debug'},
+      {t:'c',f:'--noreq',l:'Skip requirements check'},
+      {t:'c',f:'--trace',l:'Show stacktraces'}
+    ]
+  },
+  urls: {
+    desc:'Regenerate URL cache rewriting information for web assets', icon:'🔗',
+    opts:[
+      {t:'c',f:'--integrity',l:'Force SHA-256 content hashes (subresource integrity)'},
+      {t:'c',f:'--timestamps',l:'Store timestamps even on first run'}
+    ]
+  },
+  'static': {
+    desc:'Regenerate static HTML/file snapshots from app config', icon:'📄',
+    opts:[
+      {t:'x',f:'--out',l:'Output directory',p:'path (default: web/)'},
+      {t:'x',f:'--baseUrl',l:'Base URL override',p:'https://example.com'}
+    ]
+  },
+  combine: {
+    desc:'Combine and minify JS/CSS files for production', icon:'🗜',
+    opts:[
+      {t:'c',f:'--all',l:'All file types (default)'},
+      {t:'c',f:'--css',l:'CSS only'},
+      {t:'c',f:'--js',l:'JS only'},
+      {t:'x',f:'--process',l:'Custom extension',p:'ext'}
+    ]
+  },
+  models: {
+    desc:'Generate ORM model classes from database schemas', icon:'🗃',
+    opts:[
+      {t:'c',f:'--all',l:'Include all plugins'},
+      {t:'x',f:'--plugin',l:'Specific plugin',p:'PluginName'}
+    ]
+  },
+  translate: {
+    desc:'Translate app interface text into other languages', icon:'🌐',
+    opts:[
+      {t:'h',label:'Scope'},
+      {t:'c',f:'--all',l:'All (app + plugins)'},
+      {t:'c',f:'--app',l:'App only'},
+      {t:'c',f:'--plugins',l:'All plugins'},
+      {t:'x',f:'--plugin',l:'Specific plugin',p:'PluginName'},
+      {t:'h',label:'Options'},
+      {t:'s',f:'--format',l:'Format',o:[{v:'google',l:'Google Translate'},{v:'human',l:'Human translator'}]},
+      {t:'x',f:'--source',l:'Source language',p:'en'},
+      {t:'x',f:'--locales',l:'Target locales',p:'fr de es ja'},
+      {t:'c',f:'--retranslate-all',l:'Retranslate everything'}
+    ]
+  },
+  migrate: {
+    desc:'Migrate data between MySQL, SQLite, and PostgreSQL', icon:'🔄',
+    opts:[
+      {t:'h',label:'Source'},
+      {t:'x',f:'--source-config',l:'Source connection',p:'connection name'},
+      {t:'x',f:'--source',l:'Source DSN',p:'sqlite:/path/to/db'},
+      {t:'h',label:'Target'},
+      {t:'x',f:'--target-config',l:'Target connection',p:'connection name'},
+      {t:'x',f:'--target',l:'Target DSN',p:'pgsql:host=localhost;dbname=app'},
+      {t:'x',f:'--target-user',l:'Target user',p:'username'},
+      {t:'x',f:'--target-pass',l:'Target password',p:'password'},
+      {t:'h',label:'Filters'},
+      {t:'x',f:'--connections',l:'Connections',p:'conn1,conn2'},
+      {t:'x',f:'--tables',l:'Tables only',p:'table1,table2'},
+      {t:'x',f:'--exclude',l:'Exclude tables',p:'table1,table2'},
+      {t:'h',label:'Mode'},
+      {t:'c',f:'--schema-only',l:'Schema only (no data)'},
+      {t:'c',f:'--data-only',l:'Data only (tables exist)'},
+      {t:'c',f:'--truncate',l:'Truncate target tables first'},
+      {t:'c',f:'--verify',l:'Verify row counts after'},
+      {t:'c',f:'--dry-run',l:'Dry run (show plan only)'},
+      {t:'c',f:'--verbose',l:'Verbose output'}
+    ]
+  },
+  encryptdb: {
+    desc:'Encrypt MySQL tables using table-level encryption', icon:'🔒',
+    opts:[
+      {t:'s',f:'_mode',l:'Mode',o:[{v:'--run',l:'Encrypt (run)'},{v:'--dry-run',l:'Dry run'},{v:'--rollback',l:'Rollback'},{v:'--drop',l:'Drop backups'}]},
+      {t:'c',f:'--nobackup',l:'No backup (replace directly)'},
+      {t:'x',f:'--only',l:'Only tables',p:'table1,table2'},
+      {t:'x',f:'--log',l:'Log file',p:'path/to/log.json'}
+    ]
+  },
+  configure: {
+    desc:'Rename an app template to your desired app name', icon:'🔧',
+    opts:[
+      {t:'x',f:'_arg1',l:'Original app name',p:'OriginalApp'},
+      {t:'x',f:'_arg2',l:'New app name',p:'MyNewApp'},
+      {t:'c',f:'--verbose',l:'Verbose output'}
+    ]
+  },
+  bundle: {
+    desc:'Bundle app into a native application directory', icon:'📦',
+    opts:[
+      {t:'x',f:'_arg1',l:'Bundle output path',p:'/path/to/bundle'}
+    ]
+  },
+  shards: {
+    desc:'Split database sharding partitions online', icon:'🗄',
+    opts:[
+      {t:'x',f:'--part',l:'Partition',p:'PLUGIN/TABLE[/PART]'},
+      {t:'x',f:'--connection',l:'Connection',p:'connection name'},
+      {t:'x',f:'--class',l:'Class name',p:'Plugin_TableName'},
+      {t:'x',f:'--fields',l:'Fields (JSON)',p:'{"field":"md5"}'},
+      {t:'x',f:'--parts',l:'Parts (JSON)',p:'[{"host":"..."}]'},
+      {t:'x',f:'--node',l:'Node.js IP',p:'127.0.0.1'},
+      {t:'c',f:'--trace',l:'Show stacktraces'},
+      {t:'c',f:'--log-process',l:'Recovery mode'}
+    ]
+  },
+  tailwind: {
+    desc:'Compile Tailwind CSS for the Q plugin', icon:'🎨',
+    opts:[]
+  }
+};
+function _sid(dirName, scriptName, flag) {
+  return 'sopt-'+dirName+'-'+scriptName+'-'+flag.replace(/[^a-zA-Z0-9]/g,'');
+}
+function renderScriptModule(s, dirName) {
+  var mod = _scriptModules[s.name];
+  var icon = mod ? mod.icon : '📜';
+  var desc = mod ? mod.desc : (s.scope+' script');
+  var sn = s.name.replace(/[^a-zA-Z0-9]/g,'');
+  var hasOpts = mod && mod.opts && mod.opts.some(function(o){return o.t!=='h';});
+  var h = '<div style="border:1px solid var(--bdr);border-radius:8px;margin-bottom:6px;overflow:hidden">';
+  h += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer" onclick="toggleScriptMod(\''+dirName+'\',\''+s.name+'\')">';
+  h += '<span style="font-size:18px">'+icon+'</span>';
+  h += '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500">'+s.name+'.php</div>';
+  h += '<div style="font-size:11px;color:var(--dim)">'+desc+'</div></div>';
+  h += '<span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(255,255,255,.06);color:var(--dim)">'+s.scope+'</span>';
+  h += '<span id="smod-chev-'+dirName+'-'+sn+'" style="font-size:10px;color:var(--dim);transition:transform .2s">▶</span>';
+  h += '</div>';
+  h += '<div id="smod-body-'+dirName+'-'+sn+'" style="display:none;padding:0 12px 12px;border-top:1px solid var(--bdr)">';
+  if (hasOpts) {
+    h += '<div style="margin-top:8px">';
+    mod.opts.forEach(function(opt) {
+      if (opt.t==='h') {
+        h += '<div style="font-size:10px;font-weight:600;text-transform:uppercase;color:var(--dim);margin:10px 0 4px;letter-spacing:.5px">'+opt.label+'</div>';
+        return;
+      }
+      var id = _sid(dirName, s.name, opt.f);
+      if (opt.t==='c') {
+        h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0;cursor:pointer">'
+          + '<input type="checkbox" id="'+id+'"> '+opt.l+'</label>';
+      } else if (opt.t==='x') {
+        h += '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
+          + '<label style="font-size:12px;min-width:110px;color:var(--dim)" for="'+id+'">'+opt.l+'</label>'
+          + '<input type="text" id="'+id+'" placeholder="'+(opt.p||'')+'" style="flex:1;font-size:12px;padding:4px 8px;background:rgba(0,0,0,.2);border:1px solid var(--bdr);border-radius:4px;color:var(--fg)">'
+          + '</div>';
+      } else if (opt.t==='s') {
+        h += '<div style="display:flex;align-items:center;gap:8px;padding:3px 0">'
+          + '<label style="font-size:12px;min-width:110px;color:var(--dim)" for="'+id+'">'+opt.l+'</label>'
+          + '<select id="'+id+'" style="flex:1;font-size:12px;padding:4px 8px;background:rgba(0,0,0,.2);border:1px solid var(--bdr);border-radius:4px;color:var(--fg)">'
+          + '<option value="">—</option>';
+        (opt.o||[]).forEach(function(o){ h += '<option value="'+o.v+'">'+o.l+'</option>'; });
+        h += '</select></div>';
+      }
+    });
+    h += '</div>';
+  }
+  h += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center">'
+    + '<button class="btn btn-sm" id="smod-run-'+dirName+'-'+sn+'" onclick="runScriptModule(\''+dirName+'\',\''+s.name+'\',this)" style="font-size:12px;padding:5px 14px">▶ Run</button>'
+    + '<span id="smod-st-'+dirName+'-'+sn+'" style="font-size:11px;color:var(--dim)"></span>'
+    + '</div>';
+  h += '<pre id="smod-out-'+dirName+'-'+sn+'" style="display:none;max-height:400px;overflow:auto;font-size:11px;padding:10px;background:rgba(0,0,0,.3);border-radius:6px;white-space:pre-wrap;word-break:break-all;margin-top:8px"></pre>';
+  h += '</div></div>';
+  return h;
+}
+function toggleScriptMod(dirName, scriptName) {
+  var sn = scriptName.replace(/[^a-zA-Z0-9]/g,'');
+  var body = document.getElementById('smod-body-'+dirName+'-'+sn);
+  var chev = document.getElementById('smod-chev-'+dirName+'-'+sn);
+  if (!body) return;
+  var show = body.style.display === 'none';
+  body.style.display = show ? 'block' : 'none';
+  if (chev) chev.textContent = show ? '▼' : '▶';
+}
+function collectScriptArgs(scriptName, dirName) {
+  var mod = _scriptModules[scriptName];
+  if (!mod || !mod.opts) return [];
+  var args = [];
+  mod.opts.forEach(function(opt) {
+    if (opt.t === 'h') return;
+    var el = document.getElementById(_sid(dirName, scriptName, opt.f));
+    if (!el) return;
+    if (opt.t === 'c') {
+      if (el.checked) args.push(opt.f);
+    } else if (opt.t === 's') {
+      var v = el.value;
+      if (!v) return;
+      if (opt.f.charAt(0) === '_') { args.push(v); } // value IS the flag
+      else { args.push(opt.f, v); }
+    } else if (opt.t === 'x') {
+      var v = el.value.trim();
+      if (!v) return;
+      if (opt.f.charAt(0) === '_') { args.push(v); } // positional arg
+      else { args.push(opt.f, v); }
+    }
+  });
+  return args;
+}
+async function loadDetailScripts(dirName) {
+  var pane = document.getElementById('detail-scripts-'+dirName);
+  if (!pane) return;
+  pane.innerHTML = '<p style="color:var(--dim);font-size:12px">Loading scripts…</p>';
+  try {
+    var r = await api('scripts', {app:dirName});
+    if (r.error) { pane.innerHTML='<p style="color:var(--red)">'+escHtml(r.error)+'</p>'; return; }
+    var scripts = r.scripts || [];
+    if (!scripts.length) {
+      pane.innerHTML='<p style="color:var(--dim);font-size:12px">No scripts found in scripts/Q/ directory.</p>';
+      return;
+    }
+    var html = '<div style="margin-top:8px">';
+    scripts.forEach(function(s) { html += renderScriptModule(s, dirName); });
+    html += '</div>';
+    pane.innerHTML = html;
+  } catch(e) { pane.innerHTML='<p style="color:var(--red)">'+escHtml(e.message)+'</p>'; }
+}
+async function runScriptModule(dirName, scriptName, btn) {
+  var args = collectScriptArgs(scriptName, dirName);
+  var sn = scriptName.replace(/[^a-zA-Z0-9]/g,'');
+  var out = document.getElementById('smod-out-'+dirName+'-'+sn);
+  var st = document.getElementById('smod-st-'+dirName+'-'+sn);
+  if (out) { out.style.display='block'; out.textContent='Running '+scriptName+'.php…\n'; out.style.color='var(--fg)'; }
+  if (st) { st.textContent='Running…'; st.style.color='var(--dim)'; }
+  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
+  try {
+    var r = await api('scripts/run', {app:dirName, script:scriptName, args:args});
+    if (r.error) {
+      if (out) { out.textContent += '⚠ Error: '+r.error; out.style.color='var(--red)'; }
+      if (st) { st.textContent='Error'; st.style.color='var(--red)'; }
+    } else {
+      var cmdStr = 'php scripts/Q/'+scriptName+'.php'+(args.length ? ' '+args.join(' ') : '');
+      if (out) {
+        out.textContent = '$ '+cmdStr+'\n\n'+(r.output||'(no output)')+'\n\nExit code: '+r.exitCode;
+        out.style.color = r.exitCode === 0 ? 'var(--grn)' : 'var(--yel)';
+      }
+      if (st) {
+        st.textContent = r.exitCode === 0 ? 'Done ✓' : 'Exit '+r.exitCode;
+        st.style.color = r.exitCode === 0 ? 'var(--grn)' : 'var(--yel)';
+      }
+    }
+  } catch(e) {
+    if (out) { out.textContent += 'Error: '+e.message; out.style.color='var(--red)'; }
+    if (st) { st.textContent='Error'; st.style.color='var(--red)'; }
+  }
+  if (btn) { btn.disabled=false; btn.textContent='▶ Run'; }
+  if (out) out.scrollTop = out.scrollHeight;
+}
+// Legacy — still used by Actions tab
+async function runAppScript(dirName, scriptName, btn) {
+  runScriptModule(dirName, scriptName, btn);
+}
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
 
 function showCreate(){document.getElementById('create-form').classList.remove('hidden')}
@@ -3223,7 +5790,7 @@ function clearPlayground() {
 }
 // Ctrl+Enter to run
 document.addEventListener('keydown', function(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.getElementById('tab-playground').style.display !== 'none') {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !document.getElementById('tab-playground').classList.contains('hidden')) {
     e.preventDefault(); runPlayground();
   }
 });
@@ -3233,7 +5800,7 @@ async function loadAppSelect() {
   var d = await api('apps');
   var sel = document.getElementById('script-app');
   sel.innerHTML = (d.apps||[]).map(function(a) {
-    return '<option value="'+a.dirName+'">'+a.name+'</option>';
+    return '<option value="'+escHtml(a.dirName)+'">'+escHtml(a.name)+'</option>';
   }).join('');
   loadScripts();
 }
@@ -3243,7 +5810,7 @@ async function loadScripts() {
   var d = await api('scripts', {app:app});
   var sel = document.getElementById('script-name');
   sel.innerHTML = (d.scripts||[]).map(function(s) {
-    return '<option value="'+s.name+'">'+s.name+' ('+s.scope+')</option>';
+    return '<option value="'+escHtml(s.name)+'">'+escHtml(s.name)+' ('+escHtml(s.scope)+')</option>';
   }).join('');
 }
 async function runScript() {
@@ -3316,7 +5883,7 @@ async function loadPlugins() {
   if (r.app) {
     topHtml += '<div class="card" style="margin-bottom:12px"><strong>' + r.app + '</strong> v' + (r.appVersion||'?')
       + (r.pluginsDir ? '<span style="color:var(--dim);font-size:11px;margin-left:8px">' + r.pluginsDir + '</span>' : '')
-      + (r.dbError ? '<div style="color:var(--red);font-size:12px;margin-top:4px">DB: ' + r.dbError + '</div>' : '')
+      + (r.dbError ? '<div style="color:var(--red);font-size:12px;margin-top:4px">DB: ' + escHtml(r.dbError) + '</div>' : '')
       + '</div>';
   } else {
     topHtml += '<div class="card" style="margin-bottom:12px;color:var(--dim)">No Qbix app detected. Point --app or --root at a Qbix app directory.</div>';
@@ -3385,7 +5952,7 @@ async function loadPlugins() {
     
     var extra = '';
     if (p.extra && Object.keys(p.extra).length) {
-      extra = '<details style="margin-top:4px"><summary style="font-size:11px;color:var(--dim);cursor:pointer">extra</summary><pre style="font-size:10px;margin-top:4px;max-height:80px;overflow:auto">' + JSON.stringify(p.extra, null, 2) + '</pre></details>';
+      extra = '<details style="margin-top:4px"><summary style="font-size:11px;color:var(--dim);cursor:pointer">extra</summary><pre style="font-size:10px;margin-top:4px;max-height:80px;overflow:auto">' + escHtml(JSON.stringify(p.extra, null, 2)) + '</pre></details>';
     }
     
     // Action buttons
@@ -3466,6 +6033,97 @@ async function viewPluginSchema(name) {
 
 // System
 // Servers
+// ── Nearby / Transport ──────────────────────────────
+async function loadNearby() {
+  try {
+    const d = await api('transport/status');
+    // Identity
+    const idEl = document.getElementById('nearby-identity');
+    if (d.mesh_id) {
+      idEl.innerHTML = '<strong>' + escHtml(d.mesh_name || 'This device') + '</strong><br>' + escHtml(d.mesh_id);
+    } else {
+      idEl.textContent = 'Not initialized';
+    }
+    // Transports
+    const tEl = document.getElementById('nearby-transport-list');
+    const transports = d.transports || {};
+    let tHtml = '';
+    for (const [name, enabled] of Object.entries(transports)) {
+      const dot = enabled ? '🟢' : '⚪';
+      tHtml += '<span style="margin-right:14px">' + dot + ' ' + name + '</span>';
+    }
+    tEl.innerHTML = tHtml || 'None configured';
+    // Peers
+    const pEl = document.getElementById('nearby-peers');
+    const peers = d.peers || [];
+    if (peers.length === 0) {
+      pEl.innerHTML = '<div class="card"><p style="color:var(--dim)">No nearby peers detected.</p></div>';
+    } else {
+      let html = '';
+      for (const p of peers) {
+        const ago = Math.floor(Date.now()/1000) - (p.lastSeen || 0);
+        const transport = p.transport || '?';
+        const hops = p.hops > 0 ? ' (' + p.hops + ' hops)' : ' (direct)';
+        const encrypted = p.sessionEstablished ? ' 🔒' : '';
+        html += '<div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'
+          + '<div><strong>' + escHtml(p.name || (p.peer_id || '').substring(0,8)) + '</strong>' + encrypted
+          + '<br><span style="font-size:11px;color:var(--dim)">' + escHtml(transport) + hops
+          + ' · ' + (ago < 5 ? 'just now' : ago + 's ago')
+          + '</span><br><span style="font-size:10px;font-family:monospace;color:var(--dim)">' + escHtml((p.peer_id || '').substring(0,16)) + '…</span></div>'
+          + '<button class="btn btn-ghost" onclick="disconnectPeer(\'' + (p.peer_id || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">Disconnect</button>'
+          + '</div>';
+      }
+      pEl.innerHTML = html;
+    }
+    // Sessions
+    const sEl = document.getElementById('nearby-session-list');
+    const sessions = d.sessions || [];
+    if (sessions.length === 0) {
+      sEl.textContent = 'No encrypted sessions active';
+    } else {
+      sEl.innerHTML = sessions.map(s => '<code style="font-size:11px">' + (s || '').substring(0,16) + '…</code>').join(', ');
+    }
+    // Routing table
+    const rEl = document.getElementById('nearby-route-list');
+    const routes = d.routes || [];
+    if (routes.length === 0) {
+      rEl.textContent = 'No routes';
+    } else {
+      let rHtml = '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+        + '<tr style="color:var(--dim)"><td>Destination</td><td>Via</td><td>Hops</td><td>Name</td></tr>';
+      for (const r of routes) {
+        const dest = (r.destination || '').substring(0,12) + '…';
+        const hop = r.next_hop === r.destination ? 'direct' : (r.next_hop || '').substring(0,12) + '…';
+        rHtml += '<tr><td><code>' + escHtml(dest) + '</code></td><td>' + escHtml(hop) + '</td><td>' + (r.hops ?? '?') + '</td><td>' + escHtml(r.name || '') + '</td></tr>';
+      }
+      rHtml += '</table>';
+      rEl.innerHTML = rHtml;
+    }
+  } catch (e) {
+    document.getElementById('nearby-peers').innerHTML = '<div class="card"><p style="color:var(--warn)">Error loading: ' + escHtml(e.message) + '</p></div>';
+  }
+}
+async function connectToPeer() {
+  const addr = document.getElementById('nearby-connect-addr').value.trim();
+  if (!addr) return;
+  const el = document.getElementById('nearby-connect-result');
+  el.textContent = 'Connecting…';
+  try {
+    const d = await api('transport/connect', {address: addr});
+    if (d.connected) {
+      el.innerHTML = '✓ Connected to <strong>' + escHtml(d.name || (d.peer_id||'').substring(0,12)) + '</strong>' + (d.encrypted ? ' 🔒' : '');
+      loadNearby();
+    } else {
+      el.textContent = '✗ ' + (d.error || 'Connection failed');
+    }
+  } catch (e) { el.textContent = '✗ ' + e.message; }
+}
+async function disconnectPeer(peerId) {
+  if (!confirm('Disconnect peer ' + peerId.substring(0,8) + '?')) return;
+  await api('transport/unregister', {peer_id: peerId});
+  loadNearby();
+}
+
 function showAddServer() { document.getElementById('add-server-form').classList.remove('hidden'); document.getElementById('srv-name').focus(); }
 function hideAddServer() { document.getElementById('add-server-form').classList.add('hidden'); }
 async function saveServer() {
@@ -3477,10 +6135,11 @@ async function saveServer() {
   if (r.error) return alert(r.error);
   hideAddServer(); loadServers();
 }
-async function deployTo(name) {
-  var btn = event.target; btn.disabled = true; btn.textContent = '⏳ Deploying...';
+async function deployTo(name, ev) {
+  var btn = ev && ev.target ? ev.target : null;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Deploying...'; }
   var r = await api('servers/deploy', {target: name});
-  btn.disabled = false; btn.textContent = '⬆ Deploy';
+  if (btn) { btn.disabled = false; btn.textContent = '⬆ Deploy'; }
   if (r.error) alert(r.error);
   else alert('✨ Deployed ' + (r.files||0) + ' files to ' + name);
 }
@@ -3496,14 +6155,14 @@ async function loadServers() {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No remote servers configured. Add one to deploy your app.</p></div>';
     return;
   }
-  el.innerHTML = d.servers.map(function(s) { return ''
+  el.innerHTML = d.servers.map(function(s) { var sn = s.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'"); return ''
     + '<div class="app-row">'
     + '<span class="dot on"></span>'
-    + '<span class="app-name">' + s.name + '</span>'
-    + '<span class="app-url">' + s.user + '@' + s.host + ':' + s.path + '</span>'
+    + '<span class="app-name">' + escHtml(s.name) + '</span>'
+    + '<span class="app-url">' + escHtml(s.user + '@' + s.host + ':' + s.path) + '</span>'
     + '<div class="btn-row">'
-    + '<button class="btn btn-sm btn-primary" onclick="deployTo(\'' + s.name + '\')">⬆ Deploy</button>'
-    + '<button class="btn btn-sm btn-red" onclick="removeServer(\'' + s.name + '\')">✕</button>'
+    + '<button class="btn btn-sm btn-primary" onclick="deployTo(\'' + sn + '\',event)">⬆ Deploy</button>'
+    + '<button class="btn btn-sm btn-red" onclick="removeServer(\'' + sn + '\')">✕</button>'
     + '</div></div>';
   }).join('');
 }
@@ -3577,28 +6236,82 @@ async function installPlatform() {
   btn.disabled = false; btn.textContent = 'Clone from GitHub';
 }
 
+async function clearServerCache() {
+  var el = document.getElementById('cache-clear-result');
+  el.style.display = 'block';
+  el.textContent = 'Clearing...';
+  try {
+    var r = await api('cache/clear');
+    if (r.error) { el.textContent = '⚠ ' + r.error; el.style.color = 'var(--red)'; }
+    else {
+      var items = r.cleared && r.cleared.length ? r.cleared.join(', ') : 'nothing to clear';
+      el.textContent = '✅ Cleared: ' + items;
+      el.style.color = 'var(--grn)';
+    }
+  } catch(e) { el.textContent = 'Error: ' + e.message; el.style.color = 'var(--red)'; }
+  setTimeout(function() { el.style.display = 'none'; el.style.color = ''; }, 5000);
+}
+
 // ── Domains ─────────────────────────────────────────
 async function loadDomains() {
   var r = await api('domains');
   var el = document.getElementById('domains-list');
   if (!r.domains || !r.domains.length) {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No domains configured. Add one below, or set <code>Q.webserver.domains</code> in config.</p></div>';
-    return;
+  } else {
+    el.innerHTML = r.domains.map(function(d) {
+      var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
+        : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
+        : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
+        : '<span style="color:var(--dim)">no cert</span>';
+      var btns = '';
+      var dn = d.domain.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Provision</button>';
+      else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Renew</button>';
+      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + dn + '\')">Remove</button>';
+      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + escHtml(d.domain) + '</strong></div><div>' + badge + btns + '</div></div>'
+        + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + escHtml(d.root) + '</div>' : '')
+        + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + escHtml(d.certExpires) + '</div>' : '')
+        + '</div>';
+    }).join('');
   }
-  el.innerHTML = r.domains.map(function(d) {
-    var badge = d.certStatus === 'valid' ? '<span style="color:var(--grn)">\u2713 valid</span>'
-      : d.certStatus === 'expiring' ? '<span style="color:var(--yel)">\u26a0 ' + d.certDaysLeft + ' days</span>'
-      : d.certStatus === 'expired' ? '<span style="color:var(--red)">\u2717 expired</span>'
-      : '<span style="color:var(--dim)">no cert</span>';
-    var btns = '';
-    if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Provision</button>';
-    else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + d.domain + '\')">Renew</button>';
-    btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + d.domain + '\')">Remove</button>';
-    return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + d.domain + '</strong></div><div>' + badge + btns + '</div></div>'
-      + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + d.root + '</div>' : '')
-      + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + d.certExpires + '</div>' : '')
-      + '</div>';
-  }).join('');
+  loadHosts();
+}
+async function loadHosts() {
+  var r = await api('domains/hosts');
+  var el = document.getElementById('hosts-info');
+  if (!el) return;
+  if (r.error) { el.innerHTML = '<div class="card"><p style="color:var(--dim)">' + r.error + '</p></div>'; return; }
+  var html = '<h3 style="font-size:14px;margin:16px 0 8px">System Hosts <span style="font-size:11px;color:var(--dim)">(' + r.path + ')</span></h3>';
+  if (r.domains && r.domains.length) {
+    html += r.domains.map(function(d) {
+      if (d.inHosts) {
+        return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--grn)">\u2713</span> <strong>' + d.domain + '</strong> \u2192 ' + d.hostsIp + '</div>';
+      }
+      var isLocalhost = d.domain.endsWith('.localhost');
+      if (isLocalhost) {
+        return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--grn)">\u2713</span> <strong>' + d.domain + '</strong> <span style="color:var(--dim)">(resolves via .localhost)</span></div>';
+      }
+      return '<div class="card" style="margin-bottom:6px;padding:8px 12px"><span style="color:var(--yel)">\u26a0</span> <strong>' + d.domain + '</strong> <span style="color:var(--dim)">not in hosts</span>'
+        + ' <button class="btn btn-primary" style="font-size:11px;padding:3px 8px;margin-left:8px" onclick="addHostsEntry(\'' + d.domain + '\')">Add to hosts</button></div>';
+    }).join('');
+  } else {
+    html += '<div class="card"><p style="color:var(--dim)">No domains configured.</p></div>';
+  }
+  el.innerHTML = html;
+}
+async function addHostsEntry(hostname, ip) {
+  ip = ip || '127.0.0.1';
+  var r = await api('domains/hosts/add', {hostname: hostname, ip: ip});
+  if (r.already) { alert(hostname + ' is already in your hosts file.'); return; }
+  if (r.conflict) { alert(hostname + ' is mapped to ' + r.existingIp + ' (not ' + r.requestedIp + '). Edit your hosts file manually to change it.'); return; }
+  if (r.added) { alert('Added ' + hostname + ' \u2192 ' + ip); loadHosts(); return; }
+  if (r.needsElevation) {
+    var cmd = r.commands.gui || r.commands.command;
+    if (confirm(hostname + ' needs admin access to add to ' + r.entry + '.\n\nRun this command in your terminal:\n\n' + r.commands.command + '\n\nCopy to clipboard?')) {
+      try { navigator.clipboard.writeText(r.commands.command); } catch(e) {}
+    }
+  }
 }
 async function addDomain() {
   var name = document.getElementById('dom-name').value.trim();
@@ -3608,6 +6321,138 @@ async function addDomain() {
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
 async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+
+// ── Security & Attestation ──────────────────────────
+async function loadSecurity() {
+  var el = document.getElementById('sec-attestation');
+  try {
+    var r = await api('attestation');
+    var html = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Binary Attestation</h3>';
+    html += '<div style="font-size:12px;margin-bottom:8px"><strong>Hash:</strong> <code style="font-size:11px">' + (r.binary_hash||'unknown') + '</code></div>';
+    html += '<div style="font-size:12px;margin-bottom:8px"><strong>Size:</strong> ' + ((r.binary_size||0)/1024).toFixed(0) + ' KB</div>';
+    if (r.verification) {
+      var v = r.verification;
+      var color = v.valid ? 'var(--grn)' : 'var(--red)';
+      html += '<div style="font-size:12px;margin-bottom:8px"><strong>Status:</strong> <span style="color:'+color+'">' + escHtml(v.label || '') + ' — ' + (v.valid?'VALID':'FAILED') + '</span></div>';
+      if (v.hash_matches === false) {
+        html += '<div style="font-size:12px;color:var(--red)">⚠ Binary was modified since signing</div>';
+      }
+    }
+    if (r.signatures && r.signatures.length) {
+      html += '<h4 style="font-size:13px;margin:12px 0 6px">Signatures</h4>';
+      r.signatures.forEach(function(s) {
+        html += '<div style="font-size:12px;padding:4px 0;border-top:1px solid var(--border)">';
+        html += '<strong>' + escHtml(s.signer || '') + '</strong> <span style="color:var(--dim)">(key:' + escHtml((s.key_id||'?').slice(0,8)) + ')</span>';
+        if (s.signed_at) html += ' <span style="color:var(--dim)">' + s.signed_at.slice(0,10) + '</span>';
+        html += '</div>';
+      });
+    } else {
+      html += '<div style="font-size:12px;color:var(--dim)">No signatures. Use the form below or the CLI to sign.</div>';
+    }
+    if (r.rekor && r.rekor.uuid) {
+      html += '<div style="font-size:12px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><strong>Transparency log:</strong> <a href="' + (r.rekor.url||'#') + '" target="_blank" style="color:#4a9eff">' + r.rekor.uuid.slice(0,24) + '...</a> <span style="color:var(--grn)">✓ on Rekor</span></div>';
+    } else if (r.signed) {
+      html += '<div style="font-size:12px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><strong>Transparency log:</strong> <span style="color:var(--dim)">not published</span> <button class="btn btn-ghost" style="font-size:10px;padding:2px 8px;margin-left:6px" onclick="publishRekor()">Publish to Sigstore Rekor</button></div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">Attestation data unavailable.</p></div>';
+  }
+  // Trust status
+  var trustEl = document.getElementById('sec-trust');
+  try {
+    var t = await api('trust');
+    if (t.enabled) {
+      var thtml = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Code Trust (File Manifests)</h3>';
+      thtml += '<div style="font-size:12px">Trusted keys: ' + (t.keys||[]).length + '</div>';
+      if (t.verified && t.verified.length) {
+        thtml += '<div style="font-size:12px;margin-top:6px">';
+        t.verified.forEach(function(v) {
+          var icon = v.ok ? '<span style="color:var(--grn)">✓</span>' : '<span style="color:var(--red)">✗</span>';
+          thtml += '<div>' + icon + ' ' + v.dir + (v.errors && v.errors.length ? ' (' + v.errors.length + ' errors)' : '') + '</div>';
+        });
+        thtml += '</div>';
+      }
+      thtml += '</div>';
+      trustEl.innerHTML = thtml;
+    } else {
+      trustEl.innerHTML = '<div class="card"><p style="font-size:12px;color:var(--dim)">Code trust not enabled. Set <code>Q.trust.enabled: true</code> and add trusted keys.</p></div>';
+    }
+  } catch(e) {}
+}
+async function signBinary() {
+  var key = document.getElementById('sec-key').value.trim();
+  var signer = document.getElementById('sec-signer').value.trim() || 'panel-user';
+  if (!key) return alert('Paste a PEM private key');
+  var r = await api('attestation/sign', {key: key, signer: signer});
+  if (r.error) { alert(r.error); return; }
+  alert('Signed! ' + r.signers + ' total signature(s)');
+  document.getElementById('sec-key').value = '';
+  loadSecurity();
+}
+async function verifyBinary() {
+  var m = parseInt(document.getElementById('sec-m').value) || 1;
+  var r = await api('attestation/verify?m=' + m);
+  var el = document.getElementById('sec-verify-result');
+  var color = r.valid ? 'var(--grn)' : 'var(--red)';
+  var html = '<div style="color:'+color+';font-weight:700">' + (r.valid ? '✓ VALID' : '✗ FAILED') + ' — ' + escHtml(r.label || '') + '</div>';
+  if (r.details) {
+    r.details.forEach(function(d) {
+      var icon = d.status === 'valid' ? '✓' : '✗';
+      html += '<div style="font-size:12px">' + icon + ' ' + escHtml(d.signer) + ' (' + escHtml(d.status) + ')</div>';
+    });
+  }
+  el.innerHTML = html;
+}
+async function publishRekor() {
+  if (!confirm('Publish this binary\'s attestation to the public Sigstore Rekor transparency log?\n\nThis is permanent and publicly visible.')) return;
+  var r = await api('attestation/publish-rekor', {});
+  if (r.published) {
+    alert('Published to Rekor!\n\nUUID: ' + r.uuid + '\n\nVerify at: ' + r.url);
+    loadSecurity();
+  } else {
+    alert(r.error || 'Failed to publish');
+  }
+}
+
+// ── Autohost ────────────────────────────────────────
+async function loadAutohost() {
+  var r = await api('autohost');
+  document.getElementById('ah-enabled').value = r.enabled ? '1' : '0';
+  document.getElementById('ah-authorize').value = r.authorize || 'open';
+  document.getElementById('ah-dns').value = r.dnsCheck !== false ? '1' : '0';
+  document.getElementById('ah-allowlist-row').style.display = r.authorize === 'allowlist' ? '' : 'none';
+  var el = document.getElementById('ah-status');
+  var prov = r.provisioning || [];
+  el.innerHTML = prov.length
+    ? '<div class="card" style="margin-bottom:12px"><h3 style="font-size:14px;margin-bottom:8px">Currently Provisioning</h3>' + prov.map(function(h){return '<div>\u23f3 '+escHtml(h)+'</div>';}).join('') + '</div>'
+    : '';
+  var logEl = document.getElementById('ah-log');
+  var lines = r.recentLog || [];
+  if (lines.length) {
+    logEl.innerHTML = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Recent Activity</h3>'
+      + '<pre style="font-size:11px;max-height:200px;overflow-y:auto;margin:0;white-space:pre-wrap">' + escHtml(lines.join('\n')) + '</pre></div>';
+  } else {
+    logEl.innerHTML = '<div class="card"><p style="color:var(--dim)">No autohost activity yet.</p></div>';
+  }
+  document.getElementById('ah-authorize').onchange = function() {
+    document.getElementById('ah-allowlist-row').style.display = this.value === 'allowlist' ? '' : 'none';
+  };
+}
+async function saveAutohost() {
+  var data = {
+    enabled: document.getElementById('ah-enabled').value === '1',
+    authorize: document.getElementById('ah-authorize').value,
+    dnsCheck: document.getElementById('ah-dns').value === '1',
+    acmeEmail: document.getElementById('ah-email').value.trim()
+  };
+  if (data.authorize === 'allowlist') {
+    data.allowlist = document.getElementById('ah-allowlist').value;
+  }
+  await api('autohost/toggle', data);
+  loadAutohost();
+}
 
 // ── Workers ─────────────────────────────────────────
 async function loadWorkers() {
@@ -3622,6 +6467,27 @@ async function loadWorkers() {
     +s('Memory',fmt(r.memoryUsage||0))+s('Peak',fmt(r.memoryPeak||0))+s('Uptime',fmtT(r.uptime||0))
     +'</div></div>';
   document.getElementById('worker-count').value=r.workers;
+  // Load worker detail
+  var d = await api('workers/detail');
+  var detailEl = document.getElementById('worker-detail');
+  if (detailEl && d.workers) {
+    var tbl = '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="color:var(--dim)">'
+      + '<th style="text-align:left;padding:4px">PID</th><th>Status</th><th>Requests</th><th></th></tr>';
+    d.workers.forEach(function(w) {
+      var status = w.busy ? '<span style="color:var(--yel)">\u25cf busy</span>'
+        : w.recycleAfter ? '<span style="color:var(--red)">\u21bb recycling</span>'
+        : '<span style="color:var(--grn)">\u25cf idle</span>';
+      tbl += '<tr style="border-top:1px solid var(--border);padding:4px"><td style="padding:4px">' + w.pid + '</td><td style="text-align:center">' + status
+        + '</td><td style="text-align:center">' + (w.requests||0)
+        + '</td><td style="text-align:right"><button class="btn btn-ghost" style="font-size:10px;padding:2px 6px" onclick="recycleWorker(' + w.index + ')">\u21bb</button></td></tr>';
+    });
+    tbl += '</table>';
+    detailEl.innerHTML = '<div class="card" style="margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      + '<h3 style="font-size:14px;margin:0">Worker Detail</h3>'
+      + '<button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="recycleAll()">Recycle All</button></div>'
+      + '<p style="font-size:11px;color:var(--dim);margin:0 0 8px">Mode: ' + d.mode + ' \u00b7 Max requests: ' + d.maxRequests + ' \u00b7 Queue: ' + (d.pending||0) + '</p>'
+      + tbl + '</div>';
+  }
 }
 async function resizeWorkers() {
   var c=parseInt(document.getElementById('worker-count').value);
@@ -3629,16 +6495,59 @@ async function resizeWorkers() {
   var r=await api('workers/resize',{workers:c});
   alert(r.error||'Resizing to '+c); loadWorkers();
 }
+async function recycleWorker(idx) {
+  var r = await api('workers/recycle', {index: idx});
+  loadWorkers();
+}
+async function recycleAll() {
+  if (!confirm('Recycle all workers? Busy workers finish their current request first.')) return;
+  var r = await api('workers/recycle', {});
+  alert('Recycled: ' + (r.recycled ? r.recycled.immediate + ' immediate, ' + r.recycled.pending + ' pending' : 'done'));
+  loadWorkers();
+}
 
 // ── Logs ────────────────────────────────────────────
 async function loadLogs(type) {
   type=type||'access';
   var lines=document.getElementById('log-lines').value;
+  // Hide the app log file tree when viewing server logs
+  var tree = document.getElementById('log-file-tree');
+  if (tree) tree.classList.add('hidden');
   var r=await api('logs?type='+type+'&lines='+lines);
   var el=document.getElementById('logs-output');
   if(!r.exists){el.textContent='Log file not found: '+r.file;return;}
   el.textContent=r.lines.join('\n');
   el.scrollTop=el.scrollHeight;
+}
+async function loadAppLogFiles(dirName) {
+  var tree = document.getElementById('log-file-tree');
+  var out = document.getElementById('logs-output');
+  if (!dirName) { if(tree)tree.classList.add('hidden'); return; }
+  if(tree)tree.classList.remove('hidden');
+  tree.innerHTML = '<p style="color:var(--dim);font-size:12px">Loading\u2026</p>';
+  var r = await api('apps/logs?app='+encodeURIComponent(dirName));
+  if (r.error) { tree.innerHTML='<p style="color:var(--red);font-size:12px">'+escHtml(r.error)+'</p>'; return; }
+  if (!r.files || !r.files.length) {
+    tree.innerHTML='<p style="color:var(--dim);font-size:12px">No log files found.</p>';
+    return;
+  }
+  tree.innerHTML = r.files.map(function(f){
+    return '<div class="log-file" onclick="viewAppLog(\''+dirName+'\',\''+f.path.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',this)">'
+      + '<span>\uD83D\uDCC4</span><span style="flex:1">'+escHtml(f.path)+'</span><span class="log-size">'+fmtBytes(f.size)+'</span></div>';
+  }).join('');
+}
+async function viewAppLog(dirName, filePath, el) {
+  if (el) {
+    el.parentNode.querySelectorAll('.log-file').forEach(function(f){f.classList.remove('active')});
+    el.classList.add('active');
+  }
+  var out = document.getElementById('logs-output');
+  out.textContent = 'Loading\u2026';
+  var lines = document.getElementById('log-lines').value;
+  var r = await api('apps/logs?app='+encodeURIComponent(dirName)+'&file='+encodeURIComponent(filePath)+'&lines='+lines);
+  if (!r.exists) { out.textContent = 'Log file not found'; return; }
+  out.textContent = r.lines.join('\n');
+  out.scrollTop = out.scrollHeight;
 }
 
 // ── Cron ────────────────────────────────────────────
@@ -3648,9 +6557,10 @@ async function loadCron() {
   if(!r.tasks||!r.tasks.length){el.innerHTML='<div class="card"><p style="color:var(--dim)">No scheduled tasks configured.</p></div>';return;}
   el.innerHTML=r.tasks.map(function(t){
     var sched=t.every?'Every '+t.every+'s':t.times?t.times.join(', '):'manual';
+    var tn=t.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     return '<div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'
-      +'<div><strong>'+t.name+'</strong><div style="font-size:11px;color:var(--dim)">'+t.handler+' · '+sched+'</div></div>'
-      +'<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="runCron(\''+t.name+'\')">Run Now</button></div>';
+      +'<div><strong>'+escHtml(t.name)+'</strong><div style="font-size:11px;color:var(--dim)">'+escHtml(t.handler)+' · '+escHtml(sched)+'</div></div>'
+      +'<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="runCron(\''+tn+'\')">Run Now</button></div>';
   }).join('');
 }
 async function runCron(n){var r=await api('cron/run',{task:n});alert(r.error||'Dispatched '+n);}
@@ -3678,7 +6588,7 @@ async function loadFrameworks() {
     if (fw.commands && fw.commands.length) {
       info += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
       fw.commands.forEach(function(cmd) {
-        info += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="runFwCmd(\'' + fw.framework + '\',\'' + cmd.cmd.replace(/'/g,"\\'") + '\',this)">' + cmd.name + '</button>';
+        info += '<button class="btn btn-ghost" style="font-size:11px;padding:5px 12px" onclick="runFwCmd(\'' + fw.framework + '\',\'' + cmd.cmd.replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\',this)">' + escHtml(cmd.name) + '</button>';
       });
       info += '</div>';
     }
@@ -3872,6 +6782,192 @@ async function fwDownload(framework) {
     var el = document.getElementById('fw-packages-' + framework);
     if (el) { el.dataset.reload = '1'; setTimeout(function(){ loadFwPackages(framework); }, 500); }
   }
+}
+
+// ── Mobile Build ─────────────────────────────────
+
+var _mobileToolchains = [];
+
+async function loadToolchains() {
+  var el = document.getElementById('mobile-toolchains');
+  el.innerHTML = '<p style="color:var(--dim);font-size:12px">Detecting…</p>';
+  try {
+    var d = await api('mobile/toolchains');
+    _mobileToolchains = d.toolchains || [];
+    var html = '<table style="width:100%;font-size:12px"><tbody>';
+    _mobileToolchains.forEach(function(t) {
+      var badge = t.installed
+        ? '<span style="color:var(--grn)">✓ ' + (t.version||'installed') + '</span>'
+        : (t.unavailable
+          ? '<span style="color:var(--dim)">n/a</span>'
+          : '<span style="color:var(--yel)">✗ missing</span>');
+      var hint = '';
+      if (!t.installed && t.hint && !t.unavailable) {
+        hint = ' <code style="font-size:10px;opacity:.7">' + t.hint + '</code>';
+      }
+      var plat = t.platform === 'both' ? '🍎🤖' : (t.platform === 'ios' ? '🍎' : '🤖');
+      html += '<tr><td style="padding:4px 8px">' + plat + '</td>'
+        + '<td style="padding:4px 8px">' + t.name + '</td>'
+        + '<td style="padding:4px 8px">' + badge + hint + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    // Update platform card availability
+    var hasXcode = _mobileToolchains.some(function(t){ return t.id==='xcode' && t.installed; });
+    var hasAndroid = _mobileToolchains.some(function(t){ return t.id==='android-sdk' && t.installed; });
+    var hasJdk = _mobileToolchains.some(function(t){ return t.id==='jdk' && t.installed; });
+    document.getElementById('mobile-ios-status').textContent = hasXcode ? 'Ready' : 'Missing tools';
+    document.getElementById('mobile-ios-status').style.color = hasXcode ? 'var(--grn)' : 'var(--yel)';
+    document.getElementById('mobile-android-status').textContent = (hasAndroid && hasJdk) ? 'Ready' : 'Missing tools';
+    document.getElementById('mobile-android-status').style.color = (hasAndroid && hasJdk) ? 'var(--grn)' : 'var(--yel)';
+  } catch(e) {
+    el.innerHTML = '<p style="color:var(--red);font-size:12px">Error: ' + e.message + '</p>';
+  }
+}
+
+async function loadMobileAppSelect() {
+  var sel = document.getElementById('mobile-app');
+  if (!_appsData.length) {
+    var d = await api('apps');
+    _appsData = d.apps || [];
+  }
+  sel.innerHTML = '<option value="">Select an app…</option>' + _appsData.map(function(a) {
+    return '<option value="' + escHtml(a.dirName) + '">' + escHtml(a.name||a.dirName) + '</option>';
+  }).join('');
+}
+
+var _mobileConfig = {};
+
+async function loadMobileApp(dirName) {
+  var panel = document.getElementById('mobile-app-panel');
+  if (!dirName) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  try {
+    var d = await api('mobile/config', {appDir: dirName});
+    _mobileConfig = d.config || {};
+    document.getElementById('mobile-bundle-id').value = _mobileConfig.bundleId || '';
+    document.getElementById('mobile-app-name').value = _mobileConfig.appName || '';
+    document.getElementById('mobile-version').value = _mobileConfig.version || '1.0.0';
+    document.getElementById('mobile-build-num').value = _mobileConfig.buildNumber || 1;
+    // Update prepare button labels
+    document.getElementById('mobile-ios-prepare').textContent = _mobileConfig.iosPrepared ? '📁 Re-Prepare Project' : '📁 Prepare Project';
+    document.getElementById('mobile-android-prepare').textContent = _mobileConfig.androidPrepared ? '📁 Re-Prepare Project' : '📁 Prepare Project';
+    // Load build history
+    loadMobileBuilds(dirName);
+  } catch(e) {
+    panel.innerHTML = '<p style="color:var(--red)">Error loading config: ' + e.message + '</p>';
+  }
+}
+
+async function saveMobileConfig() {
+  var dirName = document.getElementById('mobile-app').value;
+  if (!dirName) return;
+  var cfg = {
+    bundleId: document.getElementById('mobile-bundle-id').value,
+    appName: document.getElementById('mobile-app-name').value,
+    version: document.getElementById('mobile-version').value,
+    buildNumber: parseInt(document.getElementById('mobile-build-num').value) || 1
+  };
+  var st = document.getElementById('mobile-config-status');
+  st.textContent = 'Saving…';
+  try {
+    await api('mobile/config', {appDir: dirName, config: cfg});
+    st.textContent = 'Saved ✓';
+    st.style.color = 'var(--grn)';
+    setTimeout(function(){ st.textContent = ''; }, 2000);
+  } catch(e) {
+    st.textContent = 'Error: ' + e.message;
+    st.style.color = 'var(--red)';
+  }
+}
+
+async function mobilePrepare(platform) {
+  var dirName = document.getElementById('mobile-app').value;
+  if (!dirName) return;
+  var btn = document.getElementById('mobile-' + platform + '-prepare');
+  var out = document.getElementById('mobile-' + platform + '-output');
+  btn.disabled = true; btn.textContent = '⏳ Preparing…';
+  out.style.display = 'block'; out.textContent = 'Scaffolding ' + platform + ' project…\n';
+  try {
+    var d = await api('mobile/prepare', {appDir: dirName, platform: platform});
+    if (d.log) {
+      out.textContent = d.log.join('\n') + '\n\n' + (d.prepared ? '✅ Project prepared at:\n' + d.path : '❌ Failed');
+    } else {
+      out.textContent = JSON.stringify(d, null, 2);
+    }
+    btn.textContent = '📁 Re-Prepare Project';
+    loadMobileBuilds(dirName);
+  } catch(e) {
+    out.textContent += '\n❌ Error: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+async function mobileBuild(platform) {
+  var dirName = document.getElementById('mobile-app').value;
+  if (!dirName) return;
+  var btn = document.getElementById('mobile-' + platform + '-build');
+  var out = document.getElementById('mobile-' + platform + '-output');
+  btn.disabled = true; btn.textContent = '⏳ Building…';
+  out.style.display = 'block'; out.textContent = 'Running ' + platform + ' build…\n';
+  try {
+    var d = await api('mobile/build', {appDir: dirName, platform: platform, buildType: 'debug'});
+    out.textContent = (d.output || '') + '\n\n' + (d.success ? '✅ Build succeeded' : '❌ Build failed');
+    if (d.artifact) out.textContent += '\nArtifact: ' + d.artifact;
+    loadMobileBuilds(dirName);
+  } catch(e) {
+    out.textContent += '\n❌ Error: ' + e.message;
+  }
+  btn.disabled = false;
+  btn.textContent = '🔨 Build';
+}
+
+async function loadMobileBuilds(dirName) {
+  try {
+    var d = await api('mobile/builds', {appDir: dirName});
+    // Artifacts
+    var aEl = document.getElementById('mobile-artifacts');
+    if (d.artifacts && d.artifacts.length) {
+      aEl.innerHTML = d.artifacts.map(function(a) {
+        var plat = a.platform === 'ios' ? '🍎' : '🤖';
+        var size = a.size ? ' (' + formatBytes(a.size) + ')' : '';
+        var mod = a.modified ? ' — ' + new Date(a.modified).toLocaleString() : '';
+        return '<div style="font-size:12px;padding:4px 0">' + plat + ' <code>' + a.path.split('/').pop() + '</code>' + size + mod + '</div>';
+      }).join('');
+    } else {
+      aEl.innerHTML = '<p style="color:var(--dim);font-size:12px">No build artifacts yet.</p>';
+    }
+    // History
+    var hEl = document.getElementById('mobile-history');
+    if (d.builds && d.builds.length) {
+      var rows = d.builds.slice().reverse().slice(0, 20);
+      hEl.innerHTML = '<table style="width:100%;font-size:12px"><thead><tr>'
+        + '<th style="text-align:left;padding:4px">Platform</th>'
+        + '<th style="text-align:left;padding:4px">Type</th>'
+        + '<th style="text-align:left;padding:4px">Result</th>'
+        + '<th style="text-align:left;padding:4px">Time</th></tr></thead><tbody>'
+        + rows.map(function(b) {
+          var plat = b.platform === 'ios' ? '🍎 iOS' : '🤖 Android';
+          var res = b.success ? '<span style="color:var(--grn)">✓</span>' : '<span style="color:var(--red)">✗</span>';
+          var t = new Date(b.timestamp).toLocaleString();
+          return '<tr><td style="padding:4px">' + plat + '</td>'
+            + '<td style="padding:4px">' + (b.buildType||'debug') + '</td>'
+            + '<td style="padding:4px">' + res + '</td>'
+            + '<td style="padding:4px">' + t + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    } else {
+      hEl.innerHTML = '<p style="color:var(--dim);font-size:12px">No build history.</p>';
+    }
+  } catch(e) {
+    // silent
+  }
+}
+
+function formatBytes(b) {
+  if (!b) return '0 B';
+  var u = ['B','KB','MB','GB']; var i = 0;
+  while (b >= 1024 && i < 3) { b /= 1024; i++; }
+  return b.toFixed(1) + ' ' + u[i];
 }
 
 // Init

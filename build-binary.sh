@@ -108,7 +108,7 @@ build_with_docker() {
     [ -d "$SCRIPT_DIR/web" ] && cp -r "$SCRIPT_DIR/web" "$TMPDIR/web"
 
     # Keep in sync with .github/workflows/release.yml
-    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+    EXTS="pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
 
     cat > "$TMPDIR/Dockerfile" << DOCKERFILE
 FROM php:$PHP_VERSION-cli-alpine AS builder
@@ -126,11 +126,28 @@ WORKDIR /build
 # server's PHP code reuses the cached layer instead of rebuilding PHP.
 RUN spc doctor --auto-fix 2>/dev/null || true
 RUN spc download --with-php=$PHP_VERSION --for-extensions=$EXTS
-RUN spc build "$EXTS" --build-micro
+# gd's libraries have to be named. The download step pulls an extension's
+# suggested sources by default, but the build links none of them unless
+# asked, so gd came out able to read PNG only and imagejpeg() was an
+# undefined function at runtime.
+#
+# Named rather than --with-suggested-libs, which also drags in libaom for
+# AVIF; spc 2.8.5 cannot unpack it -- "Patch file
+# [libaom_posix_implict.patch] failed to apply" -- and the build dies.
+# AVIF output stays unavailable until that is fixed upstream, which
+# Image.php already handles: it guards imageavif and declines.
+RUN spc build "$EXTS" --build-micro --with-libs=libjpeg,libwebp,freetype
 
 COPY src/ src/
 COPY web/ web/
 COPY build-phar.php qbixserver.php ./
+
+# Parse every file before packaging it. build-phar.php only copies files
+# in, so a syntax error travels into the binary and surfaces as a runtime
+# fatal from a phar:// path -- after a full build, and with the build
+# itself reporting success.
+RUN find src qbixserver.php -name '*.php' -print0 \
+    | xargs -0 -n1 php -l > /dev/null
 
 RUN mkdir -p bin && php -d phar.readonly=0 build-phar.php
 

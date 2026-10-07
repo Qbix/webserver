@@ -23,23 +23,23 @@ jobs:
             name: linux-x86_64
             spc_os: linux
             spc_arch: x86_64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
           - os: ubuntu-24.04-arm
             name: linux-aarch64
             spc_os: linux
             spc_arch: aarch64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
           - os: macos-latest
             name: macos-arm64
             spc_os: macos
             spc_arch: aarch64
-            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session"
+            extensions: "pcntl,sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,posix,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
           - os: windows-latest
             name: windows-x64
             spc_os: windows
             spc_arch: x64
             # No pcntl or posix on Windows
-            extensions: "sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,session"
+            extensions: "sockets,pdo_sqlite,sqlite3,openssl,mbstring,phar,tokenizer,filter,ctype,session,gd,dom,xml,simplexml,xmlwriter,xmlreader,iconv,intl,xsl"
 
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.name }}
@@ -190,7 +190,7 @@ jobs:
         env:
           SPC_SKIP_DOCTOR_CHECK_ITEMS: "pkg-config,musl-wrapper"
         run: |
-          ./spc build "${{ matrix.extensions }}" --build-cli --build-micro
+          ./spc build "${{ matrix.extensions }}" --build-cli --build-micro --with-libs=libjpeg,libwebp,freetype
 
       - name: Build static PHP CLI + phpmicro (Windows)
         if: runner.os == 'Windows'
@@ -200,7 +200,7 @@ jobs:
           $exts = Get-Content "win_exts.txt" -ErrorAction SilentlyContinue
           if (-not $exts) { $exts = "${{ matrix.extensions }}" }
           Write-Host "Building with extensions: $exts"
-          php spc-src\bin\spc build "$exts" --build-cli --build-micro
+          php spc-src\bin\spc build "$exts" --build-cli --build-micro --with-libs=libjpeg,libwebp,freetype
 
       - name: Build qbix_fork.dll (Windows)
         if: runner.os == 'Windows'
@@ -244,6 +244,16 @@ jobs:
             Write-Host "Including qbix_fork.dll in artifacts"
           }
 
+      - name: Build GUI variant (Windows, no console)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "qbixserver-${{ matrix.name }}.exe")) { exit 0 }
+          Copy-Item "qbixserver-${{ matrix.name }}.exe" "qbixserver-${{ matrix.name }}-gui.exe"
+          editbin /SUBSYSTEM:WINDOWS "qbixserver-${{ matrix.name }}-gui.exe"
+          Write-Host "Built GUI variant (no console window on launch)"
+
       # ── Compress ─────────────────────────────────────────
       # NOTE: Do NOT UPX-pack the combined binary. `spc micro:combine`
       # appends the phar as an ELF overlay which phpmicro locates by
@@ -272,6 +282,11 @@ jobs:
           } else {
             Write-Host "Binary not built — skipping smoke test"
           }
+
+      # Needs the binary: from a source checkout there is no phar to lose.
+      - name: Server stream wrappers survive scripts (Unix)
+        if: runner.os != 'Windows'
+        run: QB=./qbixserver-${{ matrix.name }} bash tests/stream-wrappers.sh
 
       # ── Upload ───────────────────────────────────────────
       - name: Upload artifacts
@@ -302,7 +317,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "v1.3.0 – Boldly Go"
+          name: "v1.5.0 – Boldly Go"
           body_path: RELEASE_NOTES.md
           draft: false
           generate_release_notes: false
@@ -312,6 +327,7 @@ jobs:
             artifacts/qbixserver-linux-aarch64/qbixserver-linux-aarch64
             artifacts/qbixserver-macos-arm64/qbixserver-macos-arm64
             artifacts/qbixserver-windows-x64/qbixserver-windows-x64.exe
+            artifacts/qbixserver-windows-x64/qbixserver-windows-x64-gui.exe
             artifacts/qbixserver-windows-x64/qbix_fork.dll
             artifacts/qbixserver-linux-x86_64/php-linux-x86_64
             artifacts/qbixserver-linux-aarch64/php-linux-aarch64
