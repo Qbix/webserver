@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Bị cấm",
+			"404": "Không tìm thấy",
+			"413": "Nội dung quá lớn",
+			"429": "Quá nhiều yêu cầu",
+			"500": "Lỗi máy chủ",
+			"502": "Cổng kết nối không hợp lệ",
+			"503": "Dịch vụ không khả dụng",
+			"default": "Lỗi"
+		},
+		"messages": {
+			"403": "Bạn không có quyền truy cập tài nguyên này.",
+			"404": "Không tìm thấy trang <code>{{path}}</code>.",
+			"413": "Nội dung yêu cầu vượt quá kích thước tối đa cho phép.",
+			"429": "Vui lòng chậm lại và thử lại sau.",
+			"500": "Đã xảy ra lỗi. Máy chủ gặp lỗi nội bộ.",
+			"502": "Máy chủ nhận được phản hồi không hợp lệ từ máy chủ thượng nguồn.",
+			"503": "Máy chủ tạm thời không khả dụng. Vui lòng thử lại sau.",
+			"default": "Đã xảy ra lỗi không mong đợi."
+		},
+		"backToHome": "Quay lại trang chủ"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

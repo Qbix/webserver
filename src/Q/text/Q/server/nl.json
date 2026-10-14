@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Verboden",
+			"404": "Niet gevonden",
+			"413": "Payload te groot",
+			"429": "Te veel verzoeken",
+			"500": "Serverfout",
+			"502": "Ongeldige gateway",
+			"503": "Service niet beschikbaar",
+			"default": "Fout"
+		},
+		"messages": {
+			"403": "U heeft geen toestemming om toegang te krijgen tot deze bron.",
+			"404": "De pagina <code>{{path}}</code> kon niet worden gevonden.",
+			"413": "De inhoud van het verzoek overschrijdt de maximaal toegestane grootte.",
+			"429": "Gelieve te vertragen en later opnieuw te proberen.",
+			"500": "Er is iets misgegaan. De server heeft een interne fout ondervonden.",
+			"502": "De server heeft een ongeldig antwoord ontvangen van een upstream server.",
+			"503": "De server is tijdelijk niet beschikbaar. Probeer het later opnieuw.",
+			"default": "Er is een onverwachte fout opgetreden."
+		},
+		"backToHome": "Terug naar home"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

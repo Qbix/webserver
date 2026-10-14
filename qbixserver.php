@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '2.1.0');
+define('QBIX_SERVER_VERSION', '2.3.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── OPcache for CLI ─────────────────────────────────

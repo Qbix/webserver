@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Yasak",
+			"404": "Bulunamadı",
+			"413": "İstek çok büyük",
+			"429": "Çok fazla istek",
+			"500": "Sunucu hatası",
+			"502": "Geçersiz ağ geçidi",
+			"503": "Hizmet kullanılamıyor",
+			"default": "Hata"
+		},
+		"messages": {
+			"403": "Bu kaynağa erişim izniniz yok.",
+			"404": "<code>{{path}}</code> sayfası bulunamadı.",
+			"413": "İstek gövdesi izin verilen maksimum boyutu aşıyor.",
+			"429": "Lütfen yavaşlayın ve daha sonra tekrar deneyin.",
+			"500": "Bir şeyler ters gitti. Sunucu dahili bir hatayla karşılaştı.",
+			"502": "Sunucu, yukarı akış sunucusundan geçersiz bir yanıt aldı.",
+			"503": "Sunucu geçici olarak kullanılamıyor. Lütfen daha sonra tekrar deneyin.",
+			"default": "Beklenmeyen bir hata oluştu."
+		},
+		"backToHome": "Ana sayfaya dön"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

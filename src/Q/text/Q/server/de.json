@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Verboten",
+			"404": "Nicht gefunden",
+			"413": "Nutzlast zu groß",
+			"429": "Zu viele Anfragen",
+			"500": "Serverfehler",
+			"502": "Ungültiges Gateway",
+			"503": "Dienst nicht verfügbar",
+			"default": "Fehler"
+		},
+		"messages": {
+			"403": "Sie haben keine Berechtigung, auf diese Ressource zuzugreifen.",
+			"404": "Die Seite <code>{{path}}</code> wurde nicht gefunden.",
+			"413": "Der Anfragekörper überschreitet die maximal zulässige Größe.",
+			"429": "Bitte verlangsamen Sie und versuchen Sie es später erneut.",
+			"500": "Etwas ist schiefgelaufen. Der Server hat einen internen Fehler festgestellt.",
+			"502": "Der Server hat eine ungültige Antwort von einem vorgelagerten Server erhalten.",
+			"503": "Der Server ist vorübergehend nicht verfügbar. Bitte versuchen Sie es später erneut.",
+			"default": "Ein unerwarteter Fehler ist aufgetreten."
+		},
+		"backToHome": "Zurück zur Startseite"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

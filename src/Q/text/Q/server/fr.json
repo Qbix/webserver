@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Interdit",
+			"404": "Page non trouvée",
+			"413": "Contenu trop volumineux",
+			"429": "Trop de requêtes",
+			"500": "Erreur du serveur",
+			"502": "Mauvaise passerelle",
+			"503": "Service indisponible",
+			"default": "Erreur"
+		},
+		"messages": {
+			"403": "Vous n'avez pas la permission d'accéder à cette ressource.",
+			"404": "La page <code>{{path}}</code> est introuvable.",
+			"413": "Le corps de la requête dépasse la taille maximale autorisée.",
+			"429": "Veuillez ralentir et réessayer plus tard.",
+			"500": "Une erreur s'est produite. Le serveur a rencontré une erreur interne.",
+			"502": "Le serveur a reçu une réponse non valide d'un serveur en amont.",
+			"503": "Le serveur est temporairement indisponible. Veuillez réessayer plus tard.",
+			"default": "Une erreur inattendue s'est produite."
+		},
+		"backToHome": "Retour à l'accueil"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

@@ -1,3 +1,9 @@
+# Qbix Server 2.3 — Strange New Worlds
+
+The autohost log, the watchdog log and any file you list under `Q/webserver/logs/files` are now rotated, compressed and deleted on a schedule instead of growing for ever, with the same policy as `access.log` and `error.log`. New control panel routes `logs/managed` and `logs/rotate` show and run it. See [docs/logs.md](docs/logs.md).
+
+---
+
 # Qbix Server v2.0.0 — Mesh
 
 v1.x was a PHP web server. v2.0 is a mesh-networked runtime. Phones discover each other over Bluetooth, establish encrypted sessions without any central server, synchronize data peer-to-peer, and run PHP applications on every node.

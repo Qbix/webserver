@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Forbidden",
+			"404": "Not Found",
+			"413": "Payload Too Large",
+			"429": "Too Many Requests",
+			"500": "Server Error",
+			"502": "Bad Gateway",
+			"503": "Service Unavailable",
+			"default": "Error"
+		},
+		"messages": {
+			"403": "You don't have permission to access this resource.",
+			"404": "The page <code>{{path}}</code> could not be found.",
+			"413": "The request body exceeds the maximum allowed size.",
+			"429": "Please slow down and try again later.",
+			"500": "Something went wrong. The server encountered an internal error.",
+			"502": "The server received an invalid response from an upstream server.",
+			"503": "The server is temporarily unavailable. Please try again later.",
+			"default": "An unexpected error occurred."
+		},
+		"backToHome": "Back to home"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

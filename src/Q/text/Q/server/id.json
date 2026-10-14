@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Dilarang",
+			"404": "Tidak ditemukan",
+			"413": "Muatan terlalu besar",
+			"429": "Terlalu banyak permintaan",
+			"500": "Kesalahan server",
+			"502": "Gateway tidak valid",
+			"503": "Layanan tidak tersedia",
+			"default": "Kesalahan"
+		},
+		"messages": {
+			"403": "Anda tidak memiliki izin untuk mengakses sumber daya ini.",
+			"404": "Halaman <code>{{path}}</code> tidak dapat ditemukan.",
+			"413": "Isi permintaan melebihi ukuran maksimum yang diizinkan.",
+			"429": "Mohon pelankan dan coba lagi nanti.",
+			"500": "Terjadi kesalahan. Server mengalami kesalahan internal.",
+			"502": "Server menerima respons tidak valid dari server hulu.",
+			"503": "Server untuk sementara tidak tersedia. Silakan coba lagi nanti.",
+			"default": "Terjadi kesalahan yang tidak terduga."
+		},
+		"backToHome": "Kembali ke beranda"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

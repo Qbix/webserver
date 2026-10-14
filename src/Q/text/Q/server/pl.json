@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Dostęp zabroniony",
+			"404": "Nie znaleziono",
+			"413": "Za duży ładunek",
+			"429": "Zbyt wiele żądań",
+			"500": "Błąd serwera",
+			"502": "Nieprawidłowa brama",
+			"503": "Usługa niedostępna",
+			"default": "Błąd"
+		},
+		"messages": {
+			"403": "Nie masz uprawnień do uzyskania dostępu do tego zasobu.",
+			"404": "Strona <code>{{path}}</code> nie została znaleziona.",
+			"413": "Treść żądania przekracza maksymalny dozwolony rozmiar.",
+			"429": "Proszę zwolnić i spróbować ponownie później.",
+			"500": "Coś poszło nie tak. Serwer napotkał błąd wewnętrzny.",
+			"502": "Serwer otrzymał nieprawidłową odpowiedź od serwera nadrzędnego.",
+			"503": "Serwer jest tymczasowo niedostępny. Spróbuj ponownie później.",
+			"default": "Wystąpił nieoczekiwany błąd."
+		},
+		"backToHome": "Powrót na stronę główną"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

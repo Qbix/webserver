@@ -1,0 +1,28 @@
+{
+	"errors": {
+		"titles": {
+			"403": "Proibido",
+			"404": "Não encontrado",
+			"413": "Conteúdo muito grande",
+			"429": "Muitas solicitações",
+			"500": "Erro do servidor",
+			"502": "Gateway inválido",
+			"503": "Serviço indisponível",
+			"default": "Erro"
+		},
+		"messages": {
+			"403": "Você não tem permissão para acessar este recurso.",
+			"404": "A página <code>{{path}}</code> não foi encontrada.",
+			"413": "O corpo da solicitação excede o tamanho máximo permitido.",
+			"429": "Por favor, diminua a velocidade e tente novamente mais tarde.",
+			"500": "Algo deu errado. O servidor encontrou um erro interno.",
+			"502": "O servidor recebeu uma resposta inválida de um servidor upstream.",
+			"503": "O servidor está temporariamente indisponível. Tente novamente mais tarde.",
+			"default": "Ocorreu um erro inesperado."
+		},
+		"backToHome": "Voltar ao início"
+	},
+	"server": {
+		"name": "Qbix Server"
+	}
+}

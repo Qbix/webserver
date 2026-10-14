@@ -340,6 +340,8 @@ class Q_WebServer_Panel
 				return self::apiProvisionCert($parsed);
 			case 'domains/hosts':
 				return self::apiHostsFile();
+			case 'domains/cache':
+				return self::apiDomainCacheUpdate($parsed);
 			case 'domains/hosts/add':
 				return self::apiHostsAdd($parsed);
 			case 'autohost':
@@ -414,6 +416,10 @@ class Q_WebServer_Panel
 				return self::apiWorkerDetail();
 			case 'logs':
 				return self::apiLogs($parsed);
+			case 'logs/managed':
+				return self::apiLogsManaged();
+			case 'logs/rotate':
+				return self::apiLogsRotate();
 			case 'cron':
 				return self::apiCronStatus();
 			case 'cron/run':
@@ -2700,6 +2706,7 @@ class Q_WebServer_Panel
 				'app' => $conf['app'] ?? null,
 				'tls' => $conf['tls'] ?? 'none',
 				'aliases' => $conf['aliases'] ?? [],
+				'cache' => $conf['cache'] ?? null,
 			];
 			if (is_file($certPath)) {
 				$expiry = Q_WebServer_Acme::certExpiry($certPath);
@@ -2767,6 +2774,63 @@ class Q_WebServer_Panel
 		unset($config['domains'][$domain]);
 		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
 		return ['removed' => $domain];
+	}
+
+	static function apiDomainCacheUpdate($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$domain = $body['domain'] ?? '';
+		if (!$domain || !preg_match('/^[a-zA-Z0-9][a-zA-Z0-9.\-]+$/', $domain)) {
+			return array('error' => 'Invalid domain name');
+		}
+		// Validate domain exists in config
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		$configPath = self::panelConfigPath();
+		$panelConfig = array();
+		if (file_exists($configPath)) {
+			$panelConfig = json_decode(file_get_contents($configPath), true) ?: array();
+		}
+		$allDomains = array_merge($domains, $panelConfig['domains'] ?? array());
+		if (!isset($allDomains[$domain])) {
+			return array('error' => 'Domain not found: ' . $domain);
+		}
+		// Whitelist allowed cache config keys
+		$allowed = array('enabled', 'framework', 'initialTtl', 'maxTtl', 'growFactor', 'minHits');
+		$allowedFrameworks = array('wordpress', 'drupal', 'laravel', 'symfony', 'joomla', 'qbix', 'static', '');
+		$cacheConfig = array();
+		foreach ($allowed as $key) {
+			if (array_key_exists($key, $body)) {
+				$val = $body[$key];
+				if ($key === 'enabled') {
+					$cacheConfig[$key] = (bool) $val;
+				} elseif ($key === 'framework') {
+					if (!in_array($val, $allowedFrameworks, true)) {
+						return array('error' => 'Invalid framework: ' . $val);
+					}
+					if ($val !== '') {
+						$cacheConfig[$key] = $val;
+					}
+				} elseif (in_array($key, array('initialTtl', 'maxTtl', 'growFactor', 'minHits'))) {
+					$cacheConfig[$key] = max(0, (int) $val);
+				}
+			}
+		}
+		// Save to panel config under the domain
+		if (!isset($panelConfig['domains'])) {
+			$panelConfig['domains'] = array();
+		}
+		if (!isset($panelConfig['domains'][$domain])) {
+			$panelConfig['domains'][$domain] = $allDomains[$domain];
+		}
+		if (!isset($panelConfig['domains'][$domain]['cache'])) {
+			$panelConfig['domains'][$domain]['cache'] = array();
+		}
+		$panelConfig['domains'][$domain]['cache']['auto'] = $cacheConfig;
+		file_put_contents($configPath, json_encode($panelConfig, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+		// Apply at runtime
+		require_once dirname(__DIR__) . '/WebServer/Cache.php';
+		Q_WebServer_Cache::configureHost($domain, $cacheConfig);
+		return array('ok' => true, 'domain' => $domain, 'cache' => $cacheConfig);
 	}
 
 	static function apiProvisionCert($parsed)
@@ -3075,6 +3139,39 @@ class Q_WebServer_Panel
 	}
 
 	// ── Logs API ─────────────────────────────────────────
+
+	/** The log files the server rotates, with their rotated copies and the policy. */
+	static function apiLogsManaged()
+	{
+		$cfg = Q_Config::get('Q', 'webserver', 'logs', array());
+		if (!is_array($cfg)) $cfg = array();
+		$files = array();
+		foreach (Q_WebServer_LogRotate::files() as $name => $path) {
+			$base = preg_replace('/\.log$/', '', $path);
+			$rotated = array();
+			foreach ((array) glob($base . '.*') as $f) {
+				if (is_file($f) && preg_match('/^' . preg_quote(basename($base), '/') . '\.\d{4}-\d{2}-\d{2}(-\d{6}(-\d+)?)?\.log(\.gz)?$/D', basename($f))) {
+					$rotated[] = array('file' => basename($f), 'bytes' => (int) filesize($f), 'modified' => (int) filemtime($f));
+				}
+			}
+			usort($rotated, function ($a, $b) { return $b['modified'] - $a['modified']; });
+			$files[] = array('name' => $name, 'path' => $path, 'bytes' => is_file($path) ? (int) filesize($path) : 0, 'rotated' => array_slice($rotated, 0, 50), 'rotatedCount' => count($rotated));
+		}
+		return array(
+			'managed' => !(isset($cfg['managed']) && $cfg['managed'] === false),
+			'policy' => array(
+				'maxSize' => (int) (isset($cfg['maxSize']) ? $cfg['maxSize'] : 20971520), 'rotateDays' => (int) (isset($cfg['rotateDays']) ? $cfg['rotateDays'] : 1),
+				'archiveAfterDays' => (int) (isset($cfg['archiveAfterDays']) ? $cfg['archiveAfterDays'] : 2), 'deleteAfterDays' => (int) (isset($cfg['deleteAfterDays']) ? $cfg['deleteAfterDays'] : 30),
+			),
+			'files' => $files,
+		);
+	}
+
+	/** Run the rotation, compression and deletion now instead of waiting for the hourly run. */
+	static function apiLogsRotate()
+	{
+		return array('ok' => true) + Q_WebServer_LogRotate::housekeeping();
+	}
 
 	static function apiLogs($parsed)
 	{
@@ -6269,9 +6366,34 @@ async function loadDomains() {
       if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Provision</button>';
       else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Renew</button>';
       btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + dn + '\')">Remove</button>';
-      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + escHtml(d.domain) + '</strong></div><div>' + badge + btns + '</div></div>'
+      // Per-domain auto-cache config
+      var cacheConf = d.cache && d.cache.auto ? d.cache.auto : null;
+      var cacheEnabled = cacheConf && cacheConf.enabled;
+      var cacheFramework = cacheConf ? (cacheConf.framework || '') : '';
+      var cacheBadge = cacheEnabled
+        ? ' <span style="color:var(--grn);font-size:11px" title="Auto-cache active">⚡ cached' + (cacheFramework ? ' (' + escHtml(cacheFramework) + ')' : '') + '</span>'
+        : '';
+      var dn2 = d.domain.replace(/\\/g,'\\\\').replace(/"/g,'\\"');
+      var cacheToggle = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--brd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        + '<span style="font-size:11px;color:var(--dim)">Auto-cache:</span>'
+        + '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px">'
+        + '<input type="checkbox" ' + (cacheEnabled ? 'checked' : '') + ' onchange="updateDomainCache(\'' + dn2 + '\', \'enabled\', this.checked)">'
+        + '<span>' + (cacheEnabled ? 'On' : 'Off') + '</span></label>'
+        + '<select onchange="updateDomainCache(\'' + dn2 + '\', \'framework\', this.value)" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid var(--brd);background:var(--card);color:var(--fg)">'
+        + '<option value=""' + (!cacheFramework ? ' selected' : '') + '>No preset</option>'
+        + '<option value="wordpress"' + (cacheFramework === 'wordpress' ? ' selected' : '') + '>WordPress</option>'
+        + '<option value="drupal"' + (cacheFramework === 'drupal' ? ' selected' : '') + '>Drupal</option>'
+        + '<option value="laravel"' + (cacheFramework === 'laravel' ? ' selected' : '') + '>Laravel</option>'
+        + '<option value="symfony"' + (cacheFramework === 'symfony' ? ' selected' : '') + '>Symfony</option>'
+        + '<option value="joomla"' + (cacheFramework === 'joomla' ? ' selected' : '') + '>Joomla</option>'
+        + '<option value="qbix"' + (cacheFramework === 'qbix' ? ' selected' : '') + '>Qbix</option>'
+        + '<option value="static"' + (cacheFramework === 'static' ? ' selected' : '') + '>Static site</option>'
+        + '</select>'
+        + '</div>';
+      return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + escHtml(d.domain) + '</strong>' + cacheBadge + '</div><div>' + badge + btns + '</div></div>'
         + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + escHtml(d.root) + '</div>' : '')
         + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + escHtml(d.certExpires) + '</div>' : '')
+        + cacheToggle
         + '</div>';
     }).join('');
   }
@@ -6321,6 +6443,20 @@ async function addDomain() {
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
 async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+async function updateDomainCache(domain, field, value) {
+  var payload = { domain: domain };
+  payload[field] = value;
+  if (field === 'framework' && value) {
+    payload.enabled = true;
+  }
+  try {
+    var r = await api('domains/cache', payload);
+    if (r.error) { alert(r.error); return; }
+    loadDomains();
+  } catch(e) {
+    alert(e.message || 'Failed to update domain cache config');
+  }
+}
 
 // ── Security & Attestation ──────────────────────────
 async function loadSecurity() {
