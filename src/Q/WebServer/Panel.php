@@ -2839,18 +2839,58 @@ class Q_WebServer_Panel
 		$domain = $body['domain'] ?? '';
 		if (!$domain) return ['status' => 400, 'error' => 'Missing domain'];
 
-		$email = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
-		if (!$email) return ['status' => 400, 'error' => 'Set Q.webserver.tls.acmeEmail first'];
+		// Behind nginx or Apache, they hold port 80 and the certificate; a request
+		// here would never pass Let's Encrypt's check.
+		$conf = Q_Config::get('Q', 'webserver', 'domains', $domain, []);
+		if (empty($body['force']) && isset($parsed['headers']['x-forwarded-proto'])) {
+			return ['status' => 400, 'proxied' => true,
+				'error' => "$domain is served through nginx, which handles its certificate. "
+					. 'Renew it there (certbot), or send force to request one here anyway.'];
+		}
+
+		$email = trim((string) ($body['email'] ?? ''));
+		if ($email !== '') {
+			if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+				return ['status' => 400, 'needsEmail' => true, 'error' => 'That does not look like an email address'];
+			}
+			self::saveAcmeEmail($email);
+		} else {
+			$email = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
+		}
+		// No email yet: the panel asks for one and sends the request again.
+		if (!$email) {
+			return ['status' => 400, 'needsEmail' => true,
+				'error' => "Let's Encrypt needs an email address for expiry notices"];
+		}
 
 		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
 		$staging = (bool) Q_Config::get('Q', 'webserver', 'tls', 'acmeStaging', false);
 
 		$domains = [$domain];
-		$conf = Q_Config::get('Q', 'webserver', 'domains', $domain, []);
 		if (!empty($conf['aliases'])) $domains = array_merge($domains, $conf['aliases']);
 
 		$result = Q_WebServer_Acme::provision($domains, $certDir, $email, $staging);
 		return $result;
+	}
+
+	/**
+	 * Keep the ACME email for next time: in the panel's config file and in the running config.
+	 * @method saveAcmeEmail
+	 * @static
+	 * @private
+	 * @param {string} $email
+	 */
+	private static function saveAcmeEmail($email)
+	{
+		$configPath = self::panelConfigPath();
+		$config = file_exists($configPath)
+			? (json_decode(file_get_contents($configPath), true) ?: []) : [];
+		$config['Q']['webserver']['tls']['acmeEmail'] = $email;
+		$dir = dirname($configPath);
+		if (!is_dir($dir)) @mkdir($dir, 0700, true);
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		@chmod($configPath, 0600);
+		Q_Config::set('Q', 'webserver', 'tls', 'acmeEmail', $email);
 	}
 
 	// ── Hosts File API ──────────────────────────────────
@@ -6442,7 +6482,24 @@ async function addDomain() {
   document.getElementById('dom-name').value=''; loadDomains();
 }
 async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
-async function provisionCert(n) { alert('Provisioning '+n+'...'); var r=await api('domains/provision',{domain:n}); alert(r.success?'Done!':r.error||'Failed'); loadDomains(); }
+async function provisionCert(n, email, force) {
+  var b = {domain:n};
+  if (email) b.email = email;
+  if (force) b.force = true;
+  var r = await api('domains/provision', b);
+  if (r.proxied && !force) {
+    if (!confirm(r.error + '\\n\\nTry anyway? This only works if /.well-known/acme-challenge/ on port 80 reaches this server, and nginx would still need the issued certificate.')) return;
+    return provisionCert(n, email, true);
+  }
+  if (r.needsEmail) {
+    // Let's Encrypt wants an address for expiry notices. Ask once; the server keeps it.
+    var e = prompt((email ? r.error + '\\n\\n' : '') + "Email address for Let's Encrypt expiry notices:", email || '');
+    if (!e) return;
+    return provisionCert(n, e.trim(), force);
+  }
+  alert(r.success ? 'Done!' : r.error || 'Failed');
+  loadDomains();
+}
 async function updateDomainCache(domain, field, value) {
   var payload = { domain: domain };
   payload[field] = value;

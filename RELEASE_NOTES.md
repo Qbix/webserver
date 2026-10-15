@@ -1,3 +1,19 @@
+# Qbix Server 2.3.1
+
+Fixes the macOS release job: `tests/stream-wrappers.sh` required a system `php` even when it was given a binary to test, and the macOS runner has none. It now asks for `php` only when running from sources.
+
+The per-host auto-cache and the component cache are complete again. The control panel and `WebServer.php` already called `Q_WebServer_Cache::configureHost`, `Q_WebServer_Cache_Components::getPage` and the rest, but `Cache.php` and `Cache/Components.php` did not define them.
+
+Two responses were sent with `Content-Type: Array`: the ACME challenge answer and the "setting up your domain" splash page. The headers array had been passed where `sendResponse()` expects the content-type string. A browser given that shows the page source instead of rendering it.
+
+Requesting a certificate in the control panel with no ACME email saved now asks for the address, keeps it, and carries on, instead of telling you to edit `Q.webserver.tls.acmeEmail`. Behind nginx or Apache it says the proxy holds the certificate.
+
+A new setting, `Q.webserver.unknownHosts`, decides what a domain name with no entry in `hosts` or `domains` gets. The default, `"root"`, keeps today's behavior: the default root answers. Set it to `"welcome"` and such a domain gets the welcome page pointing at the control panel instead, so one app's site is never shown under a domain that was not set up for it. localhost and IP addresses always get the default root, and the server's own `/Q/` routes are never hidden.
+
+The event loop no longer sleeps past a repeating timer that a callback has just rescheduled, or past a timer that a callback added. Scheduled tasks marked `disabled` are skipped. Certificate renewal skips the `.pending` directory and loads the renewed certificate for new connections straight away.
+
+---
+
 # Qbix Server 2.3 — Strange New Worlds
 
 The autohost log, the watchdog log and any file you list under `Q/webserver/logs/files` are now rotated, compressed and deleted on a schedule instead of growing for ever, with the same policy as `access.log` and `error.log`. New control panel routes `logs/managed` and `logs/rotate` show and run it. See [docs/logs.md](docs/logs.md).

@@ -138,10 +138,16 @@ class Q_Evented_StreamSelect extends Q_Evented_Driver
 				} else {
 					unset($this->timers[$id]);
 				}
-			} else {
-				$rem = $t['fireAt'] - $now;
-				if ($nextTimer === null || $rem < $nextTimer) $nextTimer = $rem;
 			}
+		}
+		// How long until the next timer, counted after the callbacks ran: a repeating timer has just
+		// been set for its next turn, and a callback may have added a timer. Counting before would
+		// sleep past both until some other timer came due.
+		$now = microtime(true);
+		foreach ($this->timers as $id => $t) {
+			if (!empty($this->disabled[$id])) continue;
+			$rem = max(0, $t['fireAt'] - $now);
+			if ($nextTimer === null || $rem < $nextTimer) $nextTimer = $rem;
 		}
 
 		// 3. Signals

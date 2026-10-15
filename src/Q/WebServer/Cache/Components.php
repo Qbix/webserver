@@ -6,12 +6,17 @@
 /**
  * Merkle-tree invalidation layer for Q_WebServer_Cache.
  *
- * Does NOT store component HTML — only hashes and dependencies.
+ * Stores Merkle hashes, dependencies, AND individual slot HTML fragments.
  * The actual cached page lives in Q_WebServer_Cache (page-level).
- * This layer answers one question: "is this cached page still valid?"
+ * This layer answers two questions:
+ *   1. "Is this cached page still valid?" (Merkle tree invalidation)
+ *   2. "Which parts changed?" (tree diff + slot cache for partial re-rendering)
  *
  * Better than ESI/SSI because:
- *   - No component HTML in memory — just a tree of md5 hashes (~100 bytes/page)
+ *   - Full assembled page cached as one string (Q_WebServer_Cache)
+ *   - Only hashes (~100 bytes/page) for invalidation decisions
+ *   - Slot-level cache enables partial re-rendering (only re-render changed slots)
+ *   - Tree diff detects false invalidations (stream changed but output identical)
  *   - Stream-driven invalidation: change a stream → invalidate specific pages
  *   - Children communicate via response headers, not wire protocol
  *   - All in parent process memory — no edge proxy, no parsing
@@ -34,14 +39,24 @@
  *        - Remove the page from Q_WebServer_Cache
  *        - Mark the Merkle leaf as stale (optional: for partial re-render hints)
  *
- *   4. Next request for this page: cache miss → fork worker → full re-render
- *      → new tree + new page cached. The stale leaves tell the child which
- *      slots changed, enabling smart partial rendering if the app supports it.
+ *   4. Next request for this page: cache miss → fork worker with stale hints
+ *      + cached slot hashes. The worker knows which slots are stale and which
+ *      have cached HTML it can reuse. Only stale slots need re-rendering.
+ *
+ *   5. Worker returns new tree. Parent diffs new tree against old:
+ *        - Root matches → false invalidation! Skip Cache::put(), restore old entry.
+ *        - Root differs → cache the new page, store changed slot HTML in slot cache.
+ *      This makes most stream invalidations near-zero-cost when they don't
+ *      actually affect visible output.
  *
  * Config:
  *   "Q": { "web": { "cache": { "components": {
  *     "enabled": true,
- *     "maxTrees": 10000
+ *     "maxTrees": 10000,
+ *     "slots": {
+ *       "maxSize": 16777216,
+ *       "maxEntries": 5000
+ *     }
  *   }}}}
  *
  * @class Q_WebServer_Cache_Components
@@ -80,15 +95,39 @@ class Q_WebServer_Cache_Components
 	 */
 	protected static $staleLeaves = array();
 
+	/**
+	 * Slot-level cache: leafHash => slotHTML
+	 * Caches individual slot HTML by their content hash. When a page
+	 * is re-rendered, unchanged slots (same hash as before) can reuse
+	 * their cached HTML instead of re-rendering. This is what makes
+	 * the Merkle tree an incremental page assembler, not just an
+	 * invalidation index.
+	 *
+	 * Unlike the page cache which stores complete HTTP responses,
+	 * this stores just the HTML fragment for each slot — typically
+	 * a few KB each. Combined with the tree diff, this enables
+	 * partial page assembly: only re-render the stale slots, reuse
+	 * the rest from this cache.
+	 * @property $slotCache
+	 */
+	protected static $slotCache = array();
+	protected static $slotCacheSize = 0;
+
 	// ── Stats ───────────────────────────────────────────
 
 	protected static $invalidations = 0;
 	protected static $pagesInvalidated = 0;
+	protected static $falseInvalidations = 0;    // stream changed but page output identical
+	protected static $slotCacheHits = 0;
+	protected static $slotCacheMisses = 0;
+	protected static $partialRenders = 0;         // pages rebuilt from mix of cached + fresh slots
 
 	// ── Config ──────────────────────────────────────────
 
 	protected static $enabled = false;
 	protected static $maxTrees = 10000;
+	protected static $slotCacheMaxSize = 16777216; // 16MB for slot fragments
+	protected static $slotCacheMaxEntries = 5000;
 
 	/**
 	 * Initialize from config.
@@ -98,6 +137,9 @@ class Q_WebServer_Cache_Components
 		$config = Q_Config::get('Q', 'web', 'cache', 'components', array());
 		self::$enabled = (bool) Q::ifset($config, 'enabled', false);
 		self::$maxTrees = (int) Q::ifset($config, 'maxTrees', 10000);
+		$slots = Q::ifset($config, 'slots', array());
+		self::$slotCacheMaxSize = (int) Q::ifset($slots, 'maxSize', 16777216);
+		self::$slotCacheMaxEntries = (int) Q::ifset($slots, 'maxEntries', 5000);
 	}
 
 	static function enabled()
@@ -137,6 +179,22 @@ class Q_WebServer_Cache_Components
 		if ($treeHeader) {
 			$tree = json_decode($treeHeader, true);
 			if (is_array($tree)) {
+				// Check for false invalidation: if the new tree's root matches
+				// the old one, the page output is identical despite the stream
+				// change. This can save an expensive Cache::put().
+				$slotHtml = null;
+				$slotsHeader = self::extractHeader($headers, 'X-Q-Cache-Slots');
+				if ($slotsHeader) {
+					$slotHtml = json_decode($slotsHeader, true);
+				}
+				$rerenderResult = self::processRerender($pageKey, $tree, $slotHtml);
+
+				// Signal to caller: if identical, set a flag so Cache::put()
+				// can be skipped (the old cached response is still valid)
+				if ($rerenderResult['identical']) {
+					$headers['X-Q-Cache-Unchanged'] = '1';
+				}
+
 				self::registerTree($pageKey, $tree);
 			}
 		}
@@ -255,8 +313,10 @@ class Q_WebServer_Cache_Components
 			if (!isset($pagesHit[$pageKey])) {
 				$pagesHit[$pageKey] = true;
 
-				// Purge from page-level cache
-				Q_WebServer_Cache::purge($pageKey);
+				// Purge from page-level cache using URL pattern match.
+				// pageKey is "path?query" — purge all variants
+				// (different Vary combinations) for this URL.
+				Q_WebServer_Cache::purgeUrl($pageKey);
 				self::$pagesInvalidated++;
 			}
 
@@ -291,6 +351,50 @@ class Q_WebServer_Cache_Components
 	}
 
 	// ── Query ───────────────────────────────────────────
+
+	/**
+	 * Check if a cached page is still valid according to the Merkle tree.
+	 *
+	 * If the tree has been invalidated (any leaf marked stale), returns null
+	 * to signal a cache miss. If the tree is intact, delegates to the
+	 * page-level cache (Q_WebServer_Cache) to retrieve the full page.
+	 *
+	 * This is called from WebServer BEFORE worker dispatch. A hit here
+	 * means we can serve the cached page with zero fork overhead AND
+	 * with Merkle-validated freshness (not just TTL).
+	 *
+	 * @method getPage
+	 * @static
+	 * @param {string} $pageKey The page cache key (path?query)
+	 * @return {string|null} Cached page body, or null on miss/stale
+	 */
+	static function getPage($pageKey)
+	{
+		if (!self::$enabled) return null;
+
+		// If any leaf is stale, the page is invalid
+		if (!empty(self::$staleLeaves[$pageKey])) return null;
+
+		// If we have a tree and its root hash is null (invalidated), miss
+		if (isset(self::$trees[$pageKey]) && self::$trees[$pageKey]['hash'] === null) {
+			return null;
+		}
+
+		// Delegate to page-level cache — build a minimal parsed request
+		// to look up the entry. The pageKey is path?query.
+		$qpos = strpos($pageKey, '?');
+		$parsed = array(
+			'method'  => 'GET',
+			'path'    => $qpos !== false ? substr($pageKey, 0, $qpos) : $pageKey,
+			'query'   => $qpos !== false ? substr($pageKey, $qpos + 1) : '',
+			'headers' => array(),
+		);
+		$entry = Q_WebServer_Cache::get($parsed);
+		if ($entry) {
+			return $entry['body'] ?? null;
+		}
+		return null;
+	}
 
 	/**
 	 * Check if a page's Merkle root still matches what we have.
@@ -353,6 +457,225 @@ class Q_WebServer_Cache_Components
 	{
 		$stale = self::$staleLeaves[$pageKey] ?? array();
 		return !empty($stale) ? json_encode($stale) : null;
+	}
+
+	// ── Tree diff and slot caching ──────────────────────
+
+	/**
+	 * Compare a newly received tree against the old one for a page.
+	 * Returns a diff describing what changed.
+	 *
+	 * This is the key to using the Merkle tree for speed:
+	 *   - If rootHash matches → page output is identical (false invalidation)
+	 *   - If rootHash differs → compare leaf-by-leaf to find which slots changed
+	 *   - Unchanged slots can reuse cached HTML from the slot cache
+	 *
+	 * @method diffTree
+	 * @static
+	 * @param {string} $pageKey
+	 * @param {array} $newTree Decoded X-Q-Cache-Tree from the worker
+	 * @return {array} {
+	 *   'identical' => bool,        // true = page didn't actually change
+	 *   'changed'  => [leafPath],   // slots whose hash changed
+	 *   'added'    => [leafPath],   // new slots not in old tree
+	 *   'removed'  => [leafPath],   // old slots not in new tree
+	 *   'unchanged' => [leafPath],  // slots with same hash (reusable)
+	 * }
+	 */
+	static function diffTree($pageKey, $newTree)
+	{
+		$newLeaves = $newTree['l'] ?? array();
+		$newRoot = $newTree['h'] ?? self::computeRoot($newLeaves);
+
+		$result = array(
+			'identical' => false,
+			'changed'   => array(),
+			'added'     => array(),
+			'removed'   => array(),
+			'unchanged' => array(),
+		);
+
+		// No old tree — everything is new
+		if (!isset(self::$trees[$pageKey])) {
+			$result['added'] = array_keys($newLeaves);
+			return $result;
+		}
+
+		$oldTree = self::$trees[$pageKey];
+
+		// Root hash match → page output is identical despite invalidation
+		if ($oldTree['hash'] !== null && $oldTree['hash'] === $newRoot) {
+			$result['identical'] = true;
+			$result['unchanged'] = array_keys($newLeaves);
+			return $result;
+		}
+
+		$oldLeaves = $oldTree['leaves'] ?? array();
+
+		// Leaf-by-leaf comparison
+		foreach ($newLeaves as $path => $hash) {
+			if (!isset($oldLeaves[$path])) {
+				$result['added'][] = $path;
+			} elseif ($oldLeaves[$path] !== null && $oldLeaves[$path] === $hash) {
+				$result['unchanged'][] = $path;
+			} else {
+				$result['changed'][] = $path;
+			}
+		}
+
+		// Old leaves not in new tree
+		foreach ($oldLeaves as $path => $_) {
+			if (!isset($newLeaves[$path])) {
+				$result['removed'][] = $path;
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Process a re-render response using tree diff.
+	 *
+	 * Called after a worker re-renders a page. If the tree diff shows the
+	 * page is identical (false invalidation), returns true to signal that
+	 * Cache::put() can be skipped — the old cached response is still valid
+	 * and can be restored.
+	 *
+	 * Also registers slot HTML in the slot cache for unchanged-leaf reuse.
+	 *
+	 * @method processRerender
+	 * @static
+	 * @param {string} $pageKey
+	 * @param {array} $newTree Decoded X-Q-Cache-Tree
+	 * @param {array|null} $slotHtml Optional: leafPath => HTML from X-Q-Cache-Slots header
+	 * @return {array} { 'identical' => bool, 'diff' => diffResult }
+	 */
+	static function processRerender($pageKey, $newTree, $slotHtml = null)
+	{
+		$diff = self::diffTree($pageKey, $newTree);
+
+		if ($diff['identical']) {
+			// False invalidation — stream changed but page output is identical.
+			// Restore the tree as valid and clear stale markers.
+			self::$falseInvalidations++;
+			if (isset(self::$trees[$pageKey])) {
+				$newLeaves = $newTree['l'] ?? array();
+				self::$trees[$pageKey]['hash'] = $newTree['h']
+					?? self::computeRoot($newLeaves);
+				// Restore leaf hashes that were nulled during invalidation
+				foreach ($newLeaves as $path => $hash) {
+					self::$trees[$pageKey]['leaves'][$path] = $hash;
+				}
+			}
+			unset(self::$staleLeaves[$pageKey]);
+			return array('identical' => true, 'diff' => $diff);
+		}
+
+		// Cache individual slot HTML for future partial assembly
+		if (is_array($slotHtml)) {
+			$newLeaves = $newTree['l'] ?? array();
+			foreach ($slotHtml as $leafPath => $html) {
+				$hash = $newLeaves[$leafPath] ?? null;
+				if ($hash !== null) {
+					self::slotPut($hash, $html);
+				}
+			}
+		}
+
+		if (!empty($diff['unchanged'])) {
+			self::$partialRenders++;
+		}
+
+		return array('identical' => false, 'diff' => $diff);
+	}
+
+	/**
+	 * Get cached HTML for a slot by its leaf hash.
+	 * Returns null on miss.
+	 *
+	 * Workers can call this (via a request header or API) to skip
+	 * re-rendering a slot whose hash hasn't changed.
+	 *
+	 * @method slotGet
+	 * @static
+	 * @param {string} $hash The leaf hash (md5 of slot content)
+	 * @return {string|null}
+	 */
+	static function slotGet($hash)
+	{
+		if (isset(self::$slotCache[$hash])) {
+			self::$slotCacheHits++;
+			return self::$slotCache[$hash];
+		}
+		self::$slotCacheMisses++;
+		return null;
+	}
+
+	/**
+	 * Store slot HTML by its leaf hash.
+	 *
+	 * @method slotPut
+	 * @static
+	 * @param {string} $hash
+	 * @param {string} $html
+	 */
+	static function slotPut($hash, $html)
+	{
+		$len = strlen($html);
+
+		// Don't cache single slots larger than 1/4 of max
+		if ($len > self::$slotCacheMaxSize / 4) return;
+
+		// Evict if already present
+		if (isset(self::$slotCache[$hash])) {
+			self::$slotCacheSize -= strlen(self::$slotCache[$hash]);
+			unset(self::$slotCache[$hash]);
+		}
+
+		// Evict oldest until we have room
+		while ((self::$slotCacheSize + $len > self::$slotCacheMaxSize
+			|| count(self::$slotCache) >= self::$slotCacheMaxEntries)
+			&& self::$slotCache
+		) {
+			$evict = array_key_first(self::$slotCache);
+			self::$slotCacheSize -= strlen(self::$slotCache[$evict]);
+			unset(self::$slotCache[$evict]);
+		}
+
+		self::$slotCache[$hash] = $html;
+		self::$slotCacheSize += $len;
+	}
+
+	/**
+	 * Build a header telling the worker which slots have cached HTML.
+	 * The worker can skip rendering these slots and use the cached version.
+	 *
+	 * Format: JSON object { leafPath: cachedHash, ... } for each leaf
+	 * that has a cached slot AND whose hash matches what we have stored.
+	 *
+	 * @method buildCachedSlotsHeader
+	 * @static
+	 * @param {string} $pageKey
+	 * @return {string|null} JSON or null if no cached slots available
+	 */
+	static function buildCachedSlotsHeader($pageKey)
+	{
+		if (!isset(self::$trees[$pageKey])) return null;
+
+		$leaves = self::$trees[$pageKey]['leaves'] ?? array();
+		$stale = self::$staleLeaves[$pageKey] ?? array();
+		$cached = array();
+
+		foreach ($leaves as $path => $hash) {
+			// Skip stale leaves — those need re-rendering
+			if (in_array($path, $stale)) continue;
+			// Check if we have the slot HTML cached
+			if ($hash !== null && isset(self::$slotCache[$hash])) {
+				$cached[$path] = $hash;
+			}
+		}
+
+		return !empty($cached) ? json_encode($cached) : null;
 	}
 
 	// ── Cleanup ─────────────────────────────────────────
@@ -432,11 +755,19 @@ class Q_WebServer_Cache_Components
 	static function stats()
 	{
 		return array(
-			'trees'            => count(self::$trees),
-			'trackedStreams'    => count(self::$deps),
-			'invalidations'    => self::$invalidations,
-			'pagesInvalidated' => self::$pagesInvalidated,
-			'stalePagesNow'    => count(self::$staleLeaves),
+			'trees'              => count(self::$trees),
+			'trackedStreams'      => count(self::$deps),
+			'invalidations'      => self::$invalidations,
+			'pagesInvalidated'   => self::$pagesInvalidated,
+			'falseInvalidations' => self::$falseInvalidations,
+			'stalePagesNow'      => count(self::$staleLeaves),
+			'slotCache'          => array(
+				'entries' => count(self::$slotCache),
+				'bytes'   => self::$slotCacheSize,
+				'hits'    => self::$slotCacheHits,
+				'misses'  => self::$slotCacheMisses,
+			),
+			'partialRenders'     => self::$partialRenders,
 		);
 	}
 
@@ -450,12 +781,17 @@ class Q_WebServer_Cache_Components
 	{
 		if (!isset(self::$trees[$pageKey])) return null;
 		$tree = self::$trees[$pageKey];
+		$leaves = array();
+		foreach ($tree['leaves'] as $path => $h) {
+			$leaves[$path] = array(
+				'hash'   => $h ? substr($h, 0, 8) : 'STALE',
+				'cached' => ($h !== null && isset(self::$slotCache[$h])),
+			);
+		}
 		return array(
 			'rootHash' => $tree['hash'] ? substr($tree['hash'], 0, 8) : 'STALE',
 			'cachedAt' => date('H:i:s', $tree['time']),
-			'leaves'   => array_map(function ($h) {
-				return $h ? substr($h, 0, 8) : 'STALE';
-			}, $tree['leaves']),
+			'leaves'   => $leaves,
 			'stale'    => self::$staleLeaves[$pageKey] ?? array(),
 			'deps'     => self::$pageStreams[$pageKey] ?? array(),
 		);

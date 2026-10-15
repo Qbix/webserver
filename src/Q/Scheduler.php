@@ -68,6 +68,9 @@ class Q_Scheduler
 		$mday = (int) date('j');       // 1-31
 
 		foreach (self::$tasks as $name => $def) {
+			// Skip disabled tasks
+			if (!empty($def['disabled'])) continue;
+
 			// Interval-based: "every" seconds
 			if (isset($def['every'])) {
 				$last = self::$lastRun[$name] ?? 0;

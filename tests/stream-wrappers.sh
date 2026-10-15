@@ -46,12 +46,13 @@ trap 'rm -rf "$TMP"; pkill -f "qbixserver.*--port=$PORT" 2>/dev/null' EXIT
 ok()  { PASS=$((PASS+1)); printf "  ok   %s\n" "$1"; }
 bad() { FAIL=$((FAIL+1)); printf "  FAIL %s\n" "$1"; }
 
-command -v "$PHP" >/dev/null || { echo "no php"; exit 1; }
-
 QB="${QB:-$WS/bin/qbixserver}"
 if [ -x "$QB" ]; then
     RUN=("$QB"); VIA="binary: $QB"
 else
+    # php is only needed to run from sources. The binary carries its own, and
+    # the macOS runner images no longer ship one.
+    command -v "$PHP" >/dev/null || { echo "no php"; exit 1; }
     RUN=("$PHP" "$WS/qbixserver.php")
     VIA="sources — no phar to lose, this run proves little"
 fi

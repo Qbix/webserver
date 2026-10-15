@@ -1601,9 +1601,7 @@ class Q_WebServer
 			$token = substr($path, strlen('/.well-known/acme-challenge/'));
 			$response = Q_WebServer_Acme::getChallengeResponse($token);
 			if ($response !== null) {
-				return self::sendResponse($client, 200, $response, array(
-					'Content-Type' => 'text/plain'
-				));
+				return self::sendResponse($client, 200, $response, 'text/plain');
 			}
 		}
 
@@ -1630,8 +1628,7 @@ class Q_WebServer
 					$clientIp = explode(',', $clientIp)[0];
 					$result = Q_WebServer_Autohost::handleUnknownHost($host, trim($clientIp), $parsed);
 					if ($result && !empty($result['splash'])) {
-						return self::sendResponse($client, 503, $result['html'], array(
-							'Content-Type' => 'text/html; charset=utf-8',
+						return self::sendResponse($client, 503, $result['html'], 'text/html; charset=utf-8', array(
 							'Retry-After' => '5',
 						));
 					}
@@ -1645,6 +1642,17 @@ class Q_WebServer
 					}
 				}
 			}
+			// A domain name nothing claims gets the welcome page, when the server is set to do that
+			// (Q.webserver.unknownHosts = "welcome"). The default, "root", serves the default root
+			// for it, as it always has. localhost and IP addresses always get the default root,
+			// and the server's own /Q/ routes are never hidden.
+			$ownRoute = $path === '/Q' || strncmp($path, '/Q/', 3) === 0;
+			if (!$hostConfig && !$ownRoute && self::isDomainName($host)
+				&& Q_Config::get('Q', 'webserver', 'unknownHosts', 'root') === 'welcome') {
+				$panelPath = Q_Config::get('Q', 'webserver', 'panel', 'path', '/Q/panel');
+				return self::sendResponse($client, 200, self::welcomePageHtml($host, $panelPath), 'text/html; charset=utf-8');
+			}
+
 		}
 
 		$__tp['vhost'] = hrtime(true);
@@ -4331,6 +4339,74 @@ HTML;
 	static function phpinfoHtml($out)
 	{
 		return Q_WebServer_PhpInfo::render($out);
+	}
+
+	/**
+	 * Generate the welcome page HTML for an unknown/unconfigured domain.
+	 * Shown when a request arrives for a domain with no app configured.
+	 * @param string $host The domain name
+	 * @param string $panelPath The panel URL path
+	 * @return string HTML
+	 */
+	private static function welcomePageHtml($host, $panelPath)
+	{
+		$h = htmlspecialchars($host, ENT_QUOTES, 'UTF-8');
+		$p = htmlspecialchars($panelPath, ENT_QUOTES, 'UTF-8');
+		return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Welcome — Qbix Server</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#0d1117;color:#c9d1d9;display:flex;align-items:center;justify-content:center;
+min-height:100vh;padding:24px}
+.wrap{max-width:540px;text-align:center}
+.logo{width:64px;height:64px;margin:0 auto 24px;opacity:.8}
+h1{font-size:24px;font-weight:600;margin-bottom:8px;color:#e6edf3}
+.domain{color:#58a6ff;font-weight:500}
+p{color:#8b949e;line-height:1.6;margin-top:12px}
+.btn{display:inline-block;margin-top:24px;padding:10px 24px;
+background:#238636;color:#fff;border-radius:6px;text-decoration:none;
+font-weight:500;font-size:14px;transition:background .15s}
+.btn:hover{background:#2ea043}
+.footer{margin-top:40px;font-size:12px;color:#484f58}
+</style>
+</head>
+<body>
+<div class="wrap">
+<svg class="logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+<circle cx="50" cy="50" r="45" stroke="#58a6ff" stroke-width="3" opacity=".6"/>
+<text x="50" y="58" text-anchor="middle" fill="#58a6ff" font-size="28" font-weight="700" font-family="sans-serif">Q</text>
+</svg>
+<h1>Welcome to Qbix Server</h1>
+<p>The domain <span class="domain">{$h}</span> is hosted here but no app has been configured for it yet.</p>
+<p>Open the control panel to set up this domain.</p>
+<a class="btn" href="{$p}#domains">Open Control Panel</a>
+<div class="footer">Powered by Qbix Server</div>
+</div>
+</body>
+</html>
+HTML;
+	}
+
+	/**
+	 * Whether a Host header is a domain name (not localhost, not an IP address).
+	 * @method isDomainName
+	 * @static
+	 * @private
+	 * @param {string} $host
+	 * @return {boolean}
+	 */
+	private static function isDomainName($host)
+	{
+		$host = strtolower(trim((string) $host, '[]'));
+		if ($host === '' || $host === 'localhost' || substr($host, -10) === '.localhost') return false;
+		if (filter_var($host, FILTER_VALIDATE_IP)) return false;
+		return strpos($host, '.') !== false;
 	}
 
 	static function sendResponse($client, $status, $body, $type = 'text/plain; charset=utf-8', $extra = array())
