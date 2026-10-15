@@ -58,7 +58,7 @@ class Q_WebServer_Snapshot
 			self::$snapshot[$cls] = array();
 			self::$reflectors[$cls] = array();
 			foreach ($props as $prop) {
-				$prop->setAccessible(true);
+				if (PHP_VERSION_ID < 80100) $prop->setAccessible(true); // no-op since 8.1, deprecated in 8.5
 				try {
 					$val = $prop->getValue(null);
 					if (is_resource($val)) continue;
@@ -220,7 +220,7 @@ class Q_WebServer_Snapshot
 			self::$snapshot[$cls] = array();
 			self::$reflectors[$cls] = array();
 			foreach ($props as $prop) {
-				$prop->setAccessible(true);
+				if (PHP_VERSION_ID < 80100) $prop->setAccessible(true); // no-op since 8.1, deprecated in 8.5
 				try {
 					$val = $prop->hasDefaultValue()
 						? $prop->getDefaultValue()

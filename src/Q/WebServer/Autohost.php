@@ -455,17 +455,28 @@ class Q_WebServer_Autohost
 			if (!is_file($certPath)) continue;
 			if (!Q_WebServer_Acme::needsRenewal($certPath, $days)) continue;
 			self::log("Renewing cert for $d");
-			$result = Q_WebServer_Acme::provision([$d], $certDir, $email, $staging);
-			if (!empty($result['success'])) {
-				$renewed++;
-				self::log("Renewed: $d");
-				// Re-register in SNI map so new connections use the fresh cert
-				if (class_exists('Q_WebServer', false)) {
-					Q_WebServer::registerDomainCert($d, $result['cert'], $result['key']);
+			// Each renewal runs in its own worker process and is queued behind the others, so the
+			// server keeps answering requests while Let's Encrypt is asked. The result arrives later.
+			$name = $d;
+			// Keep every name the certificate already covers, not only the folder's name
+			$names = (array) Q_WebServer_Acme::certDomains($certPath);
+			$names = array_values(array_unique(array_merge([$d], $names)));
+			$r = Q_WebServer_Acme::provisionAsync($names, $certDir, $email, $staging,
+				function ($result) use ($name) {
+				if (!empty($result['success'])) {
+					self::log("Renewed: $name");
+					// Re-register in SNI map so new connections use the fresh cert
+					if (class_exists('Q_WebServer', false)) {
+						Q_WebServer::registerDomainCert($name, $result['cert'], $result['key']);
+					}
+				} else {
+					self::log("Renewal failed: $name — " . ($result['error'] ?? 'unknown'));
 				}
+			}, 'acme', array('queue' => true));
+			if (!empty($r['started']) || !empty($r['queued'])) {
+				$renewed++; // requested; the log line above says how it ended
 			} else {
-				$errors[] = $d . ': ' . ($result['error'] ?? 'unknown');
-				self::log("Renewal failed: $d — " . ($result['error'] ?? 'unknown'));
+				$errors[] = $d . ': ' . ($r['error'] ?? 'unknown');
 			}
 		}
 		return ['renewed' => $renewed, 'errors' => $errors];

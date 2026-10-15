@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '2.3.1');
+define('QBIX_SERVER_VERSION', '2.3.2');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── OPcache for CLI ─────────────────────────────────
@@ -83,6 +83,25 @@ $opts = array(
 	'debug'   => false,
 );
 
+// Options that take a value may be written "--port 8080" as well as "--port=8080".
+// (Flags such as --open, whose value is optional, keep the "=" form.)
+{
+	$__valueOpts = array('root', 'app', 'host', 'port', 'https-port', 'socket', 'socket-mode', 'workers',
+		'config', 'preset', 'pid', 'sign', 'verify', 'key', 'key-id', 'signer', 'generate-key', 'policy',
+		'deploy', 'output', 'pack', 'm');
+	$__argv = array();
+	for ($__i = 0; $__i < count($argv); $__i++) {
+		$__a = $argv[$__i];
+		if ($__i > 0 && preg_match('/^--([\w-]+)$/', $__a, $__m) && in_array($__m[1], $__valueOpts, true)
+			&& isset($argv[$__i + 1]) && ($argv[$__i + 1] === '' || $argv[$__i + 1][0] !== '-')) {
+			$__a .= '=' . $argv[++$__i];
+		}
+		$__argv[] = $__a;
+	}
+	$argv = $__argv;
+	unset($__valueOpts, $__argv, $__i, $__a, $__m);
+}
+
 foreach ($argv as $i => $arg) {
 	if ($i === 0) continue;
 	if ($arg === '--help' || $arg === '-h') {
@@ -93,7 +112,7 @@ foreach ($argv as $i => $arg) {
 		echo "  --root=DIR       Document root (default: ./web)\n";
 		echo "  --app=DIR        Qbix app directory (uses full Q framework)\n";
 		echo "  --host=IP        Bind address (default: 0.0.0.0)\n";
-		echo "  --port=PORT      HTTP port (default: 80)\n";
+		echo "  --port PORT      HTTP port (default: 80); --port=PORT works too\n";
 		echo "  --https-port=PORT HTTPS port (default: 443, if certs available)\n";
 		echo "  --socket=PATH    Unix domain socket (e.g. /run/qbix/app.sock)\n";
 		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
@@ -1078,7 +1097,6 @@ Q_WebServer::$onRequest = function ($method, $uri, $status, $ms) use ($colors, $
 
 // ── Start server ────────────────────────────────────
 
-$W = 38; // inner width of the box
 
 // Detect if HTTPS will be available (certs must actually exist)
 $httpsAvailable = false;
@@ -1155,6 +1173,32 @@ if ($opts['workers'] > 0) {
 		}
 		if (!$fdLimit) $fdLimit = (int) trim(shell_exec('ulimit -n 2>/dev/null') ?: '0');
 		if (!$procLimit) $procLimit = (int) trim(shell_exec('ulimit -u 2>/dev/null') ?: '0');
+	}
+
+	// The limit that actually binds is the process's own soft limit (macOS defaults to 256, far
+	// below the kern.maxfilesperproc ceiling read above), so read that and raise it toward the
+	// hard limit / system ceiling before deciding the workers don't fit.
+	if (function_exists('posix_getrlimit')) {
+		$rl = @posix_getrlimit();
+		$softFd = $rl['soft openfiles'] ?? null;
+		$hardFd = $rl['hard openfiles'] ?? null;
+		if ($softFd === 'unlimited' || $softFd === 'infinity') {
+			$fdLimit = PHP_INT_MAX;
+		} elseif (is_numeric($softFd) && (int) $softFd > 0) {
+			$fdLimit = (int) $softFd;
+			if ($neededFds > $fdLimit && function_exists('posix_setrlimit') && defined('POSIX_RLIMIT_NOFILE')) {
+				$ceiling = ($hardFd === 'unlimited' || $hardFd === 'infinity' || $hardFd === null) ? PHP_INT_MAX : (int) $hardFd;
+				if (PHP_OS_FAMILY === 'Darwin') {
+					$perProc = (int) trim(shell_exec('sysctl -n kern.maxfilesperproc 2>/dev/null') ?: '0');
+					if ($perProc > 0) $ceiling = min($ceiling, $perProc);
+				}
+				$target = min($ceiling, max($neededFds, 65536));
+				if ($target > $fdLimit && @posix_setrlimit(POSIX_RLIMIT_NOFILE, $target, $hardFd === null || !is_numeric($hardFd) ? $target : (int) $hardFd)) {
+					$rl = @posix_getrlimit();
+					if (is_numeric($rl['soft openfiles'] ?? null)) $fdLimit = (int) $rl['soft openfiles'];
+				}
+			}
+		}
 	}
 
 	// Try to raise fd limit if needed
@@ -1251,40 +1295,40 @@ if ($opts['workers'] > 0) {
 	}
 }
 
-fwrite(STDERR, "  ┌" . str_repeat('─', $W) . "┐\n");
-fwrite(STDERR, "  │" . str_pad("  Qbix Server v" . QBIX_SERVER_VERSION, $W) . "│\n");
-fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
+$boxRows = array();
+$boxRows[] = "  Qbix Server v" . QBIX_SERVER_VERSION;
+$boxRows[] = null;
 $httpLine = "  http://{$opts['host']}:{$opts['port']}";
-fwrite(STDERR, "  │" . str_pad($httpLine, $W) . "│\n");
+$boxRows[] = $httpLine;
 if ($socketPath) {
-	fwrite(STDERR, "  │" . str_pad("  unix:" . $socketPath, $W) . "│\n");
+	$boxRows[] = "  unix:" . $socketPath;
 }
 if ($httpsAvailable) {
 	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
-	fwrite(STDERR, "  │" . str_pad($httpsLine, $W) . "│\n");
+	$boxRows[] = $httpsLine;
 }
 $rootLabel = $servingFromPhar ? 'web (phar)' : ($servingFromZip ? 'web (appended zip)' : basename($webDir));
-fwrite(STDERR, "  │" . str_pad("  Root: " . $rootLabel, $W) . "│\n");
-fwrite(STDERR, "  │" . str_pad("  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone'), $W) . "│\n");
+$boxRows[] = "  Root: " . $rootLabel;
+$boxRows[] = "  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone');
 if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 	$preset = $opts['preset'] ?: 'custom';
-	fwrite(STDERR, "  │" . str_pad("  Compat: $preset (source transform active)", $W) . "│\n");
+	$boxRows[] = "  Compat: $preset (source transform active)";
 }
-fwrite(STDERR, "  │" . str_pad("  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process')
-	. ' (' . (class_exists('Q_WebServer_Fork') ? Q_WebServer_Fork::method() : 'detecting...') . ')', $W) . "│\n");
+$boxRows[] = "  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process')
+	. ' (' . (class_exists('Q_WebServer_Fork') ? Q_WebServer_Fork::method() : 'detecting...') . ')';
 $nClasses = count(get_declared_classes());
 $nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
 $preloadLabel = $nHandlers > 0
 	? "  Preloaded: {$nClasses} classes, {$nHandlers} handlers"
 	: "  Preloaded: {$nClasses} classes (handlers: lazy)";
-fwrite(STDERR, "  │" . str_pad($preloadLabel, $W) . "│\n");
-fwrite(STDERR, "  ├" . str_repeat('─', $W) . "┤\n");
+$boxRows[] = $preloadLabel;
+$boxRows[] = null;
 $evLoop = class_exists('Io\\Poll', false) ? 'epoll/kqueue (PHP 8.6 Io\\Poll)'
 	: (class_exists('Revolt\\EventLoop') ? 'Revolt' : 'stream_select');
-fwrite(STDERR, "  │" . str_pad("  Dashboard: /Q/dashboard", $W) . "│\n");
-fwrite(STDERR, "  │" . str_pad("  Health:    /Q/health", $W) . "│\n");
-fwrite(STDERR, "  │" . str_pad("  Docs:      /Q/docs", $W) . "│\n");
-fwrite(STDERR, "  │" . str_pad("  I/O:       $evLoop", $W) . "│\n");
+$boxRows[] = "  Dashboard: /Q/dashboard";
+$boxRows[] = "  Health:    /Q/health";
+$boxRows[] = "  Docs:      /Q/docs";
+$boxRows[] = "  I/O:       $evLoop";
 
 // ── Initialize mesh identity ──
 $meshId = '';
@@ -1294,11 +1338,23 @@ if (is_file($meshFile)) {
 	Q_WebServer_Mesh::init();
 	$meshId = Q_WebServer_Mesh::peerId();
 	$meshLabel = "  Mesh ID: " . substr($meshId, 0, 12) . "…";
-	fwrite(STDERR, "  │" . str_pad($meshLabel, $W) . "│\n");
+	$boxRows[] = $meshLabel;
 }
 
-fwrite(STDERR, "  │" . str_pad("  Ctrl+C to stop", $W) . "│\n");
-fwrite(STDERR, "  └" . str_repeat('─', $W) . "┘\n");
+$boxRows[] = "  Ctrl+C to stop";
+// Width is counted in characters, not bytes ("…" and the like), and the box grows to fit its widest row
+$__w = function ($t) { return function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : preg_match_all('/./us', $t); };
+$W = 38;
+foreach ($boxRows as $__r) { if ($__r !== null) $W = max($W, $__w($__r) + 2); }
+$__box = "  ┌" . str_repeat('─', $W) . "┐\n";
+foreach ($boxRows as $__r) {
+	$__box .= $__r === null
+		? "  ├" . str_repeat('─', $W) . "┤\n"
+		: "  │" . $__r . str_repeat(' ', $W - $__w($__r)) . "│\n";
+}
+$__box .= "  └" . str_repeat('─', $W) . "┘\n";
+fwrite(STDERR, $__box);
+unset($boxRows, $__box, $__r, $__w);
 fwrite(STDERR, "\n");
 
 // ── Open browser if requested ──
@@ -1362,6 +1418,13 @@ try {
 	$__qbix_role = $__qbix_r;
 } catch (Exception $e) {
 	fwrite(STDERR, "Failed to start: " . $e->getMessage() . "\n");
+	$__po = __DIR__ . '/src/Q/WebServer/PortOwner.php';
+	if (is_file($__po)) {
+		require_once $__po;
+		if (Q_WebServer_PortOwner::isInUse($e->getMessage(), $e->getCode())) {
+			fwrite(STDERR, Q_WebServer_PortOwner::report((int) $opts['port'], 'php ' . basename($argv[0])));
+		}
+	}
 	exit(1);
 }
 

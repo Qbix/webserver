@@ -133,6 +133,9 @@ class Q_Evented_StreamSelect extends Q_Evented_Driver
 			if (!empty($this->disabled[$id])) continue;
 			if ($now >= $t['fireAt']) {
 				$t['callback']();
+				// The callback may have cancelled its own timer (a repeating timer that stops itself).
+				// Writing fireAt back would then leave a half-made entry with no callback.
+				if (!isset($this->timers[$id])) continue;
 				if ($t['interval'] > 0) {
 					$this->timers[$id]['fireAt'] = $now + $t['interval'];
 				} else {

@@ -147,6 +147,8 @@ class Q_Evented_IoPoll extends Q_Evented_Driver
 		foreach ($this->timers as $id => $t) {
 			if ($now >= $t[0]) {
 				($t[2])();
+				// The callback may have cancelled its own timer; do not bring it back half-made
+				if (!isset($this->timers[$id])) continue;
 				if ($t[1] > 0) {
 					$this->timers[$id][0] = $now + $t[1];
 				} else {

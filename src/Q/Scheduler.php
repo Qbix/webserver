@@ -126,7 +126,7 @@ class Q_Scheduler
 				require_once $autohostFile;
 				$result = Q_WebServer_Autohost::renewAll(30);
 				if (!empty($result['renewed'])) {
-					fwrite(STDERR, date('H:i:s') . " cert-renewal: renewed " . $result['renewed'] . " cert(s)\n");
+					fwrite(STDERR, date('H:i:s') . " cert-renewal: asked for " . $result['renewed'] . " renewal(s)\n");
 				}
 			}
 			return;

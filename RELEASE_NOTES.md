@@ -1,3 +1,29 @@
+# Qbix Server 2.3.2
+
+Enabling an app in the control panel now ties it to the domain the panel was opened on. Before, Enable only changed the default root in memory, so the domain kept showing the welcome page and a restart forgot the choice. The app's web folder is now saved as that domain's root in `local/panel.json` and applied at once; Disable removes it again, and for a domain the panel created itself it removes the entry, so the domain returns to the welcome page.
+
+Certificate requests no longer stop the server. Startup provisioning and the 12-hour renewal run each request in its own worker process, at most two at a time with the rest queued, so a slow or refusing Let's Encrypt cannot freeze the event loop or ignore Ctrl-C. Names Let's Encrypt can never certify (`.test`, `.local`, IP addresses, single labels, wildcards on the HTTP-01 path) are rejected at once with the reason, and a failed order reports the real error instead of PHP warnings from `file_get_contents`. Renewal keeps every name a certificate already covers. Certificates issued through the control panel are renewed by the same schedule, because renewal scans the certificate folder.
+
+PHP 8.2 and later no longer report deprecations at startup: `Q_WebServer_Pool` declares `octane` and `maxRequests` instead of creating them dynamically, and `ReflectionProperty::setAccessible()` is called only on PHP before 8.1, where it has an effect (it is deprecated in 8.5).
+
+On macOS the worker count is checked against the process's own open-file limit, which defaults to 256, instead of the much higher `kern.maxfilesperproc`. The server raises the limit toward what the system allows and, if that is not enough, offers a smaller number of workers instead of failing with "Too many open files" after the banner.
+
+Command line: options that take a value now accept a space as well as an equals sign, so `--port 8080` works like `--port=8080` (before, the space form was ignored and the server tried port 80). The startup box now grows to fit its widest line and counts characters rather than bytes, so the right-hand border lines up. When the port is already taken, the error now names the process that holds it, with its PID, user, command line and the folder it was started from, and shows how to stop it or pick another port. This uses `lsof` or `ss` on macOS and Linux, and `netstat` and PowerShell on Windows; a process owned by another user may need `sudo`.
+
+A certificate request that failed with "Server is shutting down" is fixed. The worker process that answers a request inherited the parent's running event loop and then refused to start its own, so every certificate order failed at once and left the half-started loop behind. In the same area, a timer that cancelled itself from inside its own callback (the worker reaper did) corrupted the timer table in the `stream_select` and `poll` drivers and ended in a fatal "Function name must be a string"; both drivers now tolerate it.
+
+A domain with no app now shows `src/Q/welcome.php`, the default page, instead of a one-line placeholder. A domain that has an app or root but no `index.php` or `index.html` in it now gets a "No index file" page that names the folder, rather than being mistaken for the welcome page.
+
+Control panel logs: the log viewer reported "Log file not found" for files that were listed with their sizes, because it looked for them under the wrong folder. It now looks in the app's own folder and in the log folder, and still refuses anything outside them.
+
+A failed certificate request is now kept where the panel can show it. The Domains tab (and, in 3.2, a branch's TLS badge) shows "Failed [ See Error ]" instead of going back to "Provision" as if nothing had happened, and the link opens a dialog with the full error, a Copy button and Try again. The message is stored in the certificate folder, so it is still there when you come back later, and it is replaced by the next request. A domain served through nginx is now certified through certbot and nginx from the panel (it used to refuse with a note); if certbot or nginx is missing, cannot use sudo, or fails, that reason is what the dialog shows. A certificate problem never takes the server down: startup provisioning, renewal and the panel's own requests catch and record any failure, including an exception, and carry on.
+
+Domains and apps: each domain row has a dropdown of the apps in the apps folder in place of "Configure app" and "Enable". The domain's current app is first and marked; apps that serve other domains come next with those domains named, since one app can serve several. Choosing an app saves it as that domain's root at once, and "No app (welcome page)" removes it. An app's "Domains" button lists the domains it serves, each with a dropdown set to this app that can be changed to another, a field to add a domain, and a button to the Domains tab. "Configure" now says what it does: it runs the app's own configure script, which creates its `local/` folder, and has nothing to do with serving a domain. Apps with `public/`, `public_html/` or `htdocs/` instead of `web/` are listed too.
+
+Text areas in the panel grow to show their text, up to half the window height.
+
+---
+
 # Qbix Server 2.3.1
 
 Fixes the macOS release job: `tests/stream-wrappers.sh` required a system `php` even when it was given a binary to test, and the macOS runner has none. It now asks for `php` only when running from sources.
@@ -141,3 +167,19 @@ Everything from v1.5 is included: ECDSA M-of-N signing, Sigstore Rekor transpare
 - `tests/test_mesh_e2e.sh` (two real servers: identity, handshake, encrypted request) now passes 14/14, and runs in CI with the other mesh suites.
 
 New docs: [compatibility.md](docs/compatibility.md) (rewritten), [images.md](docs/images.md), [sync.md](docs/sync.md), [mobile.md](docs/mobile.md), [app-mode.md](docs/app-mode.md). The phar now bundles `docs/` so `/Q/docs` works from it.
+
+Domains set up in the control panel now survive a restart. The server read `local/panel.json` relative to the folder it was started from, while the panel saves to the app folder or data directory, so after a restart the domain fell back to the welcome page until it was removed and added again. The server now loads the panel's own file as well, and moves its `domains` into `Q.webserver.domains` the same way on startup, on the 3-second watcher and on reload (2.3 never merged panel domains at startup at all).
+
+The SPA fallback (`Q.webserver.fallback`) called a method that does not exist and failed the request; it now serves the file.
+
+The server no longer asks for certificates at startup for a domain marked as proxied, or for a domain the panel added while the server only speaks HTTP, because TLS is handled in front of it. "Provision" in the panel still works. When the panel request came through a CDN (Cloudflare, CloudFront, Fastly, Akamai, Sucuri, Imperva, Bunny, Azure Front Door, Vercel, Netlify, or any proxy that sends forwarding headers) the server says so and asks for confirmation first, explaining that the CDN ends HTTPS itself and that a Let's Encrypt check would land on the CDN.
+
+Domains: "Remove" is shown only for domains the panel itself manages, with a tooltip and confirmation that say it removes the panel's entry and nothing else (no certificate, DNS or files). The "Select another domain" dropdown for an app starts on a disabled placeholder, with the button disabled until a domain is chosen, and the row is left out when no other domain remains. An app's detail page now opens on a Domains tab in place of Actions and the separate Domains column; Configure and the editor buttons moved to the row above the tabs.
+
+Every panel button gets a tooltip that says what it does, and all panel text can be translated. The language is picked from the browser (or `?lang=es`, remembered) and a selector in the sidebar lists the catalogs found in `src/Q/WebServer/lang/<code>.json` and `local/lang/<code>.json` (the second overrides the first). A catalog maps English text to its translation, with `{name}` placeholders allowed. "Export strings for translation" in the selector downloads every string the page has shown so far as a starting catalog. A Spanish starter catalog is included; the rest of the strings stay in English until a catalog covers them.
+
+Binary Attestation no longer shows "FAILED" for a build that has no signatures; the status appears only once there is at least one signature, and without any the panel explains that the build is unsigned and what signing does. "Cron" is now called "Scheduled"
+
+The startup certificate skip now covers every domain in the panel's own config (Add, Enable and the app dropdown all write there), not only ones tagged as added by the panel, whenever the server is not serving HTTPS itself. A request that arrives with a CDN's own headers (Cloudflare's `cf-ray` and the like) is also remembered on the domain as `cdn`, in memory and in the panel config; startup then never requests a certificate for it, and the Domains tab shows "Behind Cloudflare" in place of "no cert" (3.2).
+
+Workers: Uptime showed "NaNm" because the panel passed the dashboard's formatted string ("2h 3m") to a function that expects seconds. It now passes seconds..

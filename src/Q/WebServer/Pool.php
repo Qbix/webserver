@@ -42,6 +42,8 @@ class Q_WebServer_Pool
 	protected $watchers = array();      // index => Q_Evented watcher id
 	protected $pending = array();       // queued [client, parsed, scriptPath]
 	protected $nextIndex = 0;
+	protected $octane = false;          // persistent workers (true) or fork-per-request (false)
+	protected $maxRequests = 1000;      // voluntary recycle after N requests (octane mode)
 	protected static $inputWrapperRegistered = false;
 
 	/**

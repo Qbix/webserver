@@ -11,6 +11,14 @@ class Q_WebServer_Acme
 
 	protected static $directory = null;
 	protected static $nonce = null;
+	private static $busy = false;
+	private static $challengeDir = null;
+	private static $inChild = false;
+	private static $children = [];
+	private static $queue = [];
+	private static $reaper = null;
+	private static $maxChildren = 2;
+	private static $loopWasRunning = false;
 
 	// Pending HTTP-01 challenges: token => thumbprint authorization
 	protected static $pendingChallenges = [];
@@ -21,7 +29,17 @@ class Q_WebServer_Acme
 	 */
 	static function getChallengeResponse($token)
 	{
-		return self::$pendingChallenges[$token] ?? null;
+		if (isset(self::$pendingChallenges[$token])) return self::$pendingChallenges[$token];
+		// A request running in a child process leaves its answers in files, because the
+		// process that serves the challenge is not the one that asked for it.
+		if (self::$challengeDir && preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) $token)) {
+			$f = self::$challengeDir . '/' . $token;
+			if (is_file($f)) {
+				$v = @file_get_contents($f);
+				if ($v !== false && $v !== '') return $v;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -33,6 +51,312 @@ class Q_WebServer_Acme
 	 * @return array{success: bool, error?: string, cert?: string, key?: string}
 	 */
 	static function provision(array $domains, $certDir, $email, $staging = false)
+	{
+		// One request at a time. Waiting for Let's Encrypt keeps the server's event loop turning
+		// (see pump()), and a timer that fires meanwhile must not start a second request.
+		if (self::$busy) {
+			return ['success' => false, 'error' => 'Another certificate request is in progress'];
+		}
+		foreach ($domains as $d) {
+			$why = self::publicNameError($d);
+			if ($why) return ['success' => false, 'permanent' => true, 'error' => $why];
+		}
+		self::$busy = true;
+		self::noteLoop();
+		try {
+			return self::doProvision($domains, $certDir, $email, $staging);
+		} finally {
+			self::$busy = false;
+		}
+	}
+
+	/**
+	 * Request a certificate in a child process, so the server keeps serving at full speed while
+	 * Let's Encrypt is asked and answered, and Ctrl-C stays instant. $onDone($result) is called in
+	 * the server process when the child has finished, with the same array provision() returns.
+	 * Where fork is not available it asks in this process and calls $onDone straight away.
+	 * @param string[] $domains
+	 * @param string $certDir
+	 * @param string $email
+	 * @param boolean $staging
+	 * @param callable|null $onDone
+	 * @return array {started: boolean, error?: string}
+	 */
+	static function provisionAsync(array $domains, $certDir, $email, $staging = false, $onDone = null, $method = 'acme', array $options = array())
+	{
+		$primary = $domains[0];
+		// 'certbot': nginx or Apache answers on 80 and 443, so certbot asks and the web server is told
+		// (see Q_WebServer_Certbot). Say at once if that cannot work here.
+		if ($method === 'certbot') {
+			$cb = Q_WebServer_Certbot::available();
+			if (!$cb['ok']) {
+				$r = self::recordResult($certDir, $primary, ['success' => false, 'error' => 'Cannot use certbot: ' . $cb['why'], 'via' => 'certbot']);
+				if ($onDone) $onDone($r);
+				return ['started' => false, 'error' => $r['error']];
+			}
+		}
+		foreach ($domains as $d) {
+			$why = self::publicNameError($d);
+			if ($why) {
+				$r = self::recordResult($certDir, $primary, ['success' => false, 'permanent' => true, 'error' => $why]);
+				if ($onDone) $onDone($r);
+				return ['started' => false, 'error' => $why];
+			}
+		}
+		if (self::isPending($primary)) return ['started' => false, 'error' => "A certificate for $primary is already being requested"];
+		if (count(self::$children) >= self::$maxChildren) {
+			// Startup and renewal pass 'queue' => true: the request waits its turn instead of failing
+			if (!empty($options['queue']) && class_exists('Q_Evented')) {
+				foreach (self::$queue as $q) {
+					if ($q[0][0] === $primary) return ['started' => false, 'queued' => true];
+				}
+				self::$queue[] = [$domains, $certDir, $email, $staging, $onDone, $method, $options];
+				if (self::$reaper === null) {
+					self::$reaper = Q_Evented::repeat(1.0, function () { Q_WebServer_Acme::reap(); });
+				}
+				return ['started' => false, 'queued' => true];
+			}
+			return ['started' => false, 'error' => 'Too many certificate requests at once; try again shortly'];
+		}
+
+		$certDir = rtrim($certDir, '/');
+		if (!class_exists('Q_WebServer_Fork', false)) {
+			$f = __DIR__ . '/Fork.php';
+			if (is_file($f)) require_once $f;
+		}
+		if (!class_exists('Q_WebServer_Fork', false) || !Q_WebServer_Fork::available()) {
+			try {
+				$r = ($method === 'certbot') ? Q_WebServer_Certbot::provision($primary, $email, $options)
+					: self::provision($domains, $certDir, $email, $staging);
+			} catch (Throwable $e) {
+				$r = ['success' => false, 'error' => $e->getMessage()];
+			}
+			$r = self::recordResult($certDir, $primary, $r);
+			if ($onDone) { try { $onDone($r); } catch (Throwable $e) { error_log('[ACME] ' . $e->getMessage()); } }
+			return ['started' => true];
+		}
+
+		self::$challengeDir = $certDir . '/.challenges';
+		@mkdir(self::$challengeDir, 0700, true);
+		@mkdir($certDir . '/.results', 0700, true);
+		$resultFile = $certDir . '/.results/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $primary) . '.json';
+		@unlink($resultFile);
+		// Answers left behind by a child that was killed
+		foreach ((array) @scandir(self::$challengeDir) as $old) {
+			$p = self::$challengeDir . '/' . $old;
+			if ($old[0] !== '.' && is_file($p) && filemtime($p) < time() - 3600) @unlink($p);
+		}
+
+		$pid = Q_WebServer_Fork::fork();
+		if ($pid === 0) {
+			// ── child: a plain process with the server's code and nothing of its loop ──
+			self::$inChild = true;
+			self::$busy = false;
+			self::$loopWasRunning = false;
+			if (function_exists('pcntl_signal')) {
+				foreach ([SIGINT, SIGTERM, SIGHUP] as $sig) @pcntl_signal($sig, SIG_DFL);
+			}
+			try {
+				$r = ($method === 'certbot')
+					? Q_WebServer_Certbot::provision($primary, $email, $options)
+					: self::provision($domains, $certDir, $email, $staging);
+			} catch (Throwable $e) {
+				$r = ['success' => false, 'error' => $e->getMessage()];
+			}
+			$r['at'] = gmdate('Y-m-d\TH:i:s\Z');
+			@file_put_contents($resultFile, json_encode($r));
+			// Leave without running the server's shutdown handlers: they belong to the parent.
+			if (function_exists('posix_kill') && function_exists('posix_getpid')) {
+				@posix_kill(posix_getpid(), SIGKILL);
+			}
+			exit(0);
+		}
+		if (!$pid || $pid < 0) {
+			try {
+				$r = ($method === 'certbot') ? Q_WebServer_Certbot::provision($primary, $email, $options)
+					: self::provision($domains, $certDir, $email, $staging);
+			} catch (Throwable $e) {
+				$r = ['success' => false, 'error' => $e->getMessage()];
+			}
+			$r = self::recordResult($certDir, $primary, $r);
+			if ($onDone) { try { $onDone($r); } catch (Throwable $e) { error_log('[ACME] ' . $e->getMessage()); } }
+			return ['started' => true];
+		}
+		self::$children[$pid] = [
+			'domains' => $domains, 'primary' => $primary, 'started' => time(),
+			'resultFile' => $resultFile, 'onDone' => $onDone,
+		];
+		if (self::$reaper === null && class_exists('Q_Evented')) {
+			self::$reaper = Q_Evented::repeat(1.0, function () { Q_WebServer_Acme::reap(); });
+		}
+		return ['started' => true];
+	}
+
+	/** @return boolean whether a child is asking for a certificate for this name */
+	static function isPending($primary)
+	{
+		foreach (self::$children as $c) {
+			if ($c['primary'] === $primary) return true;
+		}
+		return false;
+	}
+
+	/** @return integer how many child requests are running */
+	static function activeCount()
+	{
+		return count(self::$children);
+	}
+
+	/**
+	 * Collect finished children and hand their results to the callbacks. Called every second
+	 * while any child is running.
+	 */
+	static function reap()
+	{
+		foreach (self::$children as $pid => $c) {
+			$done = function_exists('pcntl_waitpid') ? pcntl_waitpid($pid, $status, WNOHANG) : $pid;
+			if ($done === 0) {
+				if (time() - $c['started'] > 300) {
+					@posix_kill($pid, SIGKILL);
+				}
+				continue;
+			}
+			unset(self::$children[$pid]);
+			$r = is_file($c['resultFile']) ? json_decode((string) file_get_contents($c['resultFile']), true) : null;
+			if (!is_array($r)) {
+				$r = ['success' => false, 'error' => 'The certificate request stopped before it finished (the server may have been restarted, or the worker was killed after 5 minutes)', 'at' => gmdate('Y-m-d\TH:i:s\Z')];
+				@file_put_contents($c['resultFile'], json_encode($r));
+			}
+			if (!empty($c['onDone'])) {
+				try { ($c['onDone'])($r); } catch (Throwable $e) { error_log('[ACME] ' . $e->getMessage()); }
+			}
+		}
+		while (self::$queue && count(self::$children) < self::$maxChildren) {
+			$q = array_shift(self::$queue);
+			self::provisionAsync($q[0], $q[1], $q[2], $q[3], $q[4], $q[5], $q[6]);
+		}
+		if (!self::$children && !self::$queue && self::$reaper !== null) {
+			Q_Evented::cancel(self::$reaper);
+			self::$reaper = null;
+		}
+	}
+
+	/**
+	 * Where a request for this name stands: pending, or the result the last one left.
+	 * @return array {pending: boolean} or the provision() result
+	 */
+	static function status($certDir, $primary)
+	{
+		if (self::isPending($primary)) return ['pending' => true];
+		$f = rtrim($certDir, '/') . '/.results/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $primary) . '.json';
+		$r = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
+		return is_array($r) ? $r : ['pending' => false, 'unknown' => true];
+	}
+
+	/**
+	 * Keep how a request ended where the panel can find it later, so a failure is still there when the
+	 * person comes back. The file is replaced by the next request for the same name.
+	 */
+	static function recordResult($certDir, $primary, array $r)
+	{
+		$dir = rtrim($certDir, '/') . '/.results';
+		@mkdir($dir, 0700, true);
+		if (!isset($r['at'])) $r['at'] = gmdate('Y-m-d\TH:i:s\Z');
+		@file_put_contents($dir . '/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $primary) . '.json', json_encode($r));
+		return $r;
+	}
+
+	/** Forget the last result (a new request is about to be made). */
+	static function clearResult($certDir, $primary)
+	{
+		@unlink(rtrim($certDir, '/') . '/.results/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $primary) . '.json');
+	}
+
+	/**
+	 * @return array|null {error, at, ...} if the last request for this name failed and none is running, else null
+	 */
+	static function lastFailure($certDir, $primary)
+	{
+		if (self::isPending($primary)) return null;
+		$f = rtrim($certDir, '/') . '/.results/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $primary) . '.json';
+		$r = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
+		if (!is_array($r) || !empty($r['success'])) return null;
+		if (empty($r['error'])) $r['error'] = 'The request failed without saying why';
+		return $r;
+	}
+
+	/** @return boolean whether a certificate request is running right now */
+	static function busy()
+	{
+		return self::$busy;
+	}
+
+	/**
+	 * Let's Encrypt can only issue for names that resolve on the public internet. Say so before
+	 * contacting it, instead of failing half way through with a confusing error.
+	 * @return string|null the reason, or null if the name could be public
+	 */
+	static function publicNameError($name)
+	{
+		$n = strtolower(trim((string) $name));
+		if ($n === '' || strpos($n, '*') !== false) {
+			return "'$name' is not a single host name; a wildcard needs a DNS-01 challenge, which this server does not do";
+		}
+		if (filter_var($n, FILTER_VALIDATE_IP)) {
+			return "$name is an IP address; Let's Encrypt issues for domain names";
+		}
+		$labels = explode('.', $n);
+		$tld = end($labels);
+		if (count($labels) < 2
+			|| in_array($tld, ['test', 'local', 'localhost', 'invalid', 'example', 'internal', 'lan', 'home', 'corp', 'intranet', 'localdomain'], true)
+			|| !preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/', $n)
+		) {
+			return "$name is not a public domain name (." . $tld . " names do not exist on the internet), so Let's Encrypt cannot issue a certificate for it";
+		}
+		return null;
+	}
+
+	/**
+	 * Remember whether this process is the server with its loop running, for pump(). In a request's own
+	 * worker process the loop it inherited is not ours to run or to wait on, so there it is not.
+	 */
+	private static function noteLoop()
+	{
+		self::$loopWasRunning = !self::$inChild && class_exists('Q_Evented', false) && Q_Evented::running();
+	}
+
+	/**
+	 * Wait, but keep serving. The challenge answer is served by this same process, so a plain
+	 * sleep() would make every HTTP-01 check fail, and would make Ctrl-C and SIGTERM wait until the
+	 * request is over. Runs the event loop in short steps instead, and gives up if the server is told
+	 * to stop.
+	 * @throws Exception when the server is shutting down
+	 */
+	private static function pump($seconds)
+	{
+		$end = microtime(true) + $seconds;
+		do {
+			if (self::$inChild) {
+				usleep(250000);
+			} elseif (class_exists('Q_Evented', false) && Q_Evented::running()) {
+				Q_Evented::tick(0.25);
+			} else {
+				if (self::$loopWasRunning) throw new Exception('Server is shutting down');
+				usleep(250000);
+				if (function_exists('pcntl_signal_dispatch')) pcntl_signal_dispatch();
+			}
+		} while (microtime(true) < $end);
+	}
+
+	/** Turn an ACME error document into an exception with the CA's own words. */
+	private static function failIfError($body, $what)
+	{
+		if (is_array($body) && isset($body['type']) && strpos((string) $body['type'], 'urn:ietf:params:acme:error') === 0) {
+			throw new Exception($what . ': ' . ($body['detail'] ?? $body['type']));
+		}
+	}
+
+	private static function doProvision(array $domains, $certDir, $email, $staging = false)
 	{
 		$primaryDomain = $domains[0];
 		$domainDir = rtrim($certDir, '/') . '/' . $primaryDomain;
@@ -48,13 +372,18 @@ class Q_WebServer_Acme
 			// 2. Fetch ACME directory
 			$directoryUrl = $staging ? self::LE_STAGING : self::LE_DIRECTORY;
 			self::$directory = self::httpGet($directoryUrl);
+			if (empty(self::$directory['newNonce']) || empty(self::$directory['newOrder'])) {
+				throw new Exception("Could not read the ACME directory at $directoryUrl; is this machine online?");
+			}
 
 			// 3. Get initial nonce
 			self::$nonce = self::httpHead(self::$directory['newNonce']);
 
 			// 4. Create or find account
 			$account = self::createAccount($accountKey, $email);
+			self::failIfError($account['body'] ?? null, 'ACME account');
 			$accountUrl = $account['url'];
+			if (!$accountUrl) throw new Exception('The ACME server did not create an account');
 
 			// 5. Create order
 			$identifiers = array_map(function ($d) {
@@ -65,6 +394,11 @@ class Q_WebServer_Acme
 				['identifiers' => $identifiers],
 				$accountKey, $accountUrl
 			);
+
+			self::failIfError($order['body'] ?? null, 'Certificate order for ' . implode(', ', $domains));
+			if (empty($order['body']['authorizations']) || empty($order['body']['finalize'])) {
+				throw new Exception('The ACME server gave no authorizations for ' . implode(', ', $domains));
+			}
 
 			// 6. Process authorizations (HTTP-01 challenges)
 			foreach ($order['body']['authorizations'] as $authUrl) {
@@ -89,6 +423,9 @@ class Q_WebServer_Acme
 
 				// Register the challenge so our router can serve it
 				self::$pendingChallenges[$challenge['token']] = $keyAuth;
+				if (self::$inChild && self::$challengeDir) {
+					file_put_contents(self::$challengeDir . '/' . $challenge['token'], $keyAuth);
+				}
 
 				// Tell ACME we're ready
 				self::signedRequest(
@@ -101,16 +438,18 @@ class Q_WebServer_Acme
 				$maxWait = 60;
 				$start = time();
 				while (time() - $start < $maxWait) {
-					sleep(2);
+					self::pump(2);
 					$status = self::httpGet($challenge['url']);
 					if ($status['status'] === 'valid') break;
 					if ($status['status'] === 'invalid') {
 						unset(self::$pendingChallenges[$challenge['token']]);
+						if (self::$inChild && self::$challengeDir) @unlink(self::$challengeDir . '/' . $challenge['token']);
 						$err = $status['error']['detail'] ?? 'Challenge failed';
 						return ['success' => false, 'error' => "Challenge failed for {$domain}: {$err}"];
 					}
 				}
 				unset(self::$pendingChallenges[$challenge['token']]);
+				if (self::$inChild && self::$challengeDir) @unlink(self::$challengeDir . '/' . $challenge['token']);
 			}
 
 			// 7. Generate domain key + CSR
@@ -123,15 +462,17 @@ class Q_WebServer_Acme
 				['csr' => self::base64url($csr)],
 				$accountKey, $accountUrl
 			);
+			self::failIfError($finalize['body'] ?? null, 'Finalizing the order');
 
 			// 9. Poll order until certificate is ready
-			$orderUrl = $order['headers']['location'] ?? $order['body']['url'] ?? '';
+			$orderUrl = $order['headers']['location'] ?? $order['body']['url'] ?? $finalize['body']['url'] ?? '';
+			if ($orderUrl === '') throw new Exception('The ACME server did not say where to find the order');
 			$maxWait = 60;
 			$start = time();
 			$certUrl = null;
 			while (time() - $start < $maxWait) {
-				sleep(2);
-				$check = self::httpGet($orderUrl ?: $finalize['body']['url'] ?? '');
+				self::pump(2);
+				$check = self::httpGet($orderUrl);
 				if (isset($check['certificate'])) {
 					$certUrl = $check['certificate'];
 					break;
@@ -308,7 +649,7 @@ class Q_WebServer_Acme
 			'ignore_errors' => true,
 		]]);
 
-		$resp = file_get_contents($url, false, $ctx);
+		$resp = @file_get_contents($url, false, $ctx);
 		$headers = self::parseResponseHeaders($http_response_header ?? []);
 
 		if (isset($headers['replay-nonce'])) {
@@ -320,7 +661,7 @@ class Q_WebServer_Acme
 
 	private static function httpGet($url)
 	{
-		$resp = file_get_contents($url, false, stream_context_create([
+		$resp = @file_get_contents($url, false, stream_context_create([
 			'http' => ['ignore_errors' => true]
 		]));
 		if (isset($http_response_header)) {
@@ -332,7 +673,7 @@ class Q_WebServer_Acme
 
 	private static function httpGetRaw($url)
 	{
-		return file_get_contents($url, false, stream_context_create([
+		return @file_get_contents($url, false, stream_context_create([
 			'http' => ['ignore_errors' => true]
 		]));
 	}

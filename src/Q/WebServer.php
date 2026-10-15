@@ -217,12 +217,13 @@ class Q_WebServer
 		$socketPath = Q_Config::get('Q', 'webserver', 'socket', null);
 
 		// TCP listener — always bind unless port is explicitly 0
-		self::$socket = stream_socket_server(
+		// @: the failure is reported below, with who holds the port (the raw PHP warning only repeats it)
+		self::$socket = @stream_socket_server(
 			"tcp://{$host}:{$port}", $errno, $errstr,
 			STREAM_SERVER_BIND | STREAM_SERVER_LISTEN
 		);
 		if (!self::$socket) {
-			throw new Exception("Could not bind to {$host}:{$port} — $errstr");
+			throw new Exception("Could not bind to {$host}:{$port} — $errstr", (int) $errno);
 		}
 		stream_set_blocking(self::$socket, false);
 		self::$acceptWatcher = Q_Evented::onReadable(
@@ -297,10 +298,25 @@ class Q_WebServer
 		$acmeEmail = Q_Config::get('Q', 'webserver', 'tls', 'acmeEmail', '');
 		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
 		$acmeStaging = (bool) Q_Config::get('Q', 'webserver', 'tls', 'acmeStaging', false);
+		// Domains added through the panel, whichever way (Add, Enable, the app dropdown)
+		$panelDomainNames = array();
+		try {
+			$pcf = Q_WebServer_Panel::panelConfigPath();
+			if (is_file($pcf)) {
+				$pj = json_decode((string) file_get_contents($pcf), true);
+				if (is_array($pj) && !empty($pj['domains']) && is_array($pj['domains'])) $panelDomainNames = $pj['domains'];
+			}
+		} catch (Throwable $e) {
+		}
 		if (!empty($domains) && $acmeEmail) {
 			foreach ($domains as $domainName => $domainConf) {
 				$tlsMode = $domainConf['tls'] ?? null;
 				if ($tlsMode !== 'auto') continue;
+				// Behind nginx/Apache/a CDN, or a domain the panel added while this server
+				// only speaks HTTP: TLS is handled in front, so nothing is requested at
+				// startup. "Provision" in the panel still lets the user ask for one.
+				if (!empty($domainConf['proxied']) || !empty($domainConf['cdn'])) continue;
+				if (!$explicitHttps && isset($panelDomainNames[$domainName])) continue;
 
 				$certPath = rtrim($certDir, '/') . '/' . $domainName . '/fullchain.pem';
 				if (!Q_WebServer_Acme::needsRenewal($certPath)) continue;
@@ -310,25 +326,44 @@ class Q_WebServer
 
 				$alts = $domainConf['aliases'] ?? [];
 				$allDomains = array_merge([$domainName], $alts);
-				$result = Q_WebServer_Acme::provision($allDomains, $certDir, $acmeEmail, $acmeStaging);
-
-				if ($result['success']) {
-					fwrite(STDERR, "  [ACME] ✓ Certificate ready for {$domainName}\n");
-					// Register for SNI-based cert selection
-					if (is_file($result['cert']) && is_file($result['key'])) {
-						self::registerDomainCert($domainName, $result['cert'], $result['key']);
-						foreach ($alts as $alt) {
-							self::registerDomainCert($alt, $result['cert'], $result['key']);
+				// In a forked worker, so a slow or failing Let's Encrypt never holds up the
+				// server starting; the result arrives in the callback below.
+				$startHost = $host;
+				$startHttpsPort = $httpsPort;
+				// A certificate that cannot be had must never stop the server: whatever goes wrong
+				// here, even a thrown exception, is logged and recorded for the panel, and that is all.
+				try {
+				Q_WebServer_Acme::provisionAsync($allDomains, $certDir, $acmeEmail, $acmeStaging,
+					function ($result) use ($domainName, $alts, $startHost, $startHttpsPort) {
+					try {
+					if (!empty($result['success'])) {
+						fwrite(STDERR, "  [ACME] ✓ Certificate ready for {$domainName}\n");
+						// Register for SNI-based cert selection
+						if (is_file($result['cert']) && is_file($result['key'])) {
+							self::registerDomainCert($domainName, $result['cert'], $result['key']);
+							foreach ($alts as $alt) {
+								self::registerDomainCert($alt, $result['cert'], $result['key']);
+							}
 						}
+						// If HTTPS wasn't started yet, start it now
+						if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
+							Q_WebServer_Certs::init($domainName);
+							self::$httpsPort = $startHttpsPort ?: 443;
+							self::startTls($startHost, self::$httpsPort);
+						}
+					} else {
+						fwrite(STDERR, "  [ACME] ✗ Failed for {$domainName}: " . ($result['error'] ?? 'unknown') . "\n");
 					}
-					// If HTTPS wasn't started yet, start it now
-					if (!self::$tlsSocket && is_file($result['cert']) && is_file($result['key'])) {
-						Q_WebServer_Certs::init($domainName);
-						self::$httpsPort = $httpsPort ?: 443;
-						self::startTls($host, self::$httpsPort);
+					} catch (Throwable $e) {
+						fwrite(STDERR, "  [ACME] ✗ {$domainName}: " . $e->getMessage() . "\n");
 					}
-				} else {
-					fwrite(STDERR, "  [ACME] ✗ Failed for {$domainName}: {$result['error']}\n");
+				}, 'acme', array('queue' => true));
+				} catch (Throwable $e) {
+					fwrite(STDERR, "  [ACME] ✗ Could not request a certificate for {$domainName}: " . $e->getMessage() . "\n");
+					try {
+						Q_WebServer_Acme::recordResult($certDir, $domainName, array('success' => false, 'error' => $e->getMessage()));
+					} catch (Throwable $e2) {
+					}
 				}
 			}
 		}
@@ -756,15 +791,17 @@ class Q_WebServer
 		}
 
 		// Config file watcher — re-read config on change (no restart needed)
-		$configFiles = array_filter([
-			'local/app.json',
-			'local/panel.json',
-			'config/app.json',
-		], 'is_file');
+		$configFiles = self::configFileList();
 		if ($configFiles) {
 			$configMtimes = [];
 			foreach ($configFiles as $cf) {
 				$configMtimes[$cf] = filemtime($cf);
+				// Initial load: domains saved by the panel must survive a restart
+				$data = @json_decode(file_get_contents($cf), true);
+				if ($data && is_array($data)) {
+					self::normalizePanelConfig($data);
+					Q_Config::merge($data);
+				}
 			}
 			Q_Evented::repeat(3, function () use (&$configMtimes) {
 				foreach ($configMtimes as $cf => $mtime) {
@@ -775,6 +812,7 @@ class Q_WebServer
 						// Re-read the config
 						$data = @json_decode(file_get_contents($cf), true);
 						if ($data && is_array($data)) {
+							self::normalizePanelConfig($data);
 							Q_Config::merge($data);
 							fwrite(STDERR, date('H:i:s') . " config reloaded: $cf\n");
 						}
@@ -1409,6 +1447,11 @@ class Q_WebServer
 				// unconditionally, which left the listing below unreachable
 				// for '/' however it was configured.
 				if ($path === '/' and !self::isIndexed($path)) {
+					// A domain that has an app set up but no index file in it is not "no app": say what is missing
+					if (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) {
+						return array('status' => 404, 'body' => self::noIndexHtml($fsPath),
+							'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
+					}
 					$welcome = __DIR__ . DS . 'welcome.php';
 					if (file_exists($welcome)) {
 						ob_start();
@@ -1583,6 +1626,14 @@ class Q_WebServer
 	 */
 	private static function handleRequest($client, $parsed)
 	{
+		// A request carrying a CDN's own headers (cf-ray ...) means that domain is fronted by it.
+		if (isset($parsed['headers']['cf-ray']) || isset($parsed['headers']['x-amz-cf-id'])
+			|| isset($parsed['headers']['fastly-client-ip']) || isset($parsed['headers']['x-sucuri-id'])
+			|| isset($parsed['headers']['x-iinfo']) || isset($parsed['headers']['cdn-requestid'])
+			|| isset($parsed['headers']['akamai-origin-hop']) || isset($parsed['headers']['x-azure-ref'])
+		) {
+			Q_WebServer_Panel::noteCdn($parsed['headers']);
+		}
 		$__tp = array(); $__tp['start'] = hrtime(true);
 		$method = $parsed['method'];
 		$path = $parsed['path'];
@@ -1650,7 +1701,16 @@ class Q_WebServer
 			if (!$hostConfig && !$ownRoute && self::isDomainName($host)
 				&& Q_Config::get('Q', 'webserver', 'unknownHosts', 'root') === 'welcome') {
 				$panelPath = Q_Config::get('Q', 'webserver', 'panel', 'path', '/Q/panel');
-				return self::sendResponse($client, 200, self::welcomePageHtml($host, $panelPath), 'text/html; charset=utf-8');
+				// The standard welcome page, src/Q/welcome.php; the short pointer to the panel only if it is missing
+				$welcome = __DIR__ . DS . 'welcome.php';
+				if (is_file($welcome)) {
+					ob_start();
+					include $welcome;
+					$welcomeHtml = ob_get_clean();
+				} else {
+					$welcomeHtml = self::welcomePageHtml($host, $panelPath);
+				}
+				return self::sendResponse($client, 200, $welcomeHtml, 'text/html; charset=utf-8');
 			}
 
 		}
@@ -1973,6 +2033,10 @@ class Q_WebServer
 				// unconditionally, which left the listing below unreachable
 				// for '/' however it was configured.
 				if ($path === '/' and !self::isIndexed($path)) {
+					if (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) {
+						self::sendResponse($client, 404, self::noIndexHtml($fsPath), 'text/html; charset=utf-8');
+						return false;
+					}
 					$welcome = __DIR__ . DS . 'welcome.php';
 					if (file_exists($welcome)) {
 						ob_start();
@@ -2077,7 +2141,8 @@ class Q_WebServer
 				// Static file (SPA catch-all: serve index.html for all routes)
 				$fbPath = self::$rootDir . str_replace('/', DS, $fallback);
 				if (is_file($fbPath)) {
-					return self::serveFile($client, $parsed, $fbPath);
+					self::serveStaticFile($client, $fbPath, $method, $parsed['headers'], !empty($parsed['_keepAlive']));
+					return false;
 				}
 			} elseif (is_array($fallback)) {
 				if (!empty($fallback['handler'])) {
@@ -2093,7 +2158,8 @@ class Q_WebServer
 				} elseif (!empty($fallback['file'])) {
 					$fbPath = self::$rootDir . str_replace('/', DS, $fallback['file']);
 					if (is_file($fbPath)) {
-						return self::serveFile($client, $parsed, $fbPath);
+						self::serveStaticFile($client, $fbPath, $method, $parsed['headers'], !empty($parsed['_keepAlive']));
+					return false;
 					}
 				}
 			}
@@ -4342,6 +4408,26 @@ HTML;
 	}
 
 	/**
+	 * The page for a domain that has an app (a root folder) but no index.php or index.html at its top.
+	 * @method noIndexHtml
+	 * @static
+	 * @private
+	 * @param {string} $dir The folder being served
+	 * @return {string} HTML
+	 */
+	private static function noIndexHtml($dir)
+	{
+		$d = htmlspecialchars((string) $dir, ENT_QUOTES, 'UTF-8');
+		$panel = htmlspecialchars((string) Q_Config::get('Q', 'webserver', 'panel', 'path', '/Q/panel'), ENT_QUOTES, 'UTF-8');
+		return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+			. '<title>No index file</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:560px;margin:15vh auto;padding:0 20px;color:#333;line-height:1.6}'
+			. 'code{background:#eee;padding:1px 5px;border-radius:3px;word-break:break-all}@media(prefers-color-scheme:dark){body{background:#111520;color:#d0d4dc}code{background:#1a1f2e}}</style></head><body>'
+			. '<h1>Nothing to show here yet</h1>'
+			. '<p>This domain is set up to serve <code>' . $d . '</code>, but there is no <code>index.php</code> or <code>index.html</code> in it.</p>'
+			. '<p>Check the folder, or pick another app for this domain in the <a href="' . $panel . '#domains">control panel</a>.</p></body></html>';
+	}
+
+	/**
 	 * Generate the welcome page HTML for an unknown/unconfigured domain.
 	 * Shown when a request arrives for a domain with no app configured.
 	 * @param string $host The domain name
@@ -5139,15 +5225,12 @@ init();
 		}
 
 		// 5. Re-read config files
-		$configFiles = array_filter(array(
-			'local/app.json',
-			'local/panel.json',
-			'config/app.json',
-		), 'is_file');
+		$configFiles = self::configFileList();
 		$reloaded = array();
 		foreach ($configFiles as $cf) {
 			$data = @json_decode(file_get_contents($cf), true);
 			if ($data && is_array($data)) {
+				self::normalizePanelConfig($data);
 				Q_Config::merge($data);
 				$reloaded[] = $cf;
 			}
@@ -6107,4 +6190,63 @@ init();
 		);
 		return $reasons[$code] ?? 'OK';
 	}
+	/**
+	 * The config files merged into Q_Config at startup and on reload.
+	 *
+	 * The panel writes its settings (domains served, apps, cache) to
+	 * Q_WebServer_Panel::panelConfigPath(), which is under APP_DIR or the data
+	 * directory and is NOT necessarily "local/panel.json" relative to the
+	 * working directory the server was started from. Loading only the relative
+	 * path meant a domain set up in the panel worked until the server was
+	 * restarted, and then fell back to the welcome page. Both are included here,
+	 * de-duplicated by real path.
+	 *
+	 * @method configFileList
+	 * @static
+	 * @private
+	 * @return {array} Paths of the existing files, in merge order
+	 */
+	private static function configFileList()
+	{
+		$candidates = array('local/app.json', 'local/panel.json', 'config/app.json');
+		if (class_exists('Q_WebServer_Panel', true)
+			&& method_exists('Q_WebServer_Panel', 'panelConfigPath')
+		) {
+			try {
+				$candidates[] = Q_WebServer_Panel::panelConfigPath();
+			} catch (Exception $e) {
+			}
+		}
+		$out = array();
+		$seen = array();
+		foreach ($candidates as $c) {
+			if (!is_string($c) || $c === '' || !is_file($c)) continue;
+			$real = realpath($c) ?: $c;
+			if (isset($seen[$real])) continue;
+			$seen[$real] = true;
+			$out[] = $c;
+		}
+		return $out;
+	}
+
+	/**
+	 * Move a flat "domains" key (as the panel writes it) to Q.webserver.domains.
+	 * @method normalizePanelConfig
+	 * @static
+	 * @private
+	 * @param {array} $data
+	 */
+	private static function normalizePanelConfig(&$data)
+	{
+		if (!empty($data['domains']) && is_array($data['domains'])) {
+			if (!isset($data['Q']) || !is_array($data['Q'])) $data['Q'] = array();
+			if (!isset($data['Q']['webserver']) || !is_array($data['Q']['webserver'])) $data['Q']['webserver'] = array();
+			if (!isset($data['Q']['webserver']['domains'])) $data['Q']['webserver']['domains'] = array();
+			foreach ($data['domains'] as $name => $conf) {
+				$data['Q']['webserver']['domains'][$name] = $conf;
+			}
+			unset($data['domains']);
+		}
+	}
+
 }

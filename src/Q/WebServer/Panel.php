@@ -63,6 +63,10 @@ class Q_WebServer_Panel
 		if (strpos($path, '/Q/api/') === 0) {
 			// Password setup endpoint — no auth needed
 			$route = substr($path, 7);
+			if ($route === 'i18n') {
+				Q_WebServer::sendResponse($client, 200, json_encode(self::apiI18n($parsed)), 'application/json');
+				return true;
+			}
 			if ($route === 'auth/setup' || $route === 'auth/login') {
 				$result = self::handleAuthApi($route, $parsed);
 				Q_WebServer::sendResponse($client, self::httpStatus($result),
@@ -108,6 +112,107 @@ class Q_WebServer_Panel
 			if ($s >= 100 && $s <= 599) return $s;
 		}
 		return 200;
+	}
+
+	/**
+	 * Name the CDN or reverse proxy a request came through, from its headers.
+	 * Returns null when nothing in the headers suggests one. Only headers the
+	 * CDNs themselves add are used, so it can be wrong in both directions
+	 * (a CDN that strips them, a client that forges them); it advises, never decides.
+	 * @method cdnFromHeaders
+	 * @static
+	 * @param {array} $headers Lower-cased request headers
+	 * @return {string|null} e.g. "Cloudflare", or "a reverse proxy"
+	 */
+	static function cdnFromHeaders($headers)
+	{
+		$h = array();
+		foreach ((array) $headers as $k => $v) $h[strtolower($k)] = is_array($v) ? implode(',', $v) : (string) $v;
+		$has = function ($k) use ($h) { return isset($h[$k]); };
+		if ($has('cf-ray') || $has('cf-connecting-ip') || $has('cf-visitor') || $has('cf-ipcountry')) return 'Cloudflare';
+		if ($has('x-amz-cf-id') || stripos($h['via'] ?? '', 'cloudfront') !== false) return 'Amazon CloudFront';
+		if ($has('fastly-client-ip') || $has('fastly-ff') || $has('x-fastly-request-id')) return 'Fastly';
+		if ($has('akamai-origin-hop') || $has('x-akamai-transformed') || $has('true-client-ip')) return 'Akamai';
+		if ($has('x-sucuri-id') || $has('x-sucuri-clientip')) return 'Sucuri';
+		if ($has('x-iinfo') || $has('incap-client-ip')) return 'Imperva Incapsula';
+		if ($has('cdn-requestid') || $has('cdn-loop') && stripos($h['cdn-loop'], 'bunny') !== false) return 'Bunny CDN';
+		if ($has('x-azure-ref') || $has('x-azure-clientip')) return 'Azure Front Door';
+		if ($has('x-vercel-id')) return 'Vercel';
+		if ($has('x-nf-request-id')) return 'Netlify';
+		if ($has('cdn-loop')) return 'a CDN';
+		if ($has('x-forwarded-proto') || $has('x-forwarded-for') || $has('x-real-ip') || $has('forwarded')) return 'a reverse proxy';
+		return null;
+	}
+
+	/**
+	 * Remember that a configured domain is fronted by a CDN, once per host and process, in
+	 * the domain's entry ("cdn": "Cloudflare") in the panel config. Startup then skips
+	 * requesting a certificate for it, and the Domains tab says so.
+	 * @method noteCdn
+	 * @static
+	 * @param {array} $headers Request headers (lower-cased names)
+	 */
+	static function noteCdn($headers)
+	{
+		static $seen = array();
+		$host = isset($headers['host']) ? strtolower(preg_replace('/:\d+$/', '', $headers['host'])) : '';
+		if ($host === '' || isset($seen[$host])) return;
+		$seen[$host] = true;
+		$cdn = self::cdnFromHeaders($headers);
+		if ($cdn === null || $cdn === 'a reverse proxy' || $cdn === 'a CDN') return;
+		$conf = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+		if (!is_array($conf) || (isset($conf['cdn']) && $conf['cdn'] === $cdn)) return;
+		$conf['cdn'] = $cdn;
+		Q_Config::set('Q', 'webserver', 'domains', $host, $conf);
+		try {
+			$path = self::panelConfigPath();
+			if (!is_file($path)) return;
+			$cfg = json_decode((string) file_get_contents($path), true);
+			if (!is_array($cfg) || empty($cfg['domains'][$host]) || !is_array($cfg['domains'][$host])) return;
+			$cfg['domains'][$host]['cdn'] = $cdn;
+			@file_put_contents($path, json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), LOCK_EX);
+		} catch (Throwable $e) {
+		}
+	}
+
+	/**
+	 * Language catalogs for the panel. lang/<code>.json next to this file ships with the server;
+	 * <data dir>/local/lang/<code>.json overrides or adds to it. A catalog maps the English text
+	 * to its translation; {name} placeholders may appear in both. Asking for "pt-BR" also loads
+	 * "pt" first. No login is needed: the strings are the interface's own labels.
+	 * @method apiI18n
+	 * @static
+	 * @param {array} $parsed
+	 * @return {array} lang, strings, available
+	 */
+	static function apiI18n($parsed)
+	{
+		$b = (json_decode(isset($parsed['body']) ? $parsed['body'] : '{}', true) ?: array());
+		$want = preg_replace('/[^A-Za-z\\-]/', '', isset($b['lang']) ? (string) $b['lang'] : '');
+		$dirs = array(__DIR__ . '/lang', dirname(self::panelConfigPath()) . '/lang');
+		$available = array();
+		foreach ($dirs as $d) {
+			foreach (glob($d . '/*.json') ?: array() as $f) $available[basename($f, '.json')] = true;
+		}
+		$available = array_keys($available);
+		sort($available);
+		$codes = array();
+		if ($want !== '') {
+			$parts = explode('-', $want);
+			$codes[] = strtolower($parts[0]);
+			if (count($parts) > 1) $codes[] = strtolower($parts[0]) . '-' . strtoupper($parts[1]);
+		}
+		$strings = array();
+		$lang = 'en';
+		foreach ($codes as $c) {
+			foreach ($dirs as $d) {
+				$f = $d . '/' . $c . '.json';
+				if (!is_file($f)) continue;
+				$j = json_decode((string) file_get_contents($f), true);
+				if (is_array($j)) { $strings = array_merge($strings, $j); $lang = $c; }
+			}
+		}
+		return array('lang' => $lang, 'strings' => $strings, 'available' => $available);
 	}
 
 	/**
@@ -336,6 +441,10 @@ class Q_WebServer_Panel
 				return self::apiAddDomain($parsed);
 			case 'domains/remove':
 				return self::apiRemoveDomain($parsed);
+			case 'domains/set-app':
+				return self::apiDomainSetApp($parsed);
+			case 'domains/provision-status':
+				return self::apiProvisionStatus($parsed);
 			case 'domains/provision':
 				return self::apiProvisionCert($parsed);
 			case 'domains/hosts':
@@ -560,7 +669,7 @@ class Q_WebServer_Panel
 			$appDir = $appsDir . DS . $name;
 
 			// Include any directory that has web/ or config/app.json
-			$hasWeb = is_dir($appDir . DS . 'web');
+			$hasWeb = is_dir($appDir . DS . 'web') || (bool) self::webRootForApp($appDir);
 			$configFile = $appDir . DS . 'config' . DS . 'app.json';
 			$hasConfig = file_exists($configFile);
 			if (!$hasWeb && !$hasConfig) continue;
@@ -604,6 +713,19 @@ class Q_WebServer_Panel
 				'fileBrowse' => $fileBrowse,
 			);
 		}
+
+		// Which domains each app serves (an app may serve several, and a domain has one app)
+		$map = self::appRealMap();
+		$byApp = array();
+		foreach (self::allDomainConfs() as $dn => $dc) {
+			$n = self::appDirNameForConf($dc, $map);
+			if ($n) $byApp[$n][] = $dn;
+		}
+		foreach ($apps as &$a) {
+			$a['domains'] = isset($byApp[$a['dirName']]) ? $byApp[$a['dirName']] : array();
+			if ($a['domains']) $a['serving'] = true;
+		}
+		unset($a);
 
 		return array('apps' => $apps, 'appsDir' => $appsDir);
 	}
@@ -737,17 +859,20 @@ class Q_WebServer_Panel
 			if (strpos($logFile, '..') !== false) {
 				return array('status' => 400, 'error' => 'Invalid path');
 			}
-			// Find the file in one of the log directories
+			// Find the file in one of the log directories. The listing gives paths relative to the app
+			// folder ("logs/access.log"); older callers gave them relative to the log folder.
 			$found = null;
 			foreach ($logDirs as $sub => $d) {
-				$candidate = $d . DS . str_replace('/', DS, $logFile);
-				if (is_file($candidate)) {
-					$full = realpath($candidate);
-					// Ensure it's actually inside the app dir
-					if (strpos($full, realpath($appDir)) === 0) {
-						$found = $full;
-					}
-					break;
+				$cands = array();
+				$rel = str_replace('/', DS, ltrim($logFile, '/'));
+				if (strpos($logFile, $sub . '/') === 0) $cands[] = $appDir . DS . $rel;
+				$cands[] = $d . DS . $rel;
+				$realDir = realpath($d);
+				foreach ($cands as $c) {
+					if (!is_file($c)) continue;
+					$full = realpath($c);
+					// It must really be inside that log folder (a symlink out of it does not count)
+					if ($full && $realDir && strpos($full, $realDir . DS) === 0) { $found = $full; break 2; }
 				}
 			}
 			if (!$found) return array('lines' => array(), 'exists' => false);
@@ -1550,7 +1675,11 @@ class Q_WebServer_Panel
 			if (!$root) return array('status' => 500, 'error' => 'Cannot resolve path');
 			Q_WebServer::$rootDir = rtrim(str_replace(array('/', '\\'), DS, $root), DS) . DS;
 			self::$servingApp = $appName;
-			return array('ok' => true, 'serving' => $appName, 'rootDir' => Q_WebServer::$rootDir);
+			// Tie the app to the domain the panel was opened on. Without this the root lives
+			// only in memory: the welcome page still shows for that domain and a restart forgets it.
+			$host = self::serveHost($parsed, $body);
+			if ($host !== null) self::setDomainServed($host, $root, $appName);
+			return array('ok' => true, 'serving' => $appName, 'rootDir' => Q_WebServer::$rootDir, 'host' => $host);
 		} else {
 			if (defined('APP_DIR')) {
 				$orig = APP_DIR . DS . 'web';
@@ -1559,8 +1688,66 @@ class Q_WebServer_Panel
 				}
 			}
 			self::$servingApp = null;
-			return array('ok' => true, 'serving' => null, 'rootDir' => Q_WebServer::$rootDir);
+			$host = self::serveHost($parsed, $body);
+			if ($host !== null) self::setDomainServed($host, null, null);
+			return array('ok' => true, 'serving' => null, 'rootDir' => Q_WebServer::$rootDir, 'host' => $host);
 		}
+	}
+
+	/**
+	 * The domain an Enable/Disable applies to: an explicit body.host, else the host the
+	 * panel was reached on. Null for localhost and IP addresses, which have no domain entry.
+	 * @method serveHost
+	 * @static
+	 * @private
+	 */
+	private static function serveHost($parsed, $body)
+	{
+		$h = isset($body['host']) ? (string) $body['host'] : (string) ($parsed['headers']['host'] ?? '');
+		$h = strtolower(preg_replace('/:\d+$/', '', trim($h)));
+		if ($h === '' || !preg_match('/^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/', $h)) return null;
+		if ($h === 'localhost' || substr($h, -10) === '.localhost' || strpos($h, '.') === false) return null;
+		if (filter_var($h, FILTER_VALIDATE_IP)) return null;
+		return $h;
+	}
+
+	/**
+	 * Record (or clear) the app a domain serves, in panel.json and in the running config.
+	 * An entry the panel created itself (marked servedBy) is removed on disable, so the
+	 * domain goes back to the welcome page.
+	 * @method setDomainServed
+	 * @static
+	 * @param {string} $host
+	 * @param {string|null} $root Web folder, or null to stop serving
+	 * @param {string|null} $app
+	 */
+	static function setDomainServed($host, $root, $app)
+	{
+		$configPath = self::panelConfigPath();
+		$config = file_exists($configPath) ? (json_decode(file_get_contents($configPath), true) ?: array()) : array();
+		if (!isset($config['domains']) || !is_array($config['domains'])) $config['domains'] = array();
+		$entry = isset($config['domains'][$host]) && is_array($config['domains'][$host]) ? $config['domains'][$host] : null;
+		if ($root !== null) {
+			if ($entry === null) $entry = array('tls' => 'auto', 'aliases' => array(), 'servedBy' => 'panel');
+			$entry['root'] = $root;
+			$entry['app'] = $app;
+			$config['domains'][$host] = $entry;
+			Q_Config::set('Q', 'webserver', 'domains', $host, $entry);
+		} elseif ($entry !== null) {
+			if (($entry['servedBy'] ?? '') === 'panel') {
+				unset($config['domains'][$host]);
+				Q_Config::set('Q', 'webserver', 'domains', $host, null);
+			} else {
+				$entry['root'] = null;
+				$entry['app'] = null;
+				$config['domains'][$host] = $entry;
+				Q_Config::set('Q', 'webserver', 'domains', $host, $entry);
+			}
+		}
+		$dir = dirname($configPath);
+		if (!is_dir($dir)) @mkdir($dir, 0700, true);
+		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		@chmod($configPath, 0600);
 	}
 
 	/**
@@ -2697,6 +2884,8 @@ class Q_WebServer_Panel
 			}
 		}
 		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		$appMap = self::appRealMap();
+		$panelDomains = (isset($panelConfig['domains']) && is_array($panelConfig['domains'])) ? $panelConfig['domains'] : array();
 		$result = [];
 		foreach ($domains as $name => $conf) {
 			$certPath = rtrim($certDir, '/') . '/' . $name . '/fullchain.pem';
@@ -2707,7 +2896,10 @@ class Q_WebServer_Panel
 				'tls' => $conf['tls'] ?? 'none',
 				'aliases' => $conf['aliases'] ?? [],
 				'cache' => $conf['cache'] ?? null,
+				'removable' => !empty($panelDomains[$name]),
+				'cdn' => isset($conf['cdn']) ? $conf['cdn'] : null,
 			];
+			$entry['appDir'] = self::appDirNameForConf(array('app' => $conf['app'] ?? null, 'root' => $entry['root']), $appMap);
 			if (is_file($certPath)) {
 				$expiry = Q_WebServer_Acme::certExpiry($certPath);
 				$entry['certExpires'] = $expiry ? date('Y-m-d', $expiry) : null;
@@ -2718,6 +2910,10 @@ class Q_WebServer_Panel
 					: 'expired';
 			} else {
 				$entry['certStatus'] = 'none';
+			}
+			if (($entry['certStatus'] ?? '') !== 'valid') {
+				$fail = Q_WebServer_Acme::lastFailure($certDir, $name);
+				if ($fail) { $entry['certError'] = $fail['error']; $entry['certErrorAt'] = isset($fail['at']) ? $fail['at'] : null; $entry['certErrorVia'] = isset($fail['via']) ? $fail['via'] : null; }
 			}
 			$result[] = $entry;
 		}
@@ -2742,6 +2938,122 @@ class Q_WebServer_Panel
 			}
 		}
 		return ['domains' => $result];
+	}
+
+	/**
+	 * Every configured domain's settings: Q.webserver.domains, the panel's own list, and hosts.
+	 * @method allDomainConfs
+	 * @static
+	 * @return {array} name => config
+	 */
+	static function allDomainConfs()
+	{
+		$domains = Q_Config::get('Q', 'webserver', 'domains', array());
+		if (!is_array($domains)) $domains = array();
+		$configPath = self::panelConfigPath();
+		if (file_exists($configPath)) {
+			$pc = json_decode(file_get_contents($configPath), true);
+			if (!empty($pc['domains']) && is_array($pc['domains'])) $domains = array_merge($domains, $pc['domains']);
+		}
+		$hosts = Q_Config::get('Q', 'webserver', 'hosts', array());
+		if (is_array($hosts)) {
+			foreach ($hosts as $h => $hc) if (!isset($domains[$h])) $domains[$h] = $hc;
+		}
+		foreach ($domains as $k => $v) if (!is_array($v)) unset($domains[$k]);
+		return $domains;
+	}
+
+	/** @return array real path of each app folder => its folder name */
+	static function appRealMap()
+	{
+		$map = array();
+		$ad = self::appsDir();
+		if (!$ad || !is_dir($ad)) return $map;
+		foreach (scandir($ad) as $n) {
+			if ($n === '' || $n[0] === '.') continue;
+			$d = $ad . DS . $n;
+			if (!is_dir($d)) continue;
+			$r = realpath($d);
+			if ($r) $map[$r] = $n;
+		}
+		return $map;
+	}
+
+	/**
+	 * The folder name of the app (in the apps folder) that a domain's settings point at: its "app"
+	 * entry, else the app whose folder holds its root.
+	 * @method appDirNameForConf
+	 * @static
+	 * @param {array} $conf
+	 * @param {array|null} $map From appRealMap()
+	 * @return {string|null}
+	 */
+	static function appDirNameForConf($conf, $map = null)
+	{
+		if ($map === null) $map = self::appRealMap();
+		if (!$map) return null;
+		$app = $conf['app'] ?? null;
+		if (is_string($app) && $app !== '') {
+			if ($app[0] === '/' || preg_match('~^[A-Za-z]:[\\\\/]~', $app)) {
+				$r = realpath($app);
+				if ($r && isset($map[$r])) return $map[$r];
+			} elseif (in_array($app, $map, true)) {
+				return $app;
+			}
+		}
+		$root = $conf['root'] ?? null;
+		if (is_string($root) && $root !== '') {
+			$r = realpath($root);
+			if ($r) {
+				foreach ($map as $ad => $n) {
+					if ($r === $ad || strpos($r, $ad . DS) === 0) return $n;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** The folder an app serves from: web/, public/ and the like, or the app folder itself (WordPress); null if none. */
+	static function webRootForApp($appDir)
+	{
+		foreach (array('web', 'public', 'public_html', 'htdocs') as $sub) {
+			if (is_dir($appDir . DS . $sub)) return realpath($appDir . DS . $sub);
+		}
+		foreach (array('index.php', 'index.html', 'wp-config.php') as $f) {
+			if (is_file($appDir . DS . $f)) return realpath($appDir);
+		}
+		return null;
+	}
+
+	/**
+	 * Choose which app a domain serves. An empty app makes the domain serve none (the welcome page).
+	 * The choice is saved in panel.json and takes effect at once.
+	 * @method apiDomainSetApp
+	 * @static
+	 */
+	static function apiDomainSetApp($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true) ?: array();
+		$domain = strtolower(trim((string) ($body['domain'] ?? '')));
+		if (!preg_match('/^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$/', $domain)) {
+			return array('status' => 400, 'error' => 'Invalid domain name');
+		}
+		$app = (string) ($body['app'] ?? '');
+		if ($app === '') {
+			self::setDomainServed($domain, null, null);
+			return array('ok' => true, 'domain' => $domain, 'app' => null);
+		}
+		$name = basename($app);
+		if ($name !== $app || $name === '.' || $name === '..') {
+			return array('status' => 400, 'error' => 'Invalid app name');
+		}
+		$ad = self::appsDir();
+		$appDir = $ad ? $ad . DS . $name : null;
+		if (!$appDir || !is_dir($appDir)) return array('status' => 404, 'error' => "No app named $name");
+		$root = self::webRootForApp($appDir);
+		if (!$root) return array('status' => 400, 'error' => "$name has no web folder (web/, public/ ...) to serve");
+		self::setDomainServed($domain, $root, $name);
+		return array('ok' => true, 'domain' => $domain, 'app' => $name, 'root' => $root);
 	}
 
 	static function apiAddDomain($parsed)
@@ -2773,6 +3085,7 @@ class Q_WebServer_Panel
 			? json_decode(file_get_contents($configPath), true) : [];
 		unset($config['domains'][$domain]);
 		file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+		if (is_string($domain) && $domain !== '') Q_Config::set('Q', 'webserver', 'domains', $domain, null);
 		return ['removed' => $domain];
 	}
 
@@ -2842,10 +3155,19 @@ class Q_WebServer_Panel
 		// Behind nginx or Apache, they hold port 80 and the certificate; a request
 		// here would never pass Let's Encrypt's check.
 		$conf = Q_Config::get('Q', 'webserver', 'domains', $domain, []);
-		if (empty($body['force']) && isset($parsed['headers']['x-forwarded-proto'])) {
-			return ['status' => 400, 'proxied' => true,
-				'error' => "$domain is served through nginx, which handles its certificate. "
-					. 'Renew it there (certbot), or send force to request one here anyway.'];
+		$viaCertbot = class_exists('Q_WebServer_Certbot') && Q_WebServer_Certbot::wanted($domain);
+		$cdn = self::cdnFromHeaders(isset($parsed['headers']) ? $parsed['headers'] : array());
+		if (!$viaCertbot && empty($body['force']) && (!empty($conf['proxied']) || $cdn !== null)) {
+			if ($cdn !== null && $cdn !== 'a reverse proxy' && empty($conf['proxied'])) {
+				$msg = "This request reached the server through $cdn. When a CDN is in front, visitors' HTTPS is "
+					. "ended by $cdn, which brings its own certificate, and it usually talks to this server over plain "
+					. 'HTTP, so a certificate here may not be needed. A Let\'s Encrypt check from the internet would '
+					. "also land on $cdn rather than on this server, so it is likely to fail.";
+			} else {
+				$msg = "$domain is served through a web server or proxy in front of this one (nginx, Apache or similar), "
+					. 'which handles its certificate. Renew it there (certbot).';
+			}
+			return ['status' => 400, 'proxied' => true, 'cdn' => $cdn, 'error' => $msg];
 		}
 
 		$email = trim((string) ($body['email'] ?? ''));
@@ -2869,8 +3191,39 @@ class Q_WebServer_Panel
 		$domains = [$domain];
 		if (!empty($conf['aliases'])) $domains = array_merge($domains, $conf['aliases']);
 
-		$result = Q_WebServer_Acme::provision($domains, $certDir, $email, $staging);
-		return $result;
+		// Ask in a child process: the server keeps serving, and the panel polls domains/provision-status.
+		// How it ended is kept in the certificate folder, so a failure can be read later in the panel.
+		Q_WebServer_Acme::clearResult($certDir, $domain);
+		$started = Q_WebServer_Acme::provisionAsync($domains, $certDir, $email, $staging,
+			function ($result) use ($domain, $viaCertbot) {
+				try {
+					if (!empty($result['success'])) {
+						fwrite(STDERR, "  [ACME] \xE2\x9C\x93 Certificate ready for {$domain}\n");
+						// With certbot, nginx holds the certificate and the TLS socket
+						if (!$viaCertbot) Q_WebServer::registerDomainCert($domain, $result['cert'], $result['key']);
+					} else {
+						fwrite(STDERR, "  [ACME] \xE2\x9C\x97 Certificate failed for {$domain}: " . (isset($result['error']) ? $result['error'] : 'unknown') . "\n");
+					}
+				} catch (Throwable $e) {
+					fwrite(STDERR, "  [ACME] {$domain}: " . $e->getMessage() . "\n");
+				}
+			}, $viaCertbot ? 'certbot' : 'acme', array('root' => isset($conf['root']) ? $conf['root'] : null));
+		if (empty($started['started'])) {
+			return ['status' => 400, 'error' => isset($started['error']) ? $started['error'] : 'Could not start the request', 'failed' => true];
+		}
+		return ['success' => true, 'queued' => true, 'domain' => $domain];
+	}
+
+	/**
+	 * How the last certificate request for a domain went: {pending:true}, or its result.
+	 */
+	static function apiProvisionStatus($parsed)
+	{
+		$body = json_decode($parsed['body'] ?? '{}', true);
+		$domain = $body['domain'] ?? '';
+		if (!$domain) return ['status' => 400, 'error' => 'Missing domain'];
+		$certDir = Q_Config::get('Q', 'webserver', 'tls', 'certDir', 'local/certs');
+		return Q_WebServer_Acme::status($certDir, $domain);
 	}
 
 	/**
@@ -3126,7 +3479,7 @@ class Q_WebServer_Panel
 			'workers' => $stats['workers'] ?? 0,
 			'activeWorkers' => $stats['activeWorkers'] ?? 0,
 			'totalRequests' => $stats['totalRequests'] ?? 0,
-			'uptime' => $stats['uptime'] ?? 0,
+			'uptime' => $stats['uptimeSec'] ?? 0,
 			'memoryUsage' => memory_get_usage(true),
 			'memoryPeak' => memory_get_peak_usage(true),
 			'pid' => getmypid(),
@@ -4690,8 +5043,11 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
 .suggest-warn .suggest-desc{color:rgba(245,158,11,.5)}
 .suggest-warn .suggest-action{background:rgba(245,158,11,.15);color:var(--yel)}
 
+textarea{max-height:50vh;min-height:3.4em}
 /* ── Responsive ── */
 @media(max-width:768px){
+  .card table{display:block;overflow-x:auto;max-width:100%}
+  .card pre,.content pre{overflow-x:auto;max-width:100%}
   .top{padding:14px 16px}
   .top h1{font-size:15px}
   .tabs{padding:0 12px;gap:0}
@@ -4741,7 +5097,7 @@ input:focus,select:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3p
   <div class="tab" onclick="showTab('plugins',event)">Plugins</div>
   <div class="tab" onclick="showTab('workers',event)">Workers</div>
   <div class="tab" onclick="showTab('logs',event)">Logs</div>
-  <div class="tab" onclick="showTab('cron',event)">Cron</div>
+  <div class="tab" onclick="showTab('cron',event)">Scheduled</div>
   <div class="tab" onclick="showTab('frameworks',event)">Frameworks</div>
   <div class="tab" onclick="showTab('playground',event)">Playground</div>
   <div class="tab" onclick="showTab('system',event)">System</div>
@@ -5129,6 +5485,283 @@ function setToken(t) {
   document.cookie = 'Q_panel_token=' + t + '; path=/; SameSite=Strict';
 }
 
+// ── Internationalization & button tooltips ──────────────────────────
+// t('text', {n: 3}) translates; the DOM translator below also translates all rendered text,
+// title / placeholder / aria-label attributes, so markup and strings need no per-call wrapping.
+// A catalog is a JSON object {"English text": "translated text"}; keys may hold {name}
+// placeholders. Catalogs come from /Q/api/i18n (lang/<code>.json, overridden by local/lang/<code>.json).
+var _i18n = {lang: 'en', map: {}, pats: [], seen: {}, avail: [], nodes: new WeakMap(), attrs: new WeakMap(), queue: [], raf: 0};
+function t(s, v) {
+  var r = s;
+  if (_i18n.lang !== 'en') {
+    if (Object.prototype.hasOwnProperty.call(_i18n.map, s)) r = _i18n.map[s];
+    else { var m = i18nPattern(s); if (m !== null) r = m; }
+  }
+  if (v) r = r.replace(/\{(\w+)\}/g, function(x, k) { return v[k] !== undefined ? v[k] : x; });
+  i18nSeen(s);
+  return r;
+}
+function i18nSeen(s) {
+  if (s && s.length < 240 && /[A-Za-zÀ-￿]{2}/.test(s) && !_i18n.seen[s]) _i18n.seen[s] = s;
+}
+function i18nPattern(s) {
+  for (var i = 0; i < _i18n.pats.length; i++) {
+    var m = _i18n.pats[i].re.exec(s);
+    if (m) return _i18n.pats[i].to.replace(/\{(\d+)\}/g, function(x, n) { return m[+n] !== undefined ? m[+n] : x; });
+  }
+  return null;
+}
+function i18nBuild(map) {
+  _i18n.map = map || {}; _i18n.pats = [];
+  Object.keys(_i18n.map).forEach(function(k) {
+    if (!/\{\w+\}/.test(k)) return;
+    var names = [], re = k.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{(\w+)\}/g, function(x, n) { names.push(n); return '(.+?)'; });
+    var to = _i18n.map[k], idx = 0;
+    // map {name} in the translation to the capture index of the same name in the key
+    to = to.replace(/\{(\w+)\}/g, function(x, n) { var i = names.indexOf(n); return i < 0 ? x : '{' + (i + 1) + '}'; });
+    _i18n.pats.push({re: new RegExp('^' + re + '$'), to: to});
+  });
+}
+function i18nText(str) {
+  var m = /^(\s*)([\s\S]*?)(\s*)$/.exec(str);
+  if (!m[2]) return str;
+  var core = m[2];
+  i18nSeen(core);
+  if (_i18n.lang === 'en') return str;
+  var r = Object.prototype.hasOwnProperty.call(_i18n.map, core) ? _i18n.map[core] : i18nPattern(core);
+  return r === null || r === undefined ? str : m[1] + r + m[3];
+}
+var I18N_SKIP = {SCRIPT: 1, STYLE: 1, CODE: 1, PRE: 1, TEXTAREA: 1, NOSCRIPT: 1, SVG: 1};
+function i18nNode(n) {
+  if (n.nodeType === 3) {
+    var p = n.parentNode;
+    if (!p || I18N_SKIP[p.nodeName.toUpperCase()] || (p.closest && p.closest('[data-notranslate]'))) return;
+    var rec = _i18n.nodes.get(n), cur = n.nodeValue;
+    if (rec && cur === rec.out) cur = rec.src; else if (rec && cur !== rec.out) rec = null;
+    var out = i18nText(cur);
+    _i18n.nodes.set(n, {src: cur, out: out});
+    if (out !== n.nodeValue) n.nodeValue = out;
+    return;
+  }
+  if (n.nodeType !== 1) return;
+  if (I18N_SKIP[n.nodeName.toUpperCase()] || n.hasAttribute('data-notranslate')) return;
+  i18nAttrs(n);
+  for (var c = n.firstChild; c; c = c.nextSibling) i18nNode(c);
+}
+function i18nAttrs(el) {
+  if (el.matches && el.matches('button,[role=button],a.btn,input[type=button],input[type=submit]')) qtipFor(el);
+  ['title', 'placeholder', 'aria-label'].forEach(function(a) {
+    if (!el.hasAttribute(a)) return;
+    var rec = _i18n.attrs.get(el) || {}, cur = el.getAttribute(a), r = rec[a];
+    if (r && cur === r.out) cur = r.src;
+    var out = i18nText(cur);
+    rec[a] = {src: cur, out: out};
+    _i18n.attrs.set(el, rec);
+    if (out !== el.getAttribute(a)) el.setAttribute(a, out);
+  });
+}
+function i18nFlush() {
+  _i18n.raf = 0;
+  var q = _i18n.queue; _i18n.queue = [];
+  q.forEach(function(n) { if (n.isConnected !== false) i18nNode(n); });
+}
+function i18nQueue(n) {
+  _i18n.queue.push(n);
+  if (!_i18n.raf) _i18n.raf = (window.requestAnimationFrame || setTimeout)(i18nFlush);
+}
+function i18nLocale() {
+  var l = '';
+  try { l = localStorage.getItem('qbix.lang') || ''; } catch (e) {}
+  var q = /[?&]lang=([\w-]+)/.exec(location.search);
+  if (q) { l = q[1]; try { localStorage.setItem('qbix.lang', l); } catch (e) {} }
+  return l || (navigator.language || 'en');
+}
+async function i18nLoad(lang) {
+  try {
+    var r = await fetch(API + '/i18n', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: lang})});
+    var d = await r.json();
+    _i18n.avail = d.available || [];
+    _i18n.lang = d.lang || 'en';
+    i18nBuild(d.strings || {});
+  } catch (e) { _i18n.lang = 'en'; i18nBuild({}); }
+  document.documentElement.setAttribute('lang', _i18n.lang);
+  i18nNode(document.body);
+  i18nLangSelect();
+}
+async function i18nSet(code) {
+  if (code === '__export') { i18nExport(); i18nLangSelect(); return; }
+  try { localStorage.setItem('qbix.lang', code); } catch (e) {}
+  await i18nLoad(code);
+}
+function i18nExport() {
+  var blob = new Blob([JSON.stringify(_i18n.seen, null, 2)], {type: 'application/json'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'qbix-panel-strings.json';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function i18nLangSelect() {
+  var nav = document.getElementById('panel-nav');
+  if (!nav) return;
+  var sel = document.getElementById('lang-sel');
+  if (!sel) {
+    sel = document.createElement('select');
+    sel.id = 'lang-sel'; sel.setAttribute('data-notranslate', '');
+    sel.style.cssText = 'margin:10px 12px;font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid var(--brd);background:var(--card);color:var(--fg);max-width:calc(100% - 24px)';
+    sel.onchange = function() { i18nSet(this.value); };
+    nav.appendChild(sel);
+  }
+  var names = {};
+  try { var dn = new Intl.DisplayNames([_i18n.lang], {type: 'language'}); } catch (e) { dn = null; }
+  var codes = ['en'].concat(_i18n.avail.filter(function(c) { return c !== 'en'; }));
+  sel.innerHTML = codes.map(function(c) {
+    var nm = c; try { if (dn) nm = dn.of(c); } catch (e) {}
+    return '<option value="' + c + '"' + (c === _i18n.lang ? ' selected' : '') + '>' + nm + '</option>';
+  }).join('') + '<option value="__export">' + t('Export strings for translation') + '…</option>';
+  sel.title = t('Language of this panel');
+}
+
+// What each kind of button does, shown as its tooltip when the markup gives none.
+var QTIPS = {
+  'Cancel': 'Close this without making any change',
+  'Save': 'Save your changes',
+  'Save Config': 'Write these settings to the configuration',
+  '↻ Refresh': 'Load this list again from the server', 'Refresh': 'Load this list again from the server',
+  '✕': 'Close',
+  'Create': 'Create it with the values entered above',
+  'Send': 'Send it now',
+  'Delete': 'Delete this permanently. You will be asked to confirm',
+  'Remove': 'Remove this from the list. Nothing outside the panel settings is deleted',
+  'Clone from URL': 'Download a copy of a repository from this URL',
+  'Clone from GitHub': 'Download a copy of one of your GitHub repositories',
+  'Clone': 'Download a copy of the repository',
+  'Copy': 'Copy to the clipboard',
+  '▶ Run': 'Run it now', 'Run': 'Run it now', 'Run Now': 'Run this scheduled task right now, outside its schedule',
+  'Clear': 'Empty this out', 'Clear Cache': 'Throw away everything cached so pages are rebuilt on the next request',
+  'Prepare Project': 'Install the dependencies and files this project needs before it can run',
+  'Build': 'Build this project (compile and bundle its assets)',
+  'Reset Password': 'Set a new password for this user',
+  '+ New Branch': 'Create a branch: a separate copy of the app at its own subdomain to try changes safely',
+  '+ New App': 'Create a new app in the apps folder',
+  'Icicle': 'Show the paths as nested boxes, wider where more people went',
+  'Flame': 'Show the paths as stacked bars, one row per step',
+  'Sankey': 'Show the paths as flows between steps',
+  'Load more': 'Show the next batch of rows', 'Load latest': 'Fetch the newest entries', 'Load older': 'Fetch older entries',
+  'Open': 'Open it', 'Open room': 'Open this room to watch or take part', 'Close viewer': 'Stop viewing and close',
+  'Access': 'Choose who may reach this',
+  'Merge': 'Merge this branch’s changes into the main (trunk) copy of the app',
+  'Approve & Merge': 'Approve this branch and merge it into the main copy of the app',
+  'Revoke': 'Withdraw this access or key so it no longer works',
+  'Update': 'Update to the newest version', 'Update All': 'Update everything in this list to the newest version',
+  'Update All Plugins': 'Update every installed plugin to the newest version', '↑ Update All Plugins': 'Update every installed plugin to the newest version',
+  'Scan nginx / Apache / Caddy': 'Look in the web server configs on this machine for sites this panel could take over',
+  'Import Selected': 'Add the ticked sites to this panel',
+  'Add Domain': 'Add the domain entered above',
+  '+ Create Key': 'Create a new API key',
+  'Sign': 'Sign this binary with the private key pasted above',
+  'Verify': 'Check the signatures against the trusted keys',
+  'Configure': 'Change the settings of this item',
+  'Install All': 'Install everything that is missing', 'Install All (--all)': 'Install everything: plugins, app, composer and npm packages',
+  'Install Plugins': 'Install the Qbix plugins this app uses',
+  'Rebuild URLs': 'Regenerate the URL map (needed after adding or moving files)',
+  'Install npm packages': 'Run npm install in this app',
+  'Bundle JS/CSS': 'Combine and minify the app’s JavaScript and CSS files',
+  'Test Email': 'Send a test email to check the email settings', 'Test SMS': 'Send a test text message to check the SMS settings',
+  '+ Key part': 'Add another part to this key',
+  'Broadcast': 'Send a message to everyone connected right now',
+  'Health Check': 'Check that the server, database and workers are responding',
+  'Show phpinfo()': 'Show PHP’s own report of its version, extensions and settings',
+  '+ Add Server': 'Register another server to manage from here',
+  'Connect': 'Connect to this server', 'Disconnect': 'Disconnect from this server',
+  'Resize': 'Change how many worker processes run',
+  'Access Log': 'Show the log of requests', 'Error Log': 'Show the log of errors and warnings',
+  '+ Add Task': 'Add a scheduled task', 'Quick Setup': 'Apply a ready-made set of settings',
+  'Set': 'Apply this value',
+  'Roles ?': 'Explain what each role may do',
+  'Generate Invite Link': 'Create a link that lets someone join with a set role', 'Generate Invite': 'Create the invite link',
+  'Add User Directly': 'Create the user now with the password entered', 'Add User': 'Create this user',
+  'Change Password': 'Save the new password', 'Change Email': 'Save the new email address',
+  'Upload Template': 'Upload an email or page template file', 'Delete Template': 'Delete this template',
+  'Pages': 'Which pages are visited most', 'Where people go': 'Where people go from page to page',
+  'Goals': 'Pages you want visitors to reach, and how many do', 'Sessions': 'Individual visits, with what each person did',
+  'Raw events': 'Every individual event recorded, newest first',
+  'Filter': 'Show only the rows that match', 'Apply': 'Apply the settings above',
+  'Close': 'Close this', 'Got it': 'Dismiss this message',
+  'Set Password': 'Save this password and sign in', 'Login': 'Sign in with the username and password above',
+  'Analytics': 'Traffic charts and flow of visitors',
+  'All Branches': 'List the branches of every app',
+  'Domains': 'The domains this server answers for and which app each one shows',
+  'Client Metrics': 'What visitors do in their browsers: pages, scrolling, media, goals',
+  'Open Folder': 'Show this folder in your file manager',
+  'VS Code': 'Open in Visual Studio Code', 'Cursor': 'Open in Cursor', 'Windsurf': 'Open in Windsurf',
+  'Claude Code': 'Open in Claude Code', 'Terminal': 'Open a terminal in this folder',
+  '← Back': 'Go back to the previous screen',
+  'Serve this app there': 'Make the chosen domain show this app',
+  'Open Domains': 'Go to the Domains tab',
+  'Scripts': 'Scripts defined in this project', 'Packages': 'Packages installed in this project',
+  '--plugins': 'Install plugins only', '--app': 'Install the app only', '--composer': 'Install PHP packages only', '--npm': 'Install npm packages only',
+  'Upgrade': 'Install the newer version', 'Install': 'Install it',
+  'npm install': 'Install the npm packages listed in package.json', 'npm update': 'Update npm packages to their newest allowed versions',
+  'Deploy': 'Send this app to the server and make it live',
+  'Add to hosts': 'Add this name to the computer’s hosts file so it resolves locally',
+  'Publish to Sigstore Rekor': 'Record this signature in the public Sigstore transparency log',
+  '↻': 'Restart this worker after its current request',
+  'Recycle All': 'Restart all workers one by one, letting busy ones finish first',
+  'Enable': 'Turn this on', 'Disable': 'Turn this off', 'Activate': 'Switch this on', 'Deactivate': 'Switch this off', 'Uninstall': 'Remove this and its files',
+  'Edit': 'Change this', 'Revert': 'Go back to the previous value', 'Role': 'Change this user’s role', 'Scope': 'Limit what this key may do', 'Permissions': 'Choose what this key may do',
+  'Copy Invite Link': 'Copy the invite link to the clipboard',
+  '+ Add': 'Add another', 'Add': 'Add it to the list',
+  'composer require': 'Add this PHP package with Composer', 'Install Plugin': 'Install this plugin', 'Install Theme': 'Install this theme', 'Install Module': 'Install this module',
+  'Dump Autoload': 'Rebuild Composer’s class map',
+  'Add goal': 'Add a goal page to track',
+  'Reset Rate Limiter': 'Forget all request counts so no one is limited',
+  'Flush': 'Write buffered data out now',
+  '← Prev': 'Previous page', 'Next →': 'Next page',
+  'Evict Now': 'Remove expired items from the cache now',
+  'Provision': 'Request a free Let’s Encrypt certificate for this domain', 'Renew': 'Renew the Let’s Encrypt certificate',
+  'Use detected settings': 'Copy the settings found in the web server config'
+};
+function qtipLabel(el) {
+  var s = (el.getAttribute('data-src-label') || el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+  return s.replace(/^[^A-Za-z0-9À-￿+←↑↻✕▶-]+/, '').trim();
+}
+function qtipFor(el) {
+  if (el.hasAttribute('title') && !el.hasAttribute('data-qtip-auto')) return;
+  var raw = (el.getAttribute('data-src-label') || el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+  var lab = qtipLabel(el);
+  var tip = QTIPS[raw] || QTIPS[lab] || QTIPS[lab.replace(/^Use .* settings$/, 'Use detected settings')];
+  if (!tip && lab) {
+    var l2 = lab.replace(/^[+\u2190\u2191\u21bb\u25b6\s]+/, '');
+    tip = QTIPS[l2] || (l2.length > 1 ? l2 : '');
+  }
+  if (!tip) return;
+  el.setAttribute('data-qtip-auto', '1');
+  var rec = _i18n.attrs.get(el);
+  if (rec) delete rec.title;
+  el.setAttribute('title', tip);
+}
+// alert / confirm / prompt text is not in the DOM, so translate it on the way out
+['alert', 'confirm', 'prompt'].forEach(function(fn) {
+  var orig = window[fn];
+  window[fn] = function(msg) {
+    var a = arguments;
+    if (typeof msg === 'string' && _i18n.lang !== 'en') {
+      a = Array.prototype.slice.call(arguments);
+      a[0] = msg.split('\n').map(function(l) { return i18nText(l); }).join('\n');
+    }
+    return orig.apply(window, a);
+  };
+});
+function i18nStart() {
+  if (!document.body || i18nStart.done) return; i18nStart.done = true;
+  new MutationObserver(function(muts) {
+    muts.forEach(function(m) {
+      if (m.type === 'characterData') { var r = _i18n.nodes.get(m.target); if (!r || r.out !== m.target.nodeValue) i18nQueue(m.target); }
+      else m.addedNodes.forEach(function(n) { i18nQueue(n); });
+    });
+  }).observe(document.body, {childList: true, subtree: true, characterData: true});
+  i18nLoad(i18nLocale());
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', i18nStart); else i18nStart();
+
 async function api(path, body) {
   var headers = {};
   var t = getToken();
@@ -5397,8 +6030,11 @@ function renderAppList(el) {
     if (a.hasClasses) badges.push('classes');
     if (a.isQbixApp) badges.push('qbix');
     var badgeHtml = badges.map(function(b){return '<span class="app-badge">'+b+'</span>'}).join('');
-    var statusText = isServing ? '<span style="color:var(--grn)">serving</span>'
-      : (a.url ? '<span>'+a.url+'</span>' : (a.configured ? 'configured' : '<span style="color:var(--yel)">not configured</span>'));
+    var doms = a.domains || [];
+    var statusText = doms.length
+      ? '<span style="color:var(--grn)" title="The domains this app serves">' + escHtml(doms.slice(0, 2).join(', ')) + (doms.length > 2 ? ' +' + (doms.length - 2) + ' more' : '') + '</span>'
+      : (isServing ? '<span style="color:var(--grn)">serving</span>'
+      : (a.url ? '<span>'+a.url+'</span>' : (a.configured ? '<span title="Its local/ folder exists, made by the app\'s own configure script">configured</span>' : '<span style="color:var(--yel)" title="No local/ folder yet: run the app\'s configure script (open the app, Actions, Configure). This is separate from serving it on a domain.">not configured</span>')));
     var iconUrl = '/Q/api/apps/icon?app=' + encodeURIComponent(a.dirName);
     return ''
     + '<div class="app-row" onclick="showAppDetail(\''+a.dirName+'\')">'
@@ -5410,8 +6046,7 @@ function renderAppList(el) {
     + (badgeHtml ? '<div class="app-badges">'+badgeHtml+'</div>' : '')
     + '</div>'
     + '<div class="btn-row" onclick="event.stopPropagation()">'
-    + (a.hasWeb && !isServing ? '<button class="btn btn-sm btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
-    + (isServing ? '<button class="btn btn-sm btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop</button>' : '')
+    + (a.hasWeb ? '<button class="btn btn-sm btn-ghost" onclick="showAppDetail(\''+a.dirName+'\')" title="Choose the domains this app serves">Domains</button>' : '')
     + '</div></div>';
   }).join('');
 }
@@ -5438,30 +6073,33 @@ async function showAppDetail(dirName) {
     + '<img class="app-icon" src="'+iconUrl+'" alt="" style="width:28px;height:28px" onerror="this.style.display=\'none\'">'
     + escHtml(a.name) + '</h3>'
     + '<div class="detail-grid">'
-    + '<div class="detail-card"><div class="label">Status</div><div class="val" style="font-size:14px;color:'+(isServing?'var(--grn)':'var(--dim)')+'">'+(isServing?'Serving':'Idle')+'</div></div>'
+    + '<div class="detail-card"><div class="label">Served on</div><div class="val" style="font-size:14px;word-break:break-all;color:'+((a.domains&&a.domains.length)?'var(--grn)':'var(--dim)')+'">'+((a.domains&&a.domains.length)?escHtml(a.domains.join(', ')):'no domain')+'</div></div>'
     + '<div class="detail-card"><div class="label">URL</div><div class="val" style="font-size:13px;word-break:break-all">'+(a.url||'none')+'</div></div>'
     + '<div class="detail-card"><div class="label">Plugins</div><div class="val" style="font-size:14px">'+(a.plugins.length?a.plugins.join(', '):'none')+'</div></div>'
     + '<div class="detail-card"><div class="label">Fork mode</div><div class="val" style="font-size:14px">'+forkHtml+'</div></div>'
     + '</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">'
+    + (a.isQbixApp && a.hasScripts && !a.configured ? '<button class="btn btn-grn btn-sm" title="Runs the app\'s own configure script, which creates its local/ folder. Separate from serving it on a domain." onclick="configureApp(\''+escHtml(a.dirName)+'\',\''+escHtml(a.name)+'\')">Configure</button>' : '')
+    + '<button class="btn btn-ghost btn-sm" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'folder\')">\uD83D\uDCC2 Open Folder</button>'
+    + '<button class="btn btn-ghost btn-sm" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'vscode\')">VS Code</button>'
+    + '</div>'
     + '<div class="detail-tabs">'
-    + '<div class="detail-tab active" onclick="showDetailPane(this,\'detail-actions-'+dirName+'\')">Actions</div>'
+    + '<div class="detail-tab active" onclick="showDetailPane(this,\'detail-actions-'+dirName+'\')" title="The domains this app is served on">Domains</div>'
     + (a.hasScripts ? '<div class="detail-tab" onclick="showDetailPane(this,\'detail-scripts-'+dirName+'\');loadDetailScripts(\''+dirName+'\')">Scripts</div>' : '')
     + '<div class="detail-tab" onclick="showDetailPane(this,\'detail-logs-'+dirName+'\');loadDetailLogs(\''+dirName+'\')">Logs</div>'
     + (a.fileBrowse ? '<div class="detail-tab" onclick="showDetailPane(this,\'detail-files-'+dirName+'\');browseFiles(\''+dirName+'\',\'\')">Files</div>' : '')
     + '</div>'
     + '<div id="detail-actions-'+dirName+'">'
-    + '<div class="btn-row" style="gap:8px;margin-top:8px">'
-    + (a.hasWeb && !isServing ? '<button class="btn btn-primary" onclick="serveApp(\''+a.dirName+'\',true)">Serve</button>' : '')
-    + (isServing ? '<button class="btn btn-red" onclick="serveApp(\''+a.dirName+'\',false)">Stop Serving</button>' : '')
-    + (a.isQbixApp && a.hasScripts && !a.configured ? '<button class="btn btn-grn" onclick="configureApp(\''+escHtml(a.dirName)+'\',\''+escHtml(a.name)+'\')">Configure</button>' : '')
-    + '<button class="btn btn-ghost" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'folder\')">\uD83D\uDCC2 Open Folder</button>'
-    + '<button class="btn btn-ghost" onclick="openFolder(\''+a.dir.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\',\'vscode\')">VS Code</button>'
-    + '</div></div>'
+    + (a.hasWeb ? '<div id="app-domains-body" style="margin-top:8px"><p style="color:var(--dim);font-size:12px">Loading\u2026</p></div>'
+        : '<p style="color:var(--dim);font-size:12px;margin-top:8px">This app has no web folder (web/, public/ \u2026) to serve on a domain.</p>')
+    + '</div>'
     + (a.hasScripts ? '<div id="detail-scripts-'+dirName+'" class="hidden"></div>' : '')
     + '<div id="detail-logs-'+dirName+'" class="hidden"></div>'
     + (a.fileBrowse ? '<div id="detail-files-'+dirName+'" class="hidden"></div>' : '')
     + '</div>';
   el.innerHTML = html;
+  _appDomainsFor = dirName;
+  if (a.hasWeb) fillAppDomains(dirName);
 }
 function showDetailPane(tab, paneId) {
   var parent = tab.closest('.app-detail');
@@ -5844,6 +6482,74 @@ function escHtml(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function showToast(msg, duration) {
+  var el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ac);color:#fff;padding:8px 20px;border-radius:8px;font-size:13px;z-index:200;opacity:0;transition:opacity .3s';
+  document.body.appendChild(el);
+  requestAnimationFrame(function(){el.style.opacity='1'});
+  setTimeout(function(){el.style.opacity='0';setTimeout(function(){el.remove()},300)}, duration||3000);
+}
+// A dialog in the page (alert() cannot hold a long error and is not copyable)
+function showDialog(title, bodyHtml, buttons) {
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300;display:flex;align-items:center;justify-content:center;padding:16px';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:var(--sfc-solid);border:1px solid var(--brd);border-radius:10px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.5)';
+  box.innerHTML = '<div style="padding:14px 16px;border-bottom:1px solid var(--brd);font-weight:600">' + escHtml(title) + '</div>'
+    + '<div style="padding:14px 16px;overflow:auto;font-size:13px">' + bodyHtml + '</div>'
+    + '<div class="dlg-btns" style="padding:10px 16px;border-top:1px solid var(--brd);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"></div>';
+  var bar = box.querySelector('.dlg-btns');
+  (buttons || [{label: 'Close'}]).forEach(function(b) {
+    var el = document.createElement('button');
+    el.className = 'btn ' + (b.primary ? 'btn-primary' : 'btn-ghost');
+    el.textContent = b.label;
+    el.onclick = function() { ov.remove(); if (b.action) b.action(); };
+    bar.appendChild(el);
+  });
+  ov.appendChild(box);
+  ov.addEventListener('click', function(e) { if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  return ov;
+}
+// Why a certificate request failed, with a way to copy the text and to try again
+function showCertError(name, error, at, via, retry) {
+  var when = at ? ' <span style="color:var(--dim)">(' + escHtml(String(at).replace('T', ' ').replace('Z', ' UTC')) + ')</span>' : '';
+  var how = via === 'certbot' ? ' through certbot and nginx' : '';
+  showDialog('Certificate for ' + name + ' failed', '<p style="margin:0 0 8px">The request' + how + ' did not finish' + when + '.</p>'
+    + '<pre style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.25);padding:10px;border-radius:6px;font-size:12px;margin:0;user-select:all">' + escHtml(error) + '</pre>'
+    + '<p style="color:var(--dim);font-size:12px;margin:10px 0 0">Common causes: the name does not point at this server yet, port 80 is not reachable from the internet, certbot or nginx is missing or needs sudo, or Let\'s Encrypt rate limits were hit. Fix it and try again.</p>',
+    [{label: 'Copy', action: function() { try { navigator.clipboard.writeText(error); } catch (e) {} }}, {label: 'Close'}, {label: 'Try again', primary: true, action: retry}]);
+}
+var _certErr = {};
+function showCertErrorKey(k) {
+  var c = _certErr[k]; if (!c) return;
+  showCertError(c.name, c.error, c.at, c.via, c.retry);
+}
+// Text areas grow to show their text, up to half the window, and shrink again
+function qGrow(t) {
+  if (!t || t.tagName !== 'TEXTAREA' || t.offsetParent === null) return;
+  var max = Math.floor(window.innerHeight * 0.5);
+  t.style.height = 'auto';
+  var want = t.scrollHeight + 2;
+  t.style.height = Math.min(want, max) + 'px';
+  t.style.overflowY = want > max ? 'auto' : 'hidden';
+}
+document.addEventListener('input', function(e) { qGrow(e.target); });
+document.addEventListener('focusin', function(e) { qGrow(e.target); });
+window.addEventListener('resize', function() { document.querySelectorAll('textarea').forEach(qGrow); });
+// Values set by code, tabs shown later, and fields added to the page: look again now and then
+setInterval(function() {
+  document.querySelectorAll('textarea').forEach(function(t) {
+    if (t.offsetParent !== null && (t.scrollHeight > t.clientHeight + 2 || t.dataset.qg !== String(t.value.length))) {
+      t.dataset.qg = String(t.value.length);
+      qGrow(t);
+    }
+  });
+}, 1200);
 
 function showCreate(){document.getElementById('create-form').classList.remove('hidden')}
 function hideCreate(){document.getElementById('create-form').classList.add('hidden')}
@@ -6392,6 +7098,7 @@ async function clearServerCache() {
 // ── Domains ─────────────────────────────────────────
 async function loadDomains() {
   var r = await api('domains');
+  try { var ar = await api('apps'); if (ar && ar.apps) _appsData = ar.apps; } catch (e) { /* pickers fall back to what is loaded */ }
   var el = document.getElementById('domains-list');
   if (!r.domains || !r.domains.length) {
     el.innerHTML = '<div class="card"><p style="color:var(--dim)">No domains configured. Add one below, or set <code>Q.webserver.domains</code> in config.</p></div>';
@@ -6403,9 +7110,13 @@ async function loadDomains() {
         : '<span style="color:var(--dim)">no cert</span>';
       var btns = '';
       var dn = d.domain.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      if (d.certError && d.certStatus !== 'valid') {
+        _certErr['dom:' + d.domain] = {name: d.domain, error: d.certError, at: d.certErrorAt, via: d.certErrorVia, retry: function() { provisionCert(d.domain); }};
+        badge = '<a href="#" style="color:var(--red)" title="The last certificate request failed" onclick="event.stopPropagation();showCertErrorKey(\'dom:' + dn + '\');return false">✗ Failed [ See Error ]</a>';
+      }
       if (d.certStatus !== 'valid') btns += ' <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Provision</button>';
       else btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="provisionCert(\'' + dn + '\')">Renew</button>';
-      btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + dn + '\')">Remove</button>';
+      if (d.removable) btns += ' <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--red)" onclick="removeDomain(\'' + dn + '\')" title="Stop serving this domain from the panel. The domain, its DNS, any certificate and the app\'s files are not touched.">Remove</button>';
       // Per-domain auto-cache config
       var cacheConf = d.cache && d.cache.auto ? d.cache.auto : null;
       var cacheEnabled = cacheConf && cacheConf.enabled;
@@ -6431,6 +7142,7 @@ async function loadDomains() {
         + '</select>'
         + '</div>';
       return '<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><strong>' + escHtml(d.domain) + '</strong>' + cacheBadge + '</div><div>' + badge + btns + '</div></div>'
+        + (d.unconfigured ? '' : '<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-size:11px;color:var(--dim)">App:</span>' + domainAppPicker(d) + '</div>')
         + (d.root ? '<div style="font-size:11px;color:var(--dim);margin-top:4px">Root: ' + escHtml(d.root) + '</div>' : '')
         + (d.certExpires ? '<div style="font-size:11px;color:var(--dim);margin-top:2px">Expires: ' + escHtml(d.certExpires) + '</div>' : '')
         + cacheToggle
@@ -6481,25 +7193,112 @@ async function addDomain() {
   await api('domains/add', {domain:name, root:document.getElementById('dom-root').value.trim()||null, app:document.getElementById('dom-app').value.trim()||null, tls:document.getElementById('dom-tls').value});
   document.getElementById('dom-name').value=''; loadDomains();
 }
-async function removeDomain(n) { if(!confirm('Remove '+n+'?'))return; await api('domains/remove',{domain:n}); loadDomains(); }
+async function removeDomain(n) { if(!confirm('Stop serving '+n+' from this panel?\n\nIts entry is deleted from the panel settings. No certificate, DNS record or app files are deleted.'))return; await api('domains/remove',{domain:n}); loadDomains(); }
 async function provisionCert(n, email, force) {
   var b = {domain:n};
   if (email) b.email = email;
   if (force) b.force = true;
   var r = await api('domains/provision', b);
   if (r.proxied && !force) {
-    if (!confirm(r.error + '\\n\\nTry anyway? This only works if /.well-known/acme-challenge/ on port 80 reaches this server, and nginx would still need the issued certificate.')) return;
+    if (!confirm(r.error + '\n\nRequest a certificate here anyway? ' + (r.cdn && r.cdn !== 'a reverse proxy'
+      ? 'It only works if the CDN passes /.well-known/acme-challenge/ on port 80 through to this server (or the CDN is switched to DNS-only).'
+      : 'It only works if /.well-known/acme-challenge/ on port 80 reaches this server. If nginx owns port 80 and does not forward it, the request will fail, and nginx would still need the certificate installed.'))) return;
     return provisionCert(n, email, true);
   }
   if (r.needsEmail) {
     // Let's Encrypt wants an address for expiry notices. Ask once; the server keeps it.
-    var e = prompt((email ? r.error + '\\n\\n' : '') + "Email address for Let's Encrypt expiry notices:", email || '');
+    var e = prompt((email ? r.error + '\n\n' : '') + "Email address for Let's Encrypt expiry notices:", email || '');
     if (!e) return;
     return provisionCert(n, e.trim(), force);
   }
-  alert(r.success ? 'Done!' : r.error || 'Failed');
+  if (r.success && r.queued) return waitForCert(n);
+  if (r.success) showToast('Done!');
+  else showCertError(n, r.error || 'Failed', null, null, function() { provisionCert(n); });
   loadDomains();
 }
+// The server asks Let's Encrypt in a background process; look in every few seconds for how it went.
+async function waitForCert(n) {
+  showToast('Requesting a certificate for ' + n + '…');
+  for (var i = 0; i < 60; i++) {
+    await new Promise(function(res) { setTimeout(res, 3000); });
+    var s = await api('domains/provision-status', {domain: n});
+    if (s.pending) continue;
+    if (s.unknown) break;
+    if (s.success) showToast('Certificate ready for ' + n, 5000);
+    else showCertError(n, s.error || 'unknown error', s.at, s.via, function() { provisionCert(n); });
+    loadDomains();
+    return;
+  }
+  alert('Still working on ' + n + '. Look at the server log for how it ends.');
+  loadDomains();
+}
+// ── Which app a domain serves ──
+// One dropdown per domain: the domain's current app first, then apps that serve some domain already
+// (they can serve several), then the rest. An app can be chosen for any number of domains.
+function domainAppPicker(d) {
+  var cur = d.appDir || '';
+  var apps = (_appsData || []).filter(function(a) { return a.hasWeb || a.dirName === cur; });
+  function rank(a) { return a.dirName === cur ? 0 : ((a.domains && a.domains.length) ? 1 : 2); }
+  apps.sort(function(x, y) { return rank(x) - rank(y) || String(x.name).localeCompare(String(y.name)); });
+  var o = '<option value=""' + (!cur ? ' selected' : '') + '>No app (welcome page)</option>';
+  apps.forEach(function(a) {
+    var also = (a.domains || []).filter(function(x) { return x !== d.domain; });
+    var label = (a.dirName === cur ? '✓ ' : '') + a.name
+      + (also.length ? '  · also ' + also.slice(0, 2).join(', ') + (also.length > 2 ? '…' : '') : '');
+    o += '<option value="' + escAttr(a.dirName) + '"' + (a.dirName === cur ? ' selected' : '') + '>' + escHtml(label) + '</option>';
+  });
+  return '<select class="app-picker" title="Which app this domain serves" onclick="event.stopPropagation()" '
+    + 'onchange="setDomainApp(\'' + escAttr(d.domain) + '\', this.value)" '
+    + 'style="font-size:12px;padding:3px 8px;max-width:260px;background:var(--card);color:var(--fg);border:1px solid '
+    + (cur ? 'var(--ac)' : 'var(--brd)') + ';border-radius:6px">' + o + '</select>';
+}
+async function setDomainApp(domain, app) {
+  var r = await api('domains/set-app', {domain: domain, app: app});
+  if (r.error) alert(r.error);
+  try { var ar = await api('apps'); if (ar && ar.apps) _appsData = ar.apps; } catch (e) { /* keep what we have */ }
+  loadDomains();
+  var list = document.getElementById('apps-list');
+  if (list && list.querySelector('.app-row')) renderAppList(list);
+  var body = document.getElementById('app-domains-body');
+  if (body && _appDomainsFor) await fillAppDomains(_appDomainsFor);
+}
+var _appDomainsFor = null;
+async function fillAppDomains(dirName) {
+  var body = document.getElementById('app-domains-body');
+  if (!body) return;
+  var a = _appsData.find(function(x) { return x.dirName === dirName; });
+  if (!a) return;
+  var r = await api('domains');
+  var all = r.domains || [];
+  var mine = (a.domains || []).slice().sort(function(x, y) { return (y === location.hostname ? 1 : 0) - (x === location.hostname ? 1 : 0); });
+  var html = mine.length ? mine.map(function(dn) {
+    return '<div class="card" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;padding:8px 12px'
+      + (dn === location.hostname ? ';outline:2px solid var(--ac);outline-offset:-2px' : '') + '">'
+      + '<strong style="min-width:0;word-break:break-all">' + escHtml(dn) + '</strong>'
+      + (dn === location.hostname ? '<span style="font-size:11px;color:var(--ac)">← you are here</span>' : '')
+      + '<span style="margin-left:auto">' + domainAppPicker({domain: dn, appDir: dirName}) + '</span></div>';
+  }).join('') : '<p style="color:var(--dim);font-size:12px">This app is not served on any domain yet.</p>';
+  var others = all.filter(function(d) { return d.appDir !== dirName && !d.unconfigured; })
+    .sort(function(x, y) { return (y.domain === location.hostname ? 1 : 0) - (x.domain === location.hostname ? 1 : 0); });
+  if (others.length) {
+    var names = {};
+    _appsData.forEach(function(x) { names[x.dirName] = x.name; });
+    html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">'
+      + '<select id="app-add-domain" onchange="document.getElementById(\'app-add-btn\').disabled=!this.value" style="font-size:12px;padding:3px 8px;background:var(--card);color:var(--fg);border:1px solid var(--brd);border-radius:6px;max-width:260px">'
+      + '<option value="" disabled selected>' + escHtml(t('Select another domain')) + '</option>'
+      + others.map(function(d) {
+          return '<option value="' + escAttr(d.domain) + '">' + escHtml(d.domain) + (d.appDir && names[d.appDir] ? ' (' + escHtml(t('now {app}', {app: names[d.appDir]})) + ')' : '') + '</option>';
+        }).join('')
+      + '</select><button id="app-add-btn" disabled class="btn btn-primary btn-sm" title="' + escAttr(t('Make the chosen domain show this app')) + '" onclick="addDomainToApp(\'' + escAttr(dirName) + '\')">' + escHtml(t('Serve this app there')) + '</button></div>';
+  }
+  body.innerHTML = html;
+}
+async function addDomainToApp(dirName) {
+  var sel = document.getElementById('app-add-domain');
+  if (!sel || !sel.value) return;
+  await setDomainApp(sel.value, dirName);
+}
+function showAppDomains(dirName) { showAppDetail(dirName); }
 async function updateDomainCache(domain, field, value) {
   var payload = { domain: domain };
   payload[field] = value;
@@ -6523,16 +7322,17 @@ async function loadSecurity() {
     var html = '<div class="card"><h3 style="font-size:14px;margin-bottom:8px">Binary Attestation</h3>';
     html += '<div style="font-size:12px;margin-bottom:8px"><strong>Hash:</strong> <code style="font-size:11px">' + (r.binary_hash||'unknown') + '</code></div>';
     html += '<div style="font-size:12px;margin-bottom:8px"><strong>Size:</strong> ' + ((r.binary_size||0)/1024).toFixed(0) + ' KB</div>';
-    if (r.verification) {
+    var hasSigs = !!(r.signatures && r.signatures.length);
+    if (hasSigs && r.verification) {
       var v = r.verification;
       var color = v.valid ? 'var(--grn)' : 'var(--red)';
-      html += '<div style="font-size:12px;margin-bottom:8px"><strong>Status:</strong> <span style="color:'+color+'">' + escHtml(v.label || '') + ' — ' + (v.valid?'VALID':'FAILED') + '</span></div>';
+      html += '<div style="font-size:12px;margin-bottom:8px"><strong>' + t('Status:') + '</strong> <span style="color:'+color+'">' + escHtml(v.label || '') + ' \u2014 ' + (v.valid ? t('VALID') : t('FAILED')) + '</span></div>';
       if (v.hash_matches === false) {
-        html += '<div style="font-size:12px;color:var(--red)">⚠ Binary was modified since signing</div>';
+        html += '<div style="font-size:12px;color:var(--red)">\u26a0 ' + t('Binary was modified since signing') + '</div>';
       }
     }
-    if (r.signatures && r.signatures.length) {
-      html += '<h4 style="font-size:13px;margin:12px 0 6px">Signatures</h4>';
+    if (hasSigs) {
+      html += '<h4 style="font-size:13px;margin:12px 0 6px">' + t('Signatures') + '</h4>';
       r.signatures.forEach(function(s) {
         html += '<div style="font-size:12px;padding:4px 0;border-top:1px solid var(--border)">';
         html += '<strong>' + escHtml(s.signer || '') + '</strong> <span style="color:var(--dim)">(key:' + escHtml((s.key_id||'?').slice(0,8)) + ')</span>';
@@ -6540,7 +7340,7 @@ async function loadSecurity() {
         html += '</div>';
       });
     } else {
-      html += '<div style="font-size:12px;color:var(--dim)">No signatures. Use the form below or the CLI to sign.</div>';
+      html += '<div style="font-size:12px;color:var(--dim);line-height:1.5">' + t('This build has not been signed, so there is nothing to verify yet. Signing records a signature with your private key; anyone holding your public key can then confirm this binary is unchanged. Paste a private key in the form below, or use the CLI.') + '</div>';
     }
     if (r.rekor && r.rekor.uuid) {
       html += '<div style="font-size:12px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><strong>Transparency log:</strong> <a href="' + (r.rekor.url||'#') + '" target="_blank" style="color:#4a9eff">' + r.rekor.uuid.slice(0,24) + '...</a> <span style="color:var(--grn)">✓ on Rekor</span></div>';
@@ -6570,7 +7370,7 @@ async function loadSecurity() {
       thtml += '</div>';
       trustEl.innerHTML = thtml;
     } else {
-      trustEl.innerHTML = '<div class="card"><p style="font-size:12px;color:var(--dim)">Code trust not enabled. Set <code>Q.trust.enabled: true</code> and add trusted keys.</p></div>';
+      trustEl.innerHTML = '<div class="card"><p style="font-size:12px;color:var(--dim)">' + t('Code trust is off. Turn on Q.trust.enabled in the configuration and add trusted keys.') + '</p></div>';
     }
   } catch(e) {}
 }
@@ -6654,7 +7454,7 @@ async function loadWorkers() {
   if (r.mode==='in-process') { el.innerHTML='<div class="card"><p>In-process mode (no pool).</p></div>'; return; }
   function s(l,v){return '<div><div style="font-size:18px;font-weight:700">'+v+'</div><div style="font-size:11px;color:var(--dim)">'+l+'</div></div>';}
   function fmt(b){return b>1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB';}
-  function fmtT(s){var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h?h+'h '+m+'m':m+'m';}
+  function fmtT(s){s=Number(s)||0;var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h?h+'h '+m+'m':m+'m';}
   el.innerHTML='<div class="card"><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">'
     +s('Workers',r.workers)+s('Active',r.activeWorkers||0)+s('Requests',(r.totalRequests||0).toLocaleString())
     +s('Memory',fmt(r.memoryUsage||0))+s('Peak',fmt(r.memoryPeak||0))+s('Uptime',fmtT(r.uptime||0))
