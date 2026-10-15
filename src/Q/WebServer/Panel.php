@@ -4792,6 +4792,12 @@ class Q_WebServer_Panel
 		}
 		// 3. Platform mode: parent of APP_DIR
 		if (defined('APP_DIR')) return dirname(APP_DIR);
+		// 4. Standalone mode: apps/ beside qbixserver.php (create on first use)
+		if (defined('QBIX_SERVER_DIR')) {
+			$fallback = QBIX_SERVER_DIR . DIRECTORY_SEPARATOR . 'apps';
+			if (!is_dir($fallback)) @mkdir($fallback, 0755, true);
+			if (is_dir($fallback)) return $fallback;
+		}
 		return null;
 	}
 

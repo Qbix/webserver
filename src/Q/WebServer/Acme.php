@@ -23,6 +23,103 @@ class Q_WebServer_Acme
 	// Pending HTTP-01 challenges: token => thumbprint authorization
 	protected static $pendingChallenges = [];
 
+	// ── The log of a request, for the people who run the server ─────────────
+
+	/** @var string|null the log file this process is writing to */
+	protected static $logFile = null;
+
+	private static function logPath($certDir, $name)
+	{
+		return rtrim($certDir, '/') . '/.logs/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $name) . '.log';
+	}
+
+	/**
+	 * Start a new attempt in the log of a name. Earlier attempts stay (the last few hundred lines),
+	 * so a retry does not hide why the one before it failed.
+	 * @method beginLog
+	 * @static
+	 */
+	static function beginLog($certDir, $name, $how)
+	{
+		$f = self::logPath($certDir, $name);
+		@mkdir(dirname($f), 0700, true);
+		if (is_file($f) && filesize($f) > 65536) {
+			$lines = file($f);
+			@file_put_contents($f, implode('', array_slice($lines, -400)));
+		}
+		self::$logFile = $f;
+		self::note('--- ' . $how . ' ---');
+	}
+
+	/** Add a line to the log this process is writing; nothing happens if there is none. */
+	static function note($msg)
+	{
+		if (!self::$logFile) return;
+		@file_put_contents(self::$logFile, gmdate('H:i:s') . ' ' . $msg . "\n", FILE_APPEND);
+	}
+
+	/** Add a line to the log of a name, from a process that did not start the request. */
+	static function logTo($certDir, $name, $msg)
+	{
+		$f = self::logPath($certDir, $name);
+		@mkdir(dirname($f), 0700, true);
+		@file_put_contents($f, gmdate('H:i:s') . ' ' . $msg . "\n", FILE_APPEND);
+	}
+
+	/** @return string the log of a name ("" if there is none) */
+	static function readLog($certDir, $name)
+	{
+		$f = self::logPath($certDir, $name);
+		if (!is_file($f)) return '';
+		$lines = file($f);
+		return implode('', array_slice($lines, -300));
+	}
+
+	/**
+	 * Ask for the challenge answer the way Let's Encrypt will: over plain HTTP, by the public name.
+	 * Tells what stands in the way when something does. Advisory only: a server that cannot reach
+	 * itself by its own public name (NAT) fails this and can still pass the real check.
+	 * @return array {ok: boolean, why: string, server: string, code: int}
+	 */
+	private static function selfCheck($domain, $token, $keyAuth)
+	{
+		$url = 'http://' . $domain . '/.well-known/acme-challenge/' . $token;
+		$ctx = stream_context_create(['http' => ['ignore_errors' => true, 'timeout' => 8, 'follow_location' => 0,
+			'header' => "User-Agent: Qbix-Server-selfcheck\r\n"]]);
+		$body = @file_get_contents($url, false, $ctx);
+		$h = self::parseResponseHeaders($http_response_header ?? []);
+		if ($body === false && empty($h['status'])) {
+			return ['ok' => false, 'code' => 0, 'server' => '',
+				'why' => "this machine could not connect to $url (name does not resolve to it, port 80 closed, or the machine cannot reach itself by its public name)"];
+		}
+		$code = $h['status'] ?? 0;
+		$server = $h['server'] ?? '';
+		if (trim((string) $body) === $keyAuth) return ['ok' => true, 'code' => $code, 'server' => $server, 'why' => ''];
+		$why = "$url answered HTTP $code" . ($server ? " from \"$server\"" : '') . ' without the challenge answer';
+		if ($code >= 300 && $code < 400 && !empty($h['location'])) $why .= ' (it redirects to ' . $h['location'] . ')';
+		return ['ok' => false, 'code' => $code, 'server' => $server, 'why' => $why];
+	}
+
+	/**
+	 * What to tell whoever runs the server when port 80 for a name is answered by something other
+	 * than this server (nginx in front, usually).
+	 * @method proxyAdvice
+	 * @static
+	 * @param {string} $domain
+	 * @param {string} $server The Server header the check saw
+	 * @return {string}
+	 */
+	static function proxyAdvice($domain, $server = '')
+	{
+		$port = class_exists('Q_WebServer', false) && Q_WebServer::$port ? Q_WebServer::$port : 8080;
+		$who = $server !== '' ? $server : 'a web server in front of this one';
+		return "Port 80 for $domain is answered by $who, which did not pass the challenge on to this server. "
+			. "Either (1) in the nginx server block that answers $domain, or in a catch-all one for its parent domain, add\n"
+			. "    location ^~ /.well-known/acme-challenge/ { proxy_pass http://127.0.0.1:$port; proxy_set_header Host \$host; }\n"
+			. "and reload nginx; or (2) set Q.webserver.tls.method to \"certbot\", so that certbot and nginx do it, which needs this server to run as root "
+			. "or to have passwordless sudo for certbot, nginx, cp, rm, cat and test.";
+	}
+
 	/**
 	 * Check if a token is pending for an HTTP-01 challenge.
 	 * Called by the router on /.well-known/acme-challenge/* requests.
@@ -120,6 +217,7 @@ class Q_WebServer_Acme
 		}
 
 		$certDir = rtrim($certDir, '/');
+		self::beginLog($certDir, $primary, 'requesting a certificate for ' . $primary . ' with ' . ($method === 'certbot' ? 'certbot and nginx' : 'the built-in ACME client (Let\'s Encrypt, HTTP-01 on port 80)'));
 		if (!class_exists('Q_WebServer_Fork', false)) {
 			$f = __DIR__ . '/Fork.php';
 			if (is_file($f)) require_once $f;
@@ -365,7 +463,31 @@ class Q_WebServer_Acme
 		$accountKeyPath = rtrim($certDir, '/') . '/account.pem';
 		$domainKeyPath  = $domainDir . '/privkey.pem';
 
+		// Track any nginx conf.d files we wrote so we can clean up
+		$wroteNginxConfs = [];
+
 		try {
+			// 0. HTTPS pre-probe: if the domain already has a working cert (e.g. CDN), skip provisioning
+			self::note('probing https://' . $primaryDomain . ' to see if a certificate is already in place');
+			$tls = self::detectTls($primaryDomain);
+			if ($tls['hasCert'] && !$tls['noCert']) {
+				if ($tls['cdnCert']) {
+					$cdnNote = $tls['cdnHeaders'] ? ' (CDN headers: ' . implode(', ', $tls['cdnHeaders']) . ')' : '';
+					self::note('https://' . $primaryDomain . ' already has a working certificate' . $cdnNote . '; no provisioning needed');
+					return ['success' => false, 'permanent' => true,
+						'error' => "https://$primaryDomain already has a working TLS certificate (served by a CDN or upstream proxy$cdnNote). No new certificate is needed.",
+						'hint' => 'If you need a certificate on this server too, disable or bypass the CDN for this domain first.'];
+				}
+				// Has a cert but no CDN — could be already provisioned or another server; proceed anyway
+				self::note('https://' . $primaryDomain . ' already responds with a cert (not CDN), but will try to renew anyway');
+			} else {
+				if (!empty($tls['noRoute'])) {
+					self::note('domain not reachable over HTTPS (' . ($tls['error'] ?: 'no route') . '); provisioning anyway — Let\'s Encrypt will validate via HTTP-01');
+				} else {
+					self::note($tls['error'] ?: 'no HTTPS cert found; will provision one');
+				}
+			}
+
 			// 1. Get or create account key
 			$accountKey = self::getOrCreateKey($accountKeyPath);
 
@@ -385,6 +507,7 @@ class Q_WebServer_Acme
 			$accountUrl = $account['url'];
 			if (!$accountUrl) throw new Exception('The ACME server did not create an account');
 
+			self::note('account ready; asking for a certificate for ' . implode(', ', $domains));
 			// 5. Create order
 			$identifiers = array_map(function ($d) {
 				return ['type' => 'dns', 'value' => $d];
@@ -402,8 +525,17 @@ class Q_WebServer_Acme
 
 			// 6. Process authorizations (HTTP-01 challenges)
 			foreach ($order['body']['authorizations'] as $authUrl) {
-				$auth = self::httpGet($authUrl);
-				$domain = $auth['identifier']['value'];
+				$auth = self::postAsGet($authUrl, $accountKey, $accountUrl);
+				$domain = $auth['identifier']['value'] ?? '';
+				if ($domain === '' || empty($auth['challenges'])) {
+					$d = $auth['detail'] ?? 'no details';
+					self::note("could not read the authorization: $d");
+					return ['success' => false, 'error' => "Could not read the authorization from the ACME server: $d"];
+				}
+				if (($auth['status'] ?? '') === 'valid') {
+					self::note("$domain is already authorized");
+					continue;
+				}
 
 				// Find the http-01 challenge
 				$challenge = null;
@@ -414,6 +546,7 @@ class Q_WebServer_Acme
 					}
 				}
 				if (!$challenge) {
+					foreach ($wroteNginxConfs as $d => $path) self::removeNginxChallengeConf($d);
 					return ['success' => false, 'error' => "No HTTP-01 challenge for {$domain}"];
 				}
 
@@ -426,30 +559,63 @@ class Q_WebServer_Acme
 				if (self::$inChild && self::$challengeDir) {
 					file_put_contents(self::$challengeDir . '/' . $challenge['token'], $keyAuth);
 				}
+				self::note("challenge for $domain is ready to be answered at /.well-known/acme-challenge/" . $challenge['token']);
 
-				// Tell ACME we're ready
-				self::signedRequest(
-					$challenge['url'],
-					(object) [],
-					$accountKey, $accountUrl
-				);
+				// Can the challenge be fetched the way the CA will? (Say so in the log now, whatever follows.)
+				$check = self::selfCheck($domain, $challenge['token'], $keyAuth);
+				self::note($check['ok'] ? 'own check: the challenge is reachable at http://' . $domain . '/.well-known/acme-challenge/...'
+					: 'own check: ' . $check['why']);
+
+				// If the self-check failed because something else answered port 80, try adding a
+				// nginx conf.d file that proxy_passes the challenge to this server, then re-check.
+				if (!$check['ok'] && $check['code'] !== 0 && !isset($wroteNginxConfs[$domain])) {
+					self::note("port 80 for $domain is answered by something else; trying to add an nginx conf.d proxy rule");
+					$nginx = self::tryWriteNginxChallengeConf($domain);
+					if ($nginx['ok']) {
+						$wroteNginxConfs[$domain] = $nginx['wrote'];
+						self::note('wrote ' . $nginx['wrote'] . ' and reloaded nginx; re-checking challenge');
+						self::pump(2); // give nginx a moment to reload
+						$check2 = self::selfCheck($domain, $challenge['token'], $keyAuth);
+						self::note($check2['ok'] ? 'own check (after nginx conf.d): challenge is now reachable'
+							: 'own check (after nginx conf.d): still not reachable — ' . $check2['why']);
+						if ($check2['ok']) $check = $check2;
+					} else {
+						self::note('could not write nginx conf.d: ' . $nginx['why']);
+					}
+				}
+
+				// Tell ACME we're ready: an empty JSON object, which starts the check
+				$ready = self::signedRequest($challenge['url'], new \stdClass, $accountKey, $accountUrl);
+				self::failIfError($ready['body'] ?? null, 'Telling the ACME server the challenge is ready');
+				self::note('asked Let\'s Encrypt to check ' . $domain);
 
 				// Poll until valid or invalid
-				$maxWait = 60;
+				$maxWait = 90;
 				$start = time();
+				$status = [];
 				while (time() - $start < $maxWait) {
 					self::pump(2);
-					$status = self::httpGet($challenge['url']);
-					if ($status['status'] === 'valid') break;
-					if ($status['status'] === 'invalid') {
-						unset(self::$pendingChallenges[$challenge['token']]);
-						if (self::$inChild && self::$challengeDir) @unlink(self::$challengeDir . '/' . $challenge['token']);
-						$err = $status['error']['detail'] ?? 'Challenge failed';
-						return ['success' => false, 'error' => "Challenge failed for {$domain}: {$err}"];
-					}
+					$status = self::postAsGet($challenge['url'], $accountKey, $accountUrl);
+					if (($status['status'] ?? '') === 'valid') break;
+					if (($status['status'] ?? '') === 'invalid') break;
 				}
 				unset(self::$pendingChallenges[$challenge['token']]);
 				if (self::$inChild && self::$challengeDir) @unlink(self::$challengeDir . '/' . $challenge['token']);
+				$st = $status['status'] ?? 'unknown';
+				self::note("check of $domain: $st");
+				if ($st !== 'valid') {
+					$err = $status['error']['detail'] ?? ($st === 'invalid' ? 'Challenge failed' : "Let's Encrypt had not finished checking after {$maxWait}s (status: $st)");
+					self::note('Let\'s Encrypt says: ' . $err);
+					$hint = '';
+					if (!$check['ok'] && ($check['code'] !== 0)) {
+						$hint = self::proxyAdvice($domain, $check['server']);
+					} elseif (!$check['ok']) {
+						$hint = ucfirst($check['why']) . '.';
+					}
+					if ($hint !== '') self::note('what to do: ' . $hint);
+					foreach ($wroteNginxConfs as $d => $path) self::removeNginxChallengeConf($d);
+					return ['success' => false, 'error' => "Challenge failed for {$domain}: {$err}", 'hint' => $hint];
+				}
 			}
 
 			// 7. Generate domain key + CSR
@@ -463,6 +629,7 @@ class Q_WebServer_Acme
 				$accountKey, $accountUrl
 			);
 			self::failIfError($finalize['body'] ?? null, 'Finalizing the order');
+			self::note('order finalized; waiting for the certificate');
 
 			// 9. Poll order until certificate is ready
 			$orderUrl = $order['headers']['location'] ?? $order['body']['url'] ?? $finalize['body']['url'] ?? '';
@@ -472,7 +639,7 @@ class Q_WebServer_Acme
 			$certUrl = null;
 			while (time() - $start < $maxWait) {
 				self::pump(2);
-				$check = self::httpGet($orderUrl);
+				$check = self::postAsGet($orderUrl, $accountKey, $accountUrl);
 				if (isset($check['certificate'])) {
 					$certUrl = $check['certificate'];
 					break;
@@ -489,6 +656,13 @@ class Q_WebServer_Acme
 			$certPem = self::httpGetRaw($certUrl);
 			file_put_contents($domainDir . '/fullchain.pem', $certPem);
 			chmod($domainDir . '/fullchain.pem', 0600);
+			self::note('certificate saved to ' . $domainDir . '/fullchain.pem');
+
+			// Clean up any temporary nginx conf.d files we wrote
+			foreach ($wroteNginxConfs as $d => $path) {
+				self::note("removing temporary nginx conf.d file $path");
+				self::removeNginxChallengeConf($d);
+			}
 
 			return [
 				'success' => true,
@@ -499,6 +673,11 @@ class Q_WebServer_Acme
 			];
 
 		} catch (Exception $e) {
+			// Clean up any temporary nginx conf.d files we wrote
+			foreach ($wroteNginxConfs as $d => $path) {
+				self::removeNginxChallengeConf($d);
+			}
+			self::note('failed: ' . $e->getMessage());
 			return ['success' => false, 'error' => $e->getMessage()];
 		}
 	}
@@ -545,6 +724,163 @@ class Q_WebServer_Acme
 			}
 		}
 		return $domains;
+	}
+
+	// ── Nginx / CDN helpers ──────────────────────────────────────────
+
+	/**
+	 * Check if a domain already has a working TLS certificate, and whether a CDN is in front.
+	 * Uses curl (exec) when available, falls back to a stream context that lets us inspect the error.
+	 *
+	 * @param  string $fqdn
+	 * @return array {hasCert: bool, cdnCert: bool, cdnHeaders: string[], noCert: bool, noRoute: bool, error: string}
+	 *   noRoute=true means the domain was not reachable at all (DNS not set, server not exposed).
+	 *   noCert=true with noRoute=false means the domain is reachable but has no valid cert — provision one.
+	 */
+	static function detectTls($fqdn)
+	{
+		$result = ['hasCert' => false, 'cdnCert' => false, 'cdnHeaders' => [], 'noCert' => false, 'noRoute' => false, 'error' => ''];
+		$url = 'https://' . $fqdn . '/';
+
+		// Try curl first — it gives us the cert error text explicitly
+		if (function_exists('exec')) {
+			$out = []; $code = 0;
+			@exec('curl -sI --max-time 8 --connect-timeout 6 ' . escapeshellarg($url) . ' 2>&1', $out, $code);
+			$raw = implode("\n", $out);
+			// Cert errors → name does not match, expired, self-signed, unable to get cert, SSL
+			// The domain is reachable; it just has no (valid) cert yet — provision one.
+			if (preg_match('/SSL|certificate|CERT|unable to get|no alternative/i', $raw) && !preg_match('/HTTP\//i', $raw)) {
+				$result['noCert'] = true;
+				// noRoute stays false: domain is reachable, needs provisioning
+				$result['error'] = 'TLS error: ' . trim(preg_replace('/\s+/', ' ', substr(implode(' ', array_slice($out, 0, 5)), 0, 200)));
+				return $result;
+			}
+			if (preg_match('/HTTP\/[12]/', $raw)) {
+				$result['hasCert'] = true;
+				// CDN fingerprints
+				$cdnMarkers = ['CF-Ray', 'X-Served-By', 'X-Cache', 'X-CDN', 'X-Fastly', 'Via:.*varnish', 'Server:.*cloudflare', 'Server:.*akamai'];
+				foreach ($cdnMarkers as $marker) {
+					if (preg_match('/' . $marker . '/i', $raw)) {
+						$result['cdnCert'] = true;
+						$result['cdnHeaders'][] = $marker;
+					}
+				}
+				return $result;
+			}
+			// curl couldn't connect at all (no route, DNS not set, refused) — defer, don't provision
+			$result['noCert'] = true;
+			$result['noRoute'] = true;
+			$result['error'] = 'Could not connect over HTTPS: ' . trim(substr($raw, 0, 200));
+			return $result;
+		}
+
+		// Fallback: PHP stream context (gives less detail on cert errors)
+		$ctx = stream_context_create(['ssl' => ['capture_peer_cert' => true, 'verify_peer' => true],
+			'http' => ['method' => 'HEAD', 'timeout' => 8, 'ignore_errors' => true]]);
+		$resp = @file_get_contents($url, false, $ctx);
+		$headers = self::parseResponseHeaders($http_response_header ?? []);
+		if ($resp !== false || !empty($headers['status'])) {
+			$result['hasCert'] = true;
+			$raw = implode("\n", $http_response_header ?? []);
+			$cdnMarkers = ['CF-Ray', 'X-Served-By', 'X-Cache', 'X-CDN', 'Server:.*cloudflare'];
+			foreach ($cdnMarkers as $marker) {
+				if (preg_match('/' . $marker . '/i', $raw)) {
+					$result['cdnCert'] = true;
+					$result['cdnHeaders'][] = $marker;
+				}
+			}
+		} else {
+			// PHP can't distinguish "TLS error" from "no route" here — safer to assume no route (defer)
+			$result['noCert'] = true;
+			$result['noRoute'] = true;
+			$result['error'] = 'HTTPS connection failed (cert error or no route)';
+		}
+		return $result;
+	}
+
+	/**
+	 * Write an additive nginx conf.d file that proxy_passes /.well-known/acme-challenge/ for $fqdn
+	 * to this server so the HTTP-01 challenge can be answered. Backs up any existing file, validates
+	 * with `nginx -t`, reloads, and rolls back on failure.
+	 *
+	 * @param  string $fqdn
+	 * @return array {ok: bool, why: string, wrote: string|null}
+	 */
+	static function tryWriteNginxChallengeConf($fqdn)
+	{
+		if (!function_exists('exec')) {
+			return ['ok' => false, 'why' => 'exec() is not available; cannot write nginx config', 'wrote' => null];
+		}
+		$port = class_exists('Q_WebServer', false) && Q_WebServer::$port ? (int) Q_WebServer::$port : 8080;
+		$confDir = '/etc/nginx/conf.d';
+		if (!is_dir($confDir)) {
+			return ['ok' => false, 'why' => 'nginx conf.d directory not found at ' . $confDir, 'wrote' => null];
+		}
+		$safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', $fqdn);
+		$confPath = $confDir . '/qbix-acme-' . $safeName . '.conf';
+		$backup = null;
+
+		if (is_file($confPath)) {
+			$backup = $confPath . '.bak-' . time();
+			if (!@copy($confPath, $backup)) {
+				return ['ok' => false, 'why' => "Could not back up $confPath", 'wrote' => null];
+			}
+		}
+
+		$conf = "# Written by Qbix Server for ACME HTTP-01 challenge — safe to remove after cert is issued\n"
+			. "server {\n"
+			. "    listen 80;\n"
+			. "    server_name $fqdn;\n"
+			. "    location ^~ /.well-known/acme-challenge/ {\n"
+			. "        proxy_pass http://127.0.0.1:$port;\n"
+			. "        proxy_set_header Host \$host;\n"
+			. "    }\n"
+			. "    location / {\n"
+			. "        proxy_pass http://127.0.0.1:$port;\n"
+			. "        proxy_set_header Host \$host;\n"
+			. "        proxy_set_header X-Real-IP \$remote_addr;\n"
+			. "    }\n"
+			. "}\n";
+
+		if (!@file_put_contents($confPath, $conf)) {
+			return ['ok' => false, 'why' => "Could not write $confPath (permission denied?)", 'wrote' => null];
+		}
+
+		// Test nginx config
+		$testOut = []; $testCode = 0;
+		@exec('nginx -t 2>&1', $testOut, $testCode);
+		if ($testCode !== 0) {
+			// Roll back
+			if ($backup) @rename($backup, $confPath);
+			else @unlink($confPath);
+			return ['ok' => false, 'why' => 'nginx -t failed after writing ' . $confPath . ': ' . implode(' ', $testOut), 'wrote' => null];
+		}
+		if ($backup) @unlink($backup);
+
+		// Reload nginx
+		$reloadOut = []; $reloadCode = 0;
+		@exec('nginx -s reload 2>&1', $reloadOut, $reloadCode);
+		if ($reloadCode !== 0) {
+			@unlink($confPath);
+			return ['ok' => false, 'why' => 'nginx -s reload failed: ' . implode(' ', $reloadOut), 'wrote' => null];
+		}
+
+		return ['ok' => true, 'why' => '', 'wrote' => $confPath];
+	}
+
+	/**
+	 * Remove the temporary nginx conf.d challenge-forwarding file for $fqdn and reload nginx.
+	 * @param  string $fqdn
+	 */
+	static function removeNginxChallengeConf($fqdn)
+	{
+		if (!function_exists('exec')) return;
+		$safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', $fqdn);
+		$confPath = '/etc/nginx/conf.d/qbix-acme-' . $safeName . '.conf';
+		if (is_file($confPath)) {
+			@unlink($confPath);
+			@exec('nginx -s reload 2>&1');
+		}
 	}
 
 	// ── Internal ──────────────────────────────────────────────────────
@@ -630,9 +966,11 @@ class Q_WebServer_Acme
 		}
 
 		$protectedB64 = self::base64url(json_encode($protected));
-		$payloadB64 = is_object($payload) && empty((array) $payload)
+		// null is a POST-as-GET (empty payload). An empty object is the "{}" that tells the CA a
+		// challenge is ready; sending "" there only fetched the challenge and never started the check.
+		$payloadB64 = $payload === null
 			? ''
-			: self::base64url(json_encode($payload));
+			: self::base64url(is_object($payload) ? '{}' : json_encode($payload));
 
 		openssl_sign("$protectedB64.$payloadB64", $sig, $key, OPENSSL_ALGO_SHA256);
 
@@ -657,6 +995,13 @@ class Q_WebServer_Acme
 		}
 
 		return ['body' => json_decode($resp, true) ?: [], 'headers' => $headers, 'raw' => $resp];
+	}
+
+	/** Fetch an ACME resource the way the protocol asks since unauthenticated GETs were retired. */
+	private static function postAsGet($url, $key, $accountUrl)
+	{
+		$r = self::signedRequest($url, null, $key, $accountUrl);
+		return is_array($r['body']) ? $r['body'] : [];
 	}
 
 	private static function httpGet($url)

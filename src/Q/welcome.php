@@ -6,6 +6,8 @@
 <meta name="color-scheme" content="light dark">
 <title>Qbix Server</title>
 <link rel="stylesheet" href="/Q/prism.css">
+<link rel="api-catalog" href="/.well-known/api-catalog">
+<link rel="alternate" type="application/ai-catalog+json" href="/.well-known/ai-catalog.json">
 <style>
 :root{--bg:#f8f9fa;--fg:#333;--hero-bg:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);--card-bg:#fff;--card-sh:0 1px 3px rgba(0,0,0,.08);--card-h:#1a1a2e;--card-p:#777;--h2:#1a1a2e;--h3:#555;--p:#666;--code-bg:#eee;--code-fg:#333;--tag-bg:#e8f4ff;--tag-fg:#2a7fff;--tree-fg:#555;--tree-b:#1a1a2e;--note-bg:#fff8e1;--note-bd:#ffc107;--foot-fg:#bbb;--foot-bd:#eee;--pre-bg:#1a1a2e}
 @media(prefers-color-scheme:dark){:root{--bg:#111520;--fg:#d0d4dc;--card-bg:#1a1f2e;--card-sh:0 1px 4px rgba(0,0,0,.4);--card-h:#e0e4ec;--card-p:#8a9ab4;--h2:#e0e4ec;--h3:#8a9ab4;--p:#8a9ab4;--code-bg:#1a1f2e;--code-fg:#c0c8d8;--tag-bg:#1a2e4c;--tag-fg:#5aadff;--tree-fg:#8a9ab4;--tree-b:#e0e4ec;--note-bg:#1a2a1a;--note-bd:#4caf50;--foot-fg:#444;--foot-bd:#1a1f2e;--pre-bg:#0d1117}}
@@ -37,6 +39,11 @@ p code{background:var(--code-bg);padding:1px 5px;border-radius:3px;color:var(--c
 .links a{color:#fff;background:rgba(255,255,255,.15);text-decoration:none;padding:6px 14px;border-radius:6px;font-size:13px;white-space:nowrap;backdrop-filter:blur(4px);transition:background .2s}
 .links a:hover{background:rgba(255,255,255,.28)}
 .foot{text-align:center;color:var(--foot-fg);font-size:11px;padding:24px;border-top:1px solid var(--foot-bd);margin-top:24px}
+.here{background:var(--card-bg);border-radius:8px;padding:16px;box-shadow:var(--card-sh);border-left:3px solid var(--note-bd);margin:20px 0 0}
+.here h2{margin:0 0 6px;font-size:17px}
+.here ol{margin:8px 0 0 20px;font-size:13px;color:var(--p)}
+.here li{margin:3px 0}
+.here .go{display:inline-block;margin-top:8px;font-size:13px}
 @media(max-width:500px){
   .hero{padding:32px 16px}
   .hero h1{font-size:24px}
@@ -59,6 +66,55 @@ p code{background:var(--code-bg);padding:1px 5px;border-radius:3px;color:var(--c
     <a href="https://github.com/Qbix/webserver">📖 GitHub</a>
   </div>
 </div>
+
+<?php
+$W = isset(Q_WebServer::$welcome) ? Q_WebServer::$welcome : array();
+$wReason = $W['reason'] ?? 'default';
+$wHost = htmlspecialchars($W['host'] ?? '', ENT_QUOTES, 'UTF-8');
+$wBranch = $W['branch'] ?? null;
+$wMain = $wBranch ? htmlspecialchars($wBranch['main'] ?? '', ENT_QUOTES, 'UTF-8') : '';
+$wName = $wBranch ? htmlspecialchars($wBranch['name'], ENT_QUOTES, 'UTF-8') : '';
+?>
+<?php if ($wReason === 'default' && !$wBranch): ?>
+<div class="w" style="padding-bottom:0"><div class="here">
+  <h2>Set up your first app</h2>
+  <p>The server is running and the control panel is ready. To serve a real site, create an app and point a domain at it.</p>
+  <ol>
+    <li>Open the <a href="/Q/panel#apps">Control Panel → Apps</a> and create your first app. It will live in the <code>apps/</code> folder beside <code>qbixserver.php</code>.</li>
+    <li>Point a domain at this server in the <a href="/Q/panel#domains">Domains</a> tab, or just keep browsing <code>localhost</code>.</li>
+    <li>Put your files in the app's <code>web/</code> folder — <code>index.html</code> replaces this page.</li>
+  </ol>
+  <a class="go" href="/Q/panel#apps">Open control panel &rarr;</a>
+</div></div>
+<?php endif ?>
+<?php if ($wBranch || $wReason !== 'default'): ?>
+<div class="w" style="padding-bottom:0"><div class="here">
+<?php if ($wBranch): ?>
+  <h2>This is a branch<?= $wName ? ': <code>' . $wName . '</code>' : '' ?></h2>
+  <p>A branch is an isolated copy of a site, used to try changes without touching the live one.<?php if ($wMain): ?> The live site is <a href="https://<?= $wMain ?>/"><?= $wMain ?></a>.<?php endif ?><?php if ($wReason === 'empty'): ?> This branch has no home page yet.<?php endif ?></p>
+  <ol>
+    <li>Change the branch's files from the <a href="/Q/panel#branches">Control Panel</a><?= $wReason === 'empty' ? ', starting with an <code>index.html</code>' : '' ?>.</li>
+    <li>Look at the result on this address.</li>
+    <li>When it is right, request a merge into <?= $wMain ? '<a href="https://' . $wMain . '/">' . $wMain . '</a>' : 'the main site' ?> from the Branches tab.</li>
+  </ol>
+  <?php if ($wMain): ?><a class="go" href="https://<?= $wMain ?>/">Go to the main site &rarr;</a><?php endif ?>
+<?php elseif ($wReason === 'empty'): ?>
+  <h2>This site has no home page yet</h2>
+  <p><?= $wHost ?> is set up with an app, but the app has no <code>index.html</code> or <code>index.php</code>.</p>
+  <ol>
+    <li>Add an <code>index.html</code> to the app's web folder, or ask an assistant to write the first page (see below).</li>
+    <li>Or choose a different app for this domain in the <a href="/Q/panel#domains">Control Panel</a>.</li>
+  </ol>
+<?php else: ?>
+  <h2>No app is set up for <?= $wHost ?> yet</h2>
+  <p>The server answers for this domain, but nothing has been assigned to it.</p>
+  <ol>
+    <li>Open the <a href="/Q/panel#domains">Control Panel</a>, go to Domains, and choose an app for <?= $wHost ?>, or add an app first under Apps.</li>
+    <li>Or ask an assistant to set it up (see below).</li>
+  </ol>
+<?php endif ?>
+</div></div>
+<?php endif ?>
 
 <div class="w">
 
@@ -164,8 +220,12 @@ socket.on('chat/message', (d) =&gt; console.log(d.name + ': ' + d.text));
 socket.emit('chat/message', {text: 'Hello!'});
 &lt;/script&gt;</code></pre>
 
+<h2>For AI agents</h2>
+
+<p>This server describes itself for AI agents and API clients: <a href="/llms.txt">/llms.txt</a>, the <a href="/.well-known/ai-catalog.json">AI catalog</a>, the <a href="/.well-known/api-catalog">API catalog</a> and the <a href="/.well-known/openapi.json">OpenAPI description</a>. They are generated from the server's endpoints and the app's handlers.</p>
+
 <div class="note">
-  <strong>Get started:</strong> Create <code>web/index.html</code> to replace this page.
+  <strong>Get started:</strong> Open the <a href="/Q/panel#apps">control panel</a> to create your first app, or drop files in <code>web/</code> to serve them directly.
   Use <code>--workers=40</code> for production. HTTPS starts automatically on port 443
   when certificates are present.
 </div>
@@ -173,7 +233,7 @@ socket.emit('chat/message', {text: 'Hello!'});
 </div>
 
 <div class="foot">
-  Qbix Server · <code>web/index.html</code> replaces this page
+  Qbix Server · <a href="/Q/panel#apps" style="color:inherit">set up an app</a> or drop <code>web/index.html</code> to replace this page
 </div>
 
 <script src="/Q/prism.js"></script>

@@ -136,6 +136,34 @@ class Q_WebServer_Certbot
 		return self::$probe = $r;
 	}
 
+	/**
+	 * What to tell whoever runs the server, for a failure we can recognise.
+	 * @method adminHint
+	 * @static
+	 * @param {string} $why The error text
+	 * @return {string}
+	 */
+	static function adminHint($why)
+	{
+		$w = strtolower((string) $why);
+		$user = function_exists('posix_getpwuid') && function_exists('posix_geteuid') ? (posix_getpwuid(posix_geteuid())['name'] ?? 'the server user') : 'the server user';
+		if (strpos($w, 'not installed') !== false) {
+			return 'Install certbot on the machine: apt install certbot (or snap install --classic certbot).';
+		}
+		if (strpos($w, 'not running as root') !== false || strpos($w, 'permission denied') !== false || strpos($w, 'sudo') !== false || strpos($w, 'not writable') !== false) {
+			return "Certbot and nginx need root. Run the server as root, or let $user use sudo without a password for them, "
+				. "e.g. in /etc/sudoers.d/qbix: $user ALL=(root) NOPASSWD: " . '/usr/bin/certbot, /usr/sbin/nginx, /usr/bin/cp, /usr/bin/rm, /usr/bin/cat, /usr/bin/test'
+				. ". (Use the paths \"which certbot nginx cp rm cat test\" shows.) Then request the certificate again.";
+		}
+		if (strpos($w, 'nginx -t') !== false || strpos($w, 'nginx -t does not pass') !== false) {
+			return 'nginx rejects its own configuration. Run nginx -t on the machine and fix what it reports; the certificate will be requested again after that.';
+		}
+		if (strpos($w, 'challenge') !== false || strpos($w, 'unauthorized') !== false || strpos($w, '404') !== false) {
+			return 'Let\'s Encrypt could not fetch the challenge from port 80. Check that the name points at this machine and that nginx serves /.well-known/acme-challenge/ for it (see the log).';
+		}
+		return '';
+	}
+
 	private static function tail($text, $lines)
 	{
 		$a = array_values(array_filter(array_map('trim', explode("\n", (string) $text))));
@@ -155,7 +183,9 @@ class Q_WebServer_Certbot
 		if ($method === 'acme') return false;
 		if ($method === 'certbot') return true;
 		$conf = Q_Config::get('Q', 'webserver', 'domains', $appHost, array());
-		return !empty($conf['proxied']);
+		// Seen behind a reverse proxy (X-Forwarded-* headers from nginx): the proxy holds ports 80 and 443,
+		// so the built-in client cannot pass the check and its certificate would not be the one served.
+		return !empty($conf['proxied']) || ($conf['cdn'] ?? '') === 'a reverse proxy';
 	}
 
 	/**
@@ -177,7 +207,12 @@ class Q_WebServer_Certbot
 			return array('success' => false, 'error' => 'A valid contact email is needed for Let\'s Encrypt');
 		}
 		$a = self::available();
-		if (!$a['ok']) return array('success' => false, 'error' => 'Cannot use certbot: ' . $a['why']);
+		if (!$a['ok']) {
+			Q_WebServer_Acme::note('certbot cannot be used here: ' . $a['why']);
+			return array('success' => false, 'error' => 'Cannot use certbot: ' . $a['why'], 'hint' => self::adminHint($a['why']));
+		}
+		Q_WebServer_Acme::note('certbot: ' . $a['certbot'] . ', nginx: ' . $a['nginx'] . ', privilege: ' . ($a['sudo'] === '' ? 'running as root' : 'sudo without a password')
+			. ', nginx conf.d: ' . $a['confDir']);
 
 		$live = rtrim((string) self::opt('liveDir', '/etc/letsencrypt/live'), '/') . '/' . $fqdn;
 		$cert = $live . '/fullchain.pem';
@@ -194,19 +229,33 @@ class Q_WebServer_Certbot
 			$ok = false;
 			$root = $options['root'] ?? null;
 			if ($root && is_dir($root)) {
+				Q_WebServer_Acme::note('running certbot with --webroot -w ' . $root);
 				list($c, $o) = self::sh($base . ' --webroot -w ' . $q($root), 180);
+				Q_WebServer_Acme::note("certbot --webroot exited $c:\n" . self::tail($o, 12));
 				if ($c === 0) $ok = true; else $errors[] = 'webroot: ' . self::tail($o, 4);
 			}
 			if (!$ok) {
+				Q_WebServer_Acme::note('running certbot with --nginx');
 				list($c, $o) = self::sh($base . ' --nginx', 180);
+				Q_WebServer_Acme::note("certbot --nginx exited $c:\n" . self::tail($o, 12));
 				if ($c === 0) $ok = true; else $errors[] = 'nginx: ' . self::tail($o, 4);
 			}
-			if (!$ok) return array('success' => false, 'error' => 'certbot failed. ' . implode(' | ', $errors));
+			if (!$ok) {
+				$all = implode(' ', $errors);
+				return array('success' => false, 'error' => 'certbot failed. ' . implode(' | ', $errors), 'hint' => self::adminHint($all));
+			}
+		} else {
+			Q_WebServer_Acme::note('a certificate for ' . $fqdn . ' already exists in ' . $live . ' and is not due for renewal');
 		}
 
 		// 2. nginx
+		Q_WebServer_Acme::note('writing the nginx server block for ' . $fqdn . ' in ' . $a['confDir']);
 		$err = self::installServerBlock($a, $fqdn, $live, $options);
-		if ($err !== null) return array('success' => false, 'error' => $err);
+		if ($err !== null) {
+			Q_WebServer_Acme::note('nginx: ' . $err);
+			return array('success' => false, 'error' => $err, 'hint' => self::adminHint($err));
+		}
+		Q_WebServer_Acme::note('nginx serves ' . $fqdn . ' with the new certificate');
 
 		return array('success' => true, 'cert' => $cert, 'key' => $key, 'domains' => array($fqdn),
 			'via' => 'certbot', 'expires' => Q_WebServer_Acme::certExpiry($cert));

@@ -1,4 +1,24 @@
+# Qbix Server 2.4.0
+
+Agent discovery is now complete. The server publishes four machine-readable documents at well-known paths — generated per-request from what the server and app actually have, so they stay correct without anyone editing them. `/.well-known/ai-catalog.json` (AI Catalog spec) links to the OpenAPI description and, when an MCP endpoint is present, to the server card. `/.well-known/api-catalog` (RFC 9727 Linkset) links to the OpenAPI description, the llms.txt guide and the health endpoint. `/mcp/server-card` and `/.well-known/mcp/server-card` carry the MCP Server Card (SEP-2127) — transport URL, auth requirements, and supported protocol versions. `/llms.txt` (also at `/llm.txt` and both under `/.well-known/`) follows the llmstxt.org shape: a heading, a one-line abstract, then sections with links and notes, covering discovery, credentials, panel roles, file tiers, version control in branches, and the merge workflow. An `llms.txt` the app ships itself takes precedence.
+
+Agents trying to reach the root of a domain that has an app but no index file now get the welcome page with HTTP 200 instead of a 404. The welcome page points at the discovery documents and, for a branch subdomain, links to the main site.
+
+CDN detection is built in. When a request arrives with CDN-identifying headers (`CF-Ray`, `X-Served-By`, and similar), the server records that the domain is behind a CDN and suppresses auto-TLS provisioning for it — Let's Encrypt cannot certify a name whose DNS points at a CDN. The CDN state is remembered in `local/panel.json` so it survives restarts. A certificate prompt in the panel says the domain is CDN-fronted when it is. The `detectTls()` helper (available in the PHP API as `Q_WebServer_Acme::detectTls($fqdn)`) makes a HEAD request to the domain, looks for CDN headers in the response and for whether the TLS certificate is already served by the CDN; it returns a structured result so callers can distinguish no-cert, own-cert and CDN-cert without parsing headers themselves.
+
+A new nginx integration keeps the challenge path open during certificate provisioning: when nginx is the front-end proxy, the server writes a short `conf.d` snippet that passes `/.well-known/acme-challenge/` through to itself on the internal port, reloads nginx, provisions the certificate, then removes the snippet. This replaces the old behavior of refusing to certify domains served through nginx from the panel.
+
+The `$http_response_header` magic variable is gone. All five places in `Q_WebServer_Acme` that read PHP's locally-scoped response-header variable now call a `lastResponseHeaders()` helper instead. On PHP 8.3+ the helper uses `http_get_last_response_headers()`; on older PHP it falls back to the passed-in variable. PHP 8.4 deprecated reading `$http_response_header` outside the direct calling scope; this eliminates the warning.
+
+Agent comment injection: when an agent writes a comment to a document in a Qbix app through the panel API, the server injects it into the thread as if a real user posted it. The panel route validates the token's scope, attaches the comment under the right stream, and returns the comment's permanent URL. This is a backport from 3.x.
+
+---
+
 # Qbix Server 2.3.2
+
+Agents guess at the llms.txt name, so `/llms.txt`, `/llm.txt` and both under `/.well-known/` return the generated file, which now follows the llmstxt.org shape (links with a note each, leading to the catalogs) and says when the host is a branch, linking to the main site. An `llms.txt` the app ships itself takes precedence. At `/`, a host with an app but no index file, and (in 3.x) a domain nothing claims, now get the welcome page with status 200 instead of a 404 or a bare message. The welcome page says which case it is, links a branch to its main site, lists the next steps, and (in 3.x) puts the same situation into the Claude and ChatGPT prompts.
+
+The server now publishes the discovery files clients check, generated per host from the server's endpoints and the app's handlers: `/.well-known/ai-catalog.json` (AI Catalog), `/.well-known/api-catalog` (RFC 9727), and a new `/llms.txt`. `/.well-known/openapi.json` and `/.well-known/mcp.json` stay. The welcome page and the 404 page point agents at them. There is no MCP endpoint in 2.x, so no server card.
 
 Enabling an app in the control panel now ties it to the domain the panel was opened on. Before, Enable only changed the default root in memory, so the domain kept showing the welcome page and a restart forgot the choice. The app's web folder is now saved as that domain's root in `local/panel.json` and applied at once; Disable removes it again, and for a domain the panel created itself it removes the entry, so the domain returns to the welcome page.
 
@@ -179,6 +199,8 @@ Domains: "Remove" is shown only for domains the panel itself manages, with a too
 Every panel button gets a tooltip that says what it does, and all panel text can be translated. The language is picked from the browser (or `?lang=es`, remembered) and a selector in the sidebar lists the catalogs found in `src/Q/WebServer/lang/<code>.json` and `local/lang/<code>.json` (the second overrides the first). A catalog maps English text to its translation, with `{name}` placeholders allowed. "Export strings for translation" in the selector downloads every string the page has shown so far as a starting catalog. A Spanish starter catalog is included; the rest of the strings stay in English until a catalog covers them.
 
 Binary Attestation no longer shows "FAILED" for a build that has no signatures; the status appears only once there is at least one signature, and without any the panel explains that the build is unsigned and what signing does. "Cron" is now called "Scheduled"
+
+A root folder with no index file returned an internal error (HTTP 500) when it was served for a configured domain, because the code that tells "no app" from "app without an index file" read a host-config property that 2.3 never declared. It is declared and set per request now, and `tests/root-listing.sh` passes again.
 
 The startup certificate skip now covers every domain in the panel's own config (Add, Enable and the app dropdown all write there), not only ones tagged as added by the panel, whenever the server is not serving HTTPS itself. A request that arrives with a CDN's own headers (Cloudflare's `cf-ray` and the like) is also remembered on the domain as `cdn`, in memory and in the panel config; startup then never requests a certificate for it, and the Domains tab shows "Behind Cloudflare" in place of "no cert" (3.2).
 

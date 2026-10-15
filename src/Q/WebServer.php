@@ -96,6 +96,9 @@ class Q_WebServer
 	static $pool = null;
 	/** @property $rootDir Document root with trailing DS */
 	public static $rootDir;
+
+	/** @property $currentHostConfig Virtual host config for the current request */
+	static $currentHostConfig = null;
 	public static $serverDir;
 	/** @property $host Bound host */
 	public static $host;
@@ -1229,6 +1232,20 @@ class Q_WebServer
 			return self::handleRemoteEvent($parsed);
 		}
 
+		// Discovery documents: AI catalog, RFC 9727 API catalog, MCP server card
+		if (strpos($path, '/.well-known/') === 0 || $path === '/mcp/server-card' || $path === '/llms.txt' || $path === '/llm.txt') {
+			require_once __DIR__ . '/WebServer/Discovery.php';
+			$disc = Q_WebServer_Discovery::route($path, $parsed);
+			if ($disc) return $disc;
+		}
+
+		// LLM discovery endpoint
+		if ($path === '/llms.txt' || $path === '/.well-known/llm.txt') {
+			return array('status' => 200, 'body' => self::serveLlmsTxt($parsed),
+				'headers' => array('Content-Type' => 'text/plain; charset=utf-8',
+					'Access-Control-Allow-Origin' => '*'));
+		}
+
 		// Server discovery — .well-known/qbix
 		if (strpos($path, '/.well-known/') === 0) {
 			$wellKnown = substr($path, 13);
@@ -1447,18 +1464,10 @@ class Q_WebServer
 				// unconditionally, which left the listing below unreachable
 				// for '/' however it was configured.
 				if ($path === '/' and !self::isIndexed($path)) {
-					// A domain that has an app set up but no index file in it is not "no app": say what is missing
-					if (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) {
-						return array('status' => 404, 'body' => self::noIndexHtml($fsPath),
-							'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
-					}
-					$welcome = __DIR__ . DS . 'welcome.php';
-					if (file_exists($welcome)) {
-						ob_start();
-						include $welcome;
-						return array('status' => 200, 'body' => ob_get_clean(),
-							'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
-					}
+					// A domain with an app but no index file yet gets the welcome page too, saying what is missing
+					$reason = (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) ? 'empty' : 'default';
+					return array('status' => 200, 'body' => self::renderWelcome($parsed, $reason),
+						'headers' => array('Content-Type' => 'text/html; charset=utf-8'));
 				}
 				// Show directory listing if indexed
 				if (self::isIndexed($path)) {
@@ -1626,6 +1635,7 @@ class Q_WebServer
 	 */
 	private static function handleRequest($client, $parsed)
 	{
+		self::$lastParsed = $parsed;
 		// A request carrying a CDN's own headers (cf-ray ...) means that domain is fronted by it.
 		if (isset($parsed['headers']['cf-ray']) || isset($parsed['headers']['x-amz-cf-id'])
 			|| isset($parsed['headers']['fastly-client-ip']) || isset($parsed['headers']['x-sucuri-id'])
@@ -1663,6 +1673,7 @@ class Q_WebServer
 		if (!$hostConfig) {
 			$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
 		}
+		self::$currentHostConfig = $hostConfig ?: null;
 		if ($hostConfig && isset($hostConfig['root'])) {
 			$vroot = realpath($hostConfig['root']);
 			if ($vroot && is_dir($vroot)) {
@@ -1685,6 +1696,7 @@ class Q_WebServer
 					}
 					// If provisioning succeeded, re-check the host config
 					$hostConfig = Q_Config::get('Q', 'webserver', 'domains', $host, null);
+					self::$currentHostConfig = $hostConfig ?: null;
 					if ($hostConfig && isset($hostConfig['root'])) {
 						$vroot = realpath($hostConfig['root']);
 						if ($vroot && is_dir($vroot)) {
@@ -1701,15 +1713,8 @@ class Q_WebServer
 			if (!$hostConfig && !$ownRoute && self::isDomainName($host)
 				&& Q_Config::get('Q', 'webserver', 'unknownHosts', 'root') === 'welcome') {
 				$panelPath = Q_Config::get('Q', 'webserver', 'panel', 'path', '/Q/panel');
-				// The standard welcome page, src/Q/welcome.php; the short pointer to the panel only if it is missing
-				$welcome = __DIR__ . DS . 'welcome.php';
-				if (is_file($welcome)) {
-					ob_start();
-					include $welcome;
-					$welcomeHtml = ob_get_clean();
-				} else {
-					$welcomeHtml = self::welcomePageHtml($host, $panelPath);
-				}
+				// The standard welcome page, src/Q/welcome.php
+				$welcomeHtml = self::renderWelcome($parsed, 'unclaimed');
 				return self::sendResponse($client, 200, $welcomeHtml, 'text/html; charset=utf-8');
 			}
 
@@ -1764,6 +1769,21 @@ class Q_WebServer
 
 		$__tp['assets'] = hrtime(true);
 		// 2. Server discovery + federation endpoints
+		if ($path === '/llms.txt' || $path === '/.well-known/llm.txt') {
+			self::sendResponse($client, 200, self::serveLlmsTxt($parsed), 'text/plain; charset=utf-8',
+				array('Access-Control-Allow-Origin' => '*'));
+			return false;
+		}
+		// Discovery documents: AI catalog, RFC 9727 API catalog, MCP server card
+		if (strpos($path, '/.well-known/') === 0 || $path === '/mcp/server-card' || $path === '/llms.txt' || $path === '/llm.txt') {
+			require_once __DIR__ . '/WebServer/Discovery.php';
+			$disc = Q_WebServer_Discovery::route($path, $parsed);
+			if ($disc) {
+				self::sendResponse($client, $disc['status'], $disc['body'],
+					$disc['headers']['Content-Type'], $disc['headers']);
+				return false;
+			}
+		}
 		// RFC 8615 .well-known endpoints
 		if (strpos($path, '/.well-known/') === 0) {
 			$wellKnown = substr($path, 13);
@@ -2033,18 +2053,9 @@ class Q_WebServer
 				// unconditionally, which left the listing below unreachable
 				// for '/' however it was configured.
 				if ($path === '/' and !self::isIndexed($path)) {
-					if (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) {
-						self::sendResponse($client, 404, self::noIndexHtml($fsPath), 'text/html; charset=utf-8');
-						return false;
-					}
-					$welcome = __DIR__ . DS . 'welcome.php';
-					if (file_exists($welcome)) {
-						ob_start();
-						include $welcome;
-						self::sendResponse($client, 200, ob_get_clean(),
-							'text/html; charset=utf-8');
-						return false;
-					}
+					$reason = (self::$currentHostConfig && !empty(self::$currentHostConfig['root'])) ? 'empty' : 'default';
+					self::sendResponse($client, 200, self::renderWelcome($parsed, $reason), 'text/html; charset=utf-8');
+					return false;
 				}
 				// Show directory listing if indexed
 				if (self::isIndexed($path)) {
@@ -3147,6 +3158,8 @@ WORKER;
 					);
 				} else {
 					$body = file_get_contents($fsPath);
+					// Inject agent discovery comment into static HTML before compression
+					$body = self::injectAgentComment($body, $contentType, self::$lastParsed);
 					$body = Q_WebServer_Headers::maybeCompress($body, $contentType, $reqHeaders, $gzHeaders);
 				}
 				$out = "HTTP/1.1 200 OK\r\n" . $baseHeaders;
@@ -3162,6 +3175,9 @@ WORKER;
 
 		// ── Uncompressed — serve and cache ──
 		$body = file_get_contents($fsPath);
+		// Inject agent discovery comment into static HTML
+		$body = self::injectAgentComment($body, $contentType, self::$lastParsed);
+		$size = strlen($body); // update size after any injection
 		$kaHead = "HTTP/1.1 200 OK\r\n" . $baseHeaders
 			. "Content-Length: $size\r\nConnection: keep-alive\r\n\r\n";
 		$clHead = "HTTP/1.1 200 OK\r\n" . $baseHeaders
@@ -4407,6 +4423,43 @@ HTML;
 		return Q_WebServer_PhpInfo::render($out);
 	}
 
+	/** What the welcome page needs to know about this request; read by src/Q/welcome.php. */
+	public static $welcome = array();
+
+	/**
+	 * The welcome page, for a host with nothing of its own to show at "/": no app for the domain,
+	 * an app with no index file yet, or the bare default root. It says which of those this is, links to
+	 * the main site when the host is a branch, and offers the next steps, including in the prompts of
+	 * the chatbot buttons.
+	 *
+	 * @method renderWelcome
+	 * @static
+	 * @param {array} $parsed The parsed request
+	 * @param {string} $reason 'default', 'unclaimed' (no app for this domain) or 'empty' (an app with no index file)
+	 * @return {string} HTML
+	 */
+	static function renderWelcome($parsed, $reason = 'default')
+	{
+		$host = preg_replace('/:\d+$/', '', $parsed['headers']['host'] ?? 'localhost');
+		$ctx = array('reason' => $reason, 'host' => $host, 'branch' => null);
+		$b = $parsed['_branchRecord'] ?? null;
+		if ($b && !empty($b['name'])) {
+			$main = $b['appHost'] ?? '';
+			if ($main === '' && !empty($b['subdomain']) && strpos($host, $b['subdomain'] . '.') === 0) {
+				$main = substr($host, strlen($b['subdomain']) + 1);
+			}
+			$ctx['branch'] = array('name' => $b['name'], 'main' => $main);
+		}
+		self::$welcome = $ctx;
+		$welcome = __DIR__ . DS . 'welcome.php';
+		if (!is_file($welcome)) {
+			return self::welcomePageHtml($host, Q_Config::get('Q', 'webserver', 'panel', 'path', '/Q/panel'));
+		}
+		ob_start();
+		include $welcome;
+		return ob_get_clean();
+	}
+
 	/**
 	 * The page for a domain that has an app (a root folder) but no index.php or index.html at its top.
 	 * @method noIndexHtml
@@ -4507,6 +4560,10 @@ HTML;
 		self::$lastStatus = $status;
 		self::$lastBody = $body;
 		$body = (string) $body;
+		// Inject agent discovery comment into HTML responses
+		if (stripos($type, 'text/html') !== false) {
+			$body = self::injectAgentComment($body, $type, self::$lastParsed ?? array());
+		}
 		self::$lastBytes = strlen($body);
 		static $serverTag = null;
 		if ($serverTag === null) {
@@ -4613,8 +4670,40 @@ HTML;
 			. "<div class=\"t\">{$title}</div>"
 			. "<div class=\"m\">{$msg}</div>"
 			. '<div class="b"><a href="/">← Back to home</a></div>'
+			. ($code == 404 ? '<div class="f"><a href="/llms.txt" style="color:inherit">AI agents: see /llms.txt</a></div>' : '')
 			. '<div class="f">Qbix Server</div>'
 			. '</div></body></html>';
+	}
+
+	/**
+	 * Inject an HTML comment pointing AI agents to the discovery documents.
+	 * Active by default; set Q.webserver.disableAgentComment = true to suppress.
+	 */
+	static function injectAgentComment($body, $type, $parsed = array())
+	{
+		if (stripos($type, 'text/html') === false) return $body;
+		if (Q_Config::get('Q', 'webserver', 'disableAgentComment', false)) return $body;
+		require_once __DIR__ . '/WebServer/Discovery.php';
+		$o = Q_WebServer_Discovery::origin($parsed ?: array('headers' => array()));
+		$hasMcp = Q_WebServer_Discovery::hasMcp();
+		$comment = "\n<!-- [AI agents] This page is served by Qbix Server."
+			. "\n     Start here to discover what this host offers:"
+			. "\n       llms.txt:    $o/llms.txt"
+			. "\n       AI catalog:  $o/.well-known/ai-catalog.json"
+			. ($hasMcp ? "\n       MCP server:  $o/mcp  (Streamable HTTP, Bearer token required)" : "")
+			. "\n       OpenAPI:     $o/.well-known/openapi.json"
+			. "\n     File reads and branch operations require a Bearer token."
+			. "\n     Get one from the site owner via the Control Panel: $o/Q/panel#security"
+			. "\n-->";
+		if (preg_match('/<head(?:\s[^>]*)?>/', $body, $m, PREG_OFFSET_CAPTURE)) {
+			$pos = $m[0][1] + strlen($m[0][0]);
+			return substr($body, 0, $pos) . $comment . substr($body, $pos);
+		}
+		if (preg_match('/<!doctype[^>]*>/i', $body, $m, PREG_OFFSET_CAPTURE)) {
+			$pos = $m[0][1] + strlen($m[0][0]);
+			return substr($body, 0, $pos) . $comment . substr($body, $pos);
+		}
+		return $comment . "\n" . $body;
 	}
 
 	private static function render404($path)
@@ -5060,6 +5149,8 @@ init();
 	private static $lastStatus = 200;
 	private static $lastBody = '';
 	private static $lastBytes = 0;
+	/** The parsed request currently being handled; used by injectAgentComment(). */
+	private static $lastParsed = array();
 
 	// ── Response state (internal — not Q_Response, to avoid Platform collision) ──
 
@@ -5610,6 +5701,8 @@ init();
 				'health' => '/Q/health',
 				'openapi' => '/.well-known/openapi.json',
 				'mcp' => '/.well-known/mcp.json',
+				'aiCatalog' => '/.well-known/ai-catalog.json',
+				'apiCatalog' => '/.well-known/api-catalog',
 				'websocket' => '/Q/ws',
 			),
 			'links' => array(
@@ -5784,6 +5877,13 @@ init();
 	 * MCP (Model Context Protocol) server manifest.
 	 * Allows AI tools (Claude, etc.) to discover and call this server's APIs.
 	 */
+	/** /llms.txt: a plain-text description of this host for an agent's context window. */
+	static function serveLlmsTxt($parsed)
+	{
+		require_once __DIR__ . '/WebServer/Discovery.php';
+		return Q_WebServer_Discovery::llmsTxt($parsed);
+	}
+
 	static function wellKnownMCP($parsed)
 	{
 		$host = $parsed['headers']['host'] ?? 'localhost';

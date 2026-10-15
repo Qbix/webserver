@@ -188,3 +188,20 @@ All the server's features — response cache, X-Accel-Redirect, component cache 
 ---
 [← Back to README](../README.md)
 
+---
+
+### Catalogs — where clients look first
+
+Clients do not guess at file names, so the server publishes the catalogs they check. Each is generated per request for the host being asked about, so a new handler shows up in them with no edit.
+
+| Endpoint | Standard | What it holds |
+|---|---|---|
+| `/.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`) | Domain-level list of what this host offers to agents: the OpenAPI description |
+| `/.well-known/api-catalog` | RFC 9727 (`application/linkset+json`) | Links to the OpenAPI description (`service-desc`), the guide (`service-doc`) and the health endpoint (`status`) |
+| `/llms.txt` | llmstxt.org | The same links as plain text, for an agent's context window |
+
+2.x has no MCP endpoint, so there is no server card; the AI catalog gains that entry on builds that do. `/.well-known/openapi.json` and `/.well-known/mcp.json` still work. The welcome page and the 404 page point to these as well.
+
+`/llms.txt` is also served as `/llm.txt` and under `/.well-known/`, because agents guess. It is generated with PHP in the llmstxt.org shape and links to the JSON files above, so the rest can be discovered from it. On a branch host it says so and links to the main site. If the app has its own `llms.txt` file, that file is served instead.
+
+At `/`, a host with nothing to show gets the welcome page, not a 404: it says whether the domain has no app yet or the app has no index file, links a branch to its main site, and lists the next steps.

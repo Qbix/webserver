@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '2.3.2');
+define('QBIX_SERVER_VERSION', '2.4.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── OPcache for CLI ─────────────────────────────────
@@ -427,29 +427,34 @@ function qbix_data_path($relativePath) {
 }
 
 // ── Validate document root early ────────────────────────
-// Check this BEFORE loading Q shim, because if neither the root
-// nor src/Q.php exist, the user just downloaded the binary and
-// ran it in an empty directory — show them how to get started.
+// Check BEFORE loading Q shim whether the requested root exists.
+// If the user explicitly passed --root and it doesn't exist, that is a real error.
+// If no --root was given and ./web doesn't exist, start anyway — WebServer will serve the
+// welcome page (src/Q/welcome.php) for '/', which is more useful than a help message and exit.
 if (!$servingFromPhar) {
 	$resolvedWebDir = realpath($webDir);
 	if (!$resolvedWebDir || !is_dir($resolvedWebDir)) {
-		$target = $opts['root'] ?: './web';
-		$me = basename($argv[0]);
-		fwrite(STDERR, "\n");
-		fwrite(STDERR, "  No document root found at: $target\n\n");
-		fwrite(STDERR, "  Quick start:\n\n");
-		fwrite(STDERR, "    mkdir -p web && echo '<?php echo \"Hello from Qbix Server!\";' > web/index.php\n");
-		fwrite(STDERR, "    $me\n\n");
-		fwrite(STDERR, "  Or point to an existing project:\n\n");
-		fwrite(STDERR, "    $me --root=/path/to/your/public\n\n");
-		fwrite(STDERR, "  Framework shortcuts:\n\n");
-		fwrite(STDERR, "    $me --root=public --preset=laravel\n");
-		fwrite(STDERR, "    $me --root=public --preset=symfony\n");
-		fwrite(STDERR, "    $me --root=.     --preset=wordpress\n\n");
-		fwrite(STDERR, "  Docs: https://github.com/Qbix/webserver\n\n");
-		exit(1);
+		if ($opts['root']) {
+			// Explicit --root that doesn't exist → hard error, nothing to serve.
+			$me = basename($argv[0]);
+			fwrite(STDERR, "\n");
+			fwrite(STDERR, "  No document root found at: " . $opts['root'] . "\n\n");
+			fwrite(STDERR, "  Or point to an existing project:\n\n");
+			fwrite(STDERR, "    $me --root=/path/to/your/public\n\n");
+			fwrite(STDERR, "  Framework shortcuts:\n\n");
+			fwrite(STDERR, "    $me --root=public --preset=laravel\n");
+			fwrite(STDERR, "    $me --root=public --preset=symfony\n");
+			fwrite(STDERR, "    $me --root=.     --preset=wordpress\n\n");
+			fwrite(STDERR, "  Docs: https://github.com/Qbix/webserver\n\n");
+			exit(1);
+		}
+		// No --root and no ./web — start with the source root as a stand-in so WebServer
+		// can boot. It has no index.html/index.php, so '/' triggers renderWelcome() just
+		// as it does from the phar. The panel and all /Q/ routes are fully functional.
+		$webDir = realpath(dirname($argv[0])) ?: getcwd();
+	} else {
+		$webDir = $resolvedWebDir;
 	}
-	$webDir = $resolvedWebDir;
 }
 
 if (!$qbixMode) {
