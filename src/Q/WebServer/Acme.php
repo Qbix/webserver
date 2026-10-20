@@ -200,6 +200,15 @@ class Q_WebServer_Acme
 				return ['started' => false, 'error' => $why];
 			}
 		}
+		// Pre-screen: if the primary domain is already served by a CDN with valid TLS, skip now
+		// rather than forking a child that will burn time and a rate-limit slot before failing.
+		if ($method !== 'certbot') {
+			$cdn = self::cdnPrecheck($primary, rtrim($certDir, '/'));
+			if ($cdn !== null) {
+				if ($onDone) { try { $onDone($cdn); } catch (Throwable $e) { error_log('[ACME] ' . $e->getMessage()); } }
+				return ['started' => false, 'error' => $cdn['error']];
+			}
+		}
 		if (self::isPending($primary)) return ['started' => false, 'error' => "A certificate for $primary is already being requested"];
 		if (count(self::$children) >= self::$maxChildren) {
 			// Startup and renewal pass 'queue' => true: the request waits its turn instead of failing
@@ -405,13 +414,50 @@ class Q_WebServer_Acme
 		}
 		$labels = explode('.', $n);
 		$tld = end($labels);
+		// Catch dotted-IP hostnames like "branch.127.0.0.1" or "e2e-final.10.0.0.1":
+		// if the last four labels form a valid IPv4 address, this is not a real domain.
+		if (count($labels) >= 4) {
+			$lastFour = implode('.', array_slice($labels, -4));
+			if (filter_var($lastFour, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+				return "$name ends in an IP address ($lastFour); Let's Encrypt cannot issue certificates for IP-based names";
+			}
+		}
 		if (count($labels) < 2
 			|| in_array($tld, ['test', 'local', 'localhost', 'invalid', 'example', 'internal', 'lan', 'home', 'corp', 'intranet', 'localdomain'], true)
 			|| !preg_match('/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/', $n)
 		) {
-			return "$name is not a public domain name (." . $tld . " names do not exist on the internet), so Let's Encrypt cannot issue a certificate for it";
+			return "$name is not a public domain name (.$tld names do not exist on the internet), so Let's Encrypt cannot issue a certificate for it";
 		}
 		return null;
+	}
+
+	/**
+	 * Quick synchronous CDN pre-check: if the domain already has a working TLS cert served by a CDN
+	 * or upstream proxy, return a permanent-failure result immediately so we never fork a child or
+	 * burn a Let's Encrypt rate-limit slot on it.  Returns null when the domain looks certifiable.
+	 * @return array|null permanent-failure result array, or null
+	 */
+	private static function cdnPrecheck($domain, $certDir)
+	{
+		// Only run when exec() is available — the stream fallback is unreliable enough that a false
+		// positive would block a legitimate domain from ever getting a cert.
+		if (!function_exists('exec')) return null;
+		$out = []; $code = 0;
+		@exec('curl -sI --max-time 6 --connect-timeout 5 ' . escapeshellarg('https://' . $domain . '/') . ' 2>&1', $out, $code);
+		$raw = implode("\n", $out);
+		// Must have got a real HTTP response (not a TLS error or connect failure)
+		if (!preg_match('/HTTP\/[12]/', $raw)) return null;
+		$cdnMarkers = ['CF-Ray', 'X-Served-By', 'X-Cache', 'X-CDN', 'X-Fastly', 'Via:.*varnish', 'Server:.*cloudflare', 'Server:.*akamai'];
+		$found = [];
+		foreach ($cdnMarkers as $marker) {
+			if (preg_match('/' . $marker . '/i', $raw)) $found[] = $marker;
+		}
+		if (!$found) return null; // has a cert but no CDN markers — proceed normally
+		$cdnNote = ' (CDN headers: ' . implode(', ', $found) . ')';
+		$err = "https://$domain already has a working TLS certificate (served by a CDN or upstream proxy$cdnNote). No new certificate is needed.";
+		$hint = 'If you need a certificate on this server too, disable or bypass the CDN for this domain first.';
+		self::logTo($certDir, $domain, 'skipping: ' . $err);
+		return self::recordResult($certDir, $domain, ['success' => false, 'permanent' => true, 'via' => 'cdn', 'error' => $err, 'hint' => $hint]);
 	}
 
 	/**
@@ -474,18 +520,14 @@ class Q_WebServer_Acme
 				if ($tls['cdnCert']) {
 					$cdnNote = $tls['cdnHeaders'] ? ' (CDN headers: ' . implode(', ', $tls['cdnHeaders']) . ')' : '';
 					self::note('https://' . $primaryDomain . ' already has a working certificate' . $cdnNote . '; no provisioning needed');
-					return ['success' => false, 'permanent' => true,
+					return ['success' => false, 'permanent' => true, 'via' => 'cdn',
 						'error' => "https://$primaryDomain already has a working TLS certificate (served by a CDN or upstream proxy$cdnNote). No new certificate is needed.",
 						'hint' => 'If you need a certificate on this server too, disable or bypass the CDN for this domain first.'];
 				}
 				// Has a cert but no CDN — could be already provisioned or another server; proceed anyway
 				self::note('https://' . $primaryDomain . ' already responds with a cert (not CDN), but will try to renew anyway');
 			} else {
-				if (!empty($tls['noRoute'])) {
-					self::note('domain not reachable over HTTPS (' . ($tls['error'] ?: 'no route') . '); provisioning anyway — Let\'s Encrypt will validate via HTTP-01');
-				} else {
-					self::note($tls['error'] ?: 'no HTTPS cert found; will provision one');
-				}
+				self::note($tls['error'] ?: 'no HTTPS cert found; will provision one');
 			}
 
 			// 1. Get or create account key
@@ -733,13 +775,11 @@ class Q_WebServer_Acme
 	 * Uses curl (exec) when available, falls back to a stream context that lets us inspect the error.
 	 *
 	 * @param  string $fqdn
-	 * @return array {hasCert: bool, cdnCert: bool, cdnHeaders: string[], noCert: bool, noRoute: bool, error: string}
-	 *   noRoute=true means the domain was not reachable at all (DNS not set, server not exposed).
-	 *   noCert=true with noRoute=false means the domain is reachable but has no valid cert — provision one.
+	 * @return array {hasCert: bool, cdnCert: bool, cdnHeaders: string[], noCert: bool, error: string}
 	 */
 	static function detectTls($fqdn)
 	{
-		$result = ['hasCert' => false, 'cdnCert' => false, 'cdnHeaders' => [], 'noCert' => false, 'noRoute' => false, 'error' => ''];
+		$result = ['hasCert' => false, 'cdnCert' => false, 'cdnHeaders' => [], 'noCert' => false, 'error' => ''];
 		$url = 'https://' . $fqdn . '/';
 
 		// Try curl first — it gives us the cert error text explicitly
@@ -748,10 +788,8 @@ class Q_WebServer_Acme
 			@exec('curl -sI --max-time 8 --connect-timeout 6 ' . escapeshellarg($url) . ' 2>&1', $out, $code);
 			$raw = implode("\n", $out);
 			// Cert errors → name does not match, expired, self-signed, unable to get cert, SSL
-			// The domain is reachable; it just has no (valid) cert yet — provision one.
 			if (preg_match('/SSL|certificate|CERT|unable to get|no alternative/i', $raw) && !preg_match('/HTTP\//i', $raw)) {
 				$result['noCert'] = true;
-				// noRoute stays false: domain is reachable, needs provisioning
 				$result['error'] = 'TLS error: ' . trim(preg_replace('/\s+/', ' ', substr(implode(' ', array_slice($out, 0, 5)), 0, 200)));
 				return $result;
 			}
@@ -767,9 +805,8 @@ class Q_WebServer_Acme
 				}
 				return $result;
 			}
-			// curl couldn't connect at all (no route, DNS not set, refused) — defer, don't provision
+			// curl couldn't connect at all (no route, refused)
 			$result['noCert'] = true;
-			$result['noRoute'] = true;
 			$result['error'] = 'Could not connect over HTTPS: ' . trim(substr($raw, 0, 200));
 			return $result;
 		}
@@ -790,9 +827,7 @@ class Q_WebServer_Acme
 				}
 			}
 		} else {
-			// PHP can't distinguish "TLS error" from "no route" here — safer to assume no route (defer)
 			$result['noCert'] = true;
-			$result['noRoute'] = true;
 			$result['error'] = 'HTTPS connection failed (cert error or no route)';
 		}
 		return $result;
