@@ -2329,6 +2329,14 @@ class Q_WebServer_CompatFileWrapper
 		self::$statGen++;
 	}
 
+	/** Invalidate stat cache entries for a specific path (e.g. after writing a file) */
+	public static function invalidateStat($path)
+	{
+		$realPath = preg_replace('/^file:\/\//', '', $path);
+		unset(self::$statCache[$realPath . '|S']);
+		unset(self::$statCache[$realPath . '|L']);
+	}
+
 	public function url_stat($path, $flags)
 	{
 		self::$__statCount++;

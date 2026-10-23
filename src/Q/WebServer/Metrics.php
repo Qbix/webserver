@@ -31,20 +31,11 @@ class Q_WebServer_Metrics
 	private static $db = null;
 	private static $initialized = false;
 
-	// ── Memory monitoring ──
-	private static $memBaseline = 0;      // memory_get_usage(true) at startup
-	private static $memLastSample = 0;    // bytes at last check
-	private static $memLastSampleTime = 0;
-	private static $memPeakReported = 0;  // highest growth we've logged
-	private static $memNextCheck = 0;     // next check timestamp
-
 	// ── Session & clickstream (in-memory, flushed to SQLite) ──
 	private static $sessions = [];       // cookieHash => {lastPath, lastTime}
 	private static $flowBuffer = [];     // [{from, to}] accumulated transitions
 	private static $pageHits = [];       // path => {hits, sessions:{}, totalMs}
 	private static $prevRps = [];        // last 5 minutes RPS for anomaly detection
-	private static $requestBuffer = [];  // [{ts, sessionId, path, prevPath, status, durationMs, ip, host, platform, browser, lang, appName, branch, referer}]
-	private static $sessionUpdates = []; // sessionId => {firstSeen, lastSeen, ip, host, platform, browser, lang, pageCount, entryPath, appName}
 
 	static function enabled()
 	{
@@ -60,12 +51,6 @@ class Q_WebServer_Metrics
 		if (self::$initialized || !self::enabled()) return;
 		self::$initialized = true;
 		self::$currentMinute = date('Y-m-d H:i');
-
-		// Capture memory baseline right at startup (parent process, before any requests)
-		self::$memBaseline = memory_get_usage(true);
-		self::$memLastSample = self::$memBaseline;
-		self::$memLastSampleTime = time();
-		self::$memNextCheck = time() + Q_Config::get('Q', 'webserver', 'memory', 'checkInterval', 60);
 
 		// Ensure log directories exist
 		$accessLog = self::accessLogPath();
@@ -109,58 +94,6 @@ class Q_WebServer_Metrics
 				avg_ms REAL DEFAULT 0,
 				last_hit TEXT
 			)');
-			// Individual request log for analytics
-			self::$db->exec('CREATE TABLE IF NOT EXISTS requests (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				ts INTEGER NOT NULL,
-				session_id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				prev_path TEXT,
-				status INTEGER,
-				duration_ms REAL,
-				ip TEXT,
-				host TEXT,
-				platform TEXT,
-				browser TEXT,
-				language TEXT,
-				app_name TEXT,
-				branch TEXT,
-				referer TEXT
-			)');
-			// Session summary table
-			self::$db->exec('CREATE TABLE IF NOT EXISTS sessions (
-				session_id TEXT PRIMARY KEY,
-				first_seen INTEGER NOT NULL,
-				last_seen INTEGER NOT NULL,
-				ip TEXT,
-				host TEXT,
-				platform TEXT,
-				browser TEXT,
-				language TEXT,
-				page_count INTEGER DEFAULT 1,
-				entry_path TEXT,
-				app_name TEXT
-			)');
-			// Migrate existing DBs: add columns if missing
-			@self::$db->exec('ALTER TABLE requests ADD COLUMN app_name TEXT');
-			@self::$db->exec('ALTER TABLE requests ADD COLUMN branch TEXT');
-			@self::$db->exec('ALTER TABLE requests ADD COLUMN referer TEXT');
-			@self::$db->exec('ALTER TABLE sessions ADD COLUMN app_name TEXT');
-			// Indexes for requests
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_ts ON requests(ts)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_session ON requests(session_id, ts)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_path ON requests(path)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_prev ON requests(prev_path, path)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_host ON requests(host)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_platform ON requests(platform)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_browser ON requests(browser)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_ip ON requests(ip)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_app ON requests(app_name)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_req_branch ON requests(branch)');
-			// Indexes for sessions
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_last ON sessions(last_seen)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_host ON sessions(host)');
-			self::$db->exec('CREATE INDEX IF NOT EXISTS idx_sess_ip ON sessions(ip)');
 		} catch (\Exception $e) {
 			self::$db = null;
 		}
@@ -171,7 +104,7 @@ class Q_WebServer_Metrics
 	/**
 	 * Record a completed request. Called from the server after sending the response.
 	 */
-	static function recordRequest($statusCode, $durationMs, $method, $path, $clientIp, $userAgent, $bytesSent, $cookies = [], $host = null, $headers = [], $appName = null, $branch = null)
+	static function recordRequest($statusCode, $durationMs, $method, $path, $clientIp, $userAgent, $bytesSent, $cookies = [])
 	{
 		if (!self::enabled()) return;
 
@@ -238,47 +171,6 @@ class Q_WebServer_Metrics
 			}
 			self::$sessions[$sessionId] = ['path' => $path, 'time' => time()];
 
-			// Buffer individual request for analytics
-			$ua = self::parseUserAgent($userAgent);
-			$lang = self::parsePrimaryLanguage($headers['accept-language'] ?? null);
-			$referer = isset($headers['referer']) ? substr($headers['referer'], 0, 2048) : null;
-			$now = time();
-			self::$requestBuffer[] = [
-				'ts' => $now,
-				'sessionId' => $sessionId,
-				'path' => $path,
-				'prevPath' => $prevPath,
-				'status' => $statusCode,
-				'durationMs' => $durationMs,
-				'ip' => $clientIp,
-				'host' => $host,
-				'platform' => $ua['platform'],
-				'browser' => $ua['browser'],
-				'lang' => $lang,
-				'appName' => $appName,
-				'branch' => $branch,
-				'referer' => $referer,
-			];
-
-			// Update session metadata
-			if (!isset(self::$sessionUpdates[$sessionId])) {
-				self::$sessionUpdates[$sessionId] = [
-					'firstSeen' => $now,
-					'lastSeen' => $now,
-					'ip' => $clientIp,
-					'host' => $host,
-					'platform' => $ua['platform'],
-					'browser' => $ua['browser'],
-					'lang' => $lang,
-					'pageCount' => 1,
-					'entryPath' => $path,
-					'appName' => $appName,
-				];
-			} else {
-				self::$sessionUpdates[$sessionId]['lastSeen'] = $now;
-				self::$sessionUpdates[$sessionId]['pageCount']++;
-			}
-
 			if ($prevPath && $prevPath !== $path) {
 				self::$flowBuffer[] = ['from' => $prevPath, 'to' => $path];
 			}
@@ -319,69 +211,6 @@ class Q_WebServer_Metrics
 	{
 		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
 		return in_array($ext, ['css','js','png','jpg','jpeg','gif','svg','ico','woff','woff2','ttf','map','webp'], true);
-	}
-
-	/**
-	 * Parse User-Agent string for platform and browser.
-	 */
-	static function parseUserAgent($ua)
-	{
-		if (!$ua) return ['platform' => 'Other', 'browser' => 'Other'];
-
-		// Platform
-		$platform = 'Other';
-		if (stripos($ua, 'iPhone') !== false || stripos($ua, 'iPad') !== false) {
-			$platform = 'iOS';
-		} elseif (stripos($ua, 'Android') !== false) {
-			$platform = 'Android';
-		} elseif (stripos($ua, 'Windows') !== false) {
-			$platform = 'Windows';
-		} elseif (stripos($ua, 'Macintosh') !== false || stripos($ua, 'Mac OS') !== false) {
-			$platform = 'macOS';
-		} elseif (stripos($ua, 'CrOS') !== false) {
-			$platform = 'ChromeOS';
-		} elseif (stripos($ua, 'Linux') !== false) {
-			$platform = 'Linux';
-		}
-
-		// Browser (order matters: specific before generic)
-		$browser = 'Other';
-		if (stripos($ua, 'Edg/') !== false || stripos($ua, 'EdgA/') !== false) {
-			$browser = 'Edge';
-		} elseif (stripos($ua, 'OPR/') !== false || stripos($ua, 'Opera') !== false) {
-			$browser = 'Opera';
-		} elseif (stripos($ua, 'Firefox/') !== false || stripos($ua, 'FxiOS/') !== false) {
-			$browser = 'Firefox';
-		} elseif (stripos($ua, 'SamsungBrowser/') !== false) {
-			$browser = 'Samsung';
-		} elseif (stripos($ua, 'CriOS/') !== false) {
-			$browser = 'Chrome';
-		} elseif (stripos($ua, 'Chrome/') !== false) {
-			$browser = 'Chrome';
-		} elseif (stripos($ua, 'Safari/') !== false) {
-			$browser = 'Safari';
-		} elseif (stripos($ua, 'MSIE') !== false || stripos($ua, 'Trident/') !== false) {
-			$browser = 'IE';
-		}
-
-		// Check for bots
-		if (preg_match('/bot|crawl|spider|slurp|mediapartners/i', $ua)) {
-			$browser = 'Bot';
-		}
-
-		return ['platform' => $platform, 'browser' => $browser];
-	}
-
-	/**
-	 * Parse the primary language from Accept-Language header.
-	 */
-	static function parsePrimaryLanguage($header)
-	{
-		if (!$header) return null;
-		$parts = explode(',', $header);
-		$lang = trim(explode(';', $parts[0])[0]);
-		// Normalize: "en-US" → "en-US", "en" → "en"
-		return $lang ?: null;
 	}
 
 	/**
@@ -602,117 +431,6 @@ class Q_WebServer_Metrics
 			self::flushClickstream();
 		}
 		self::flushLogs();
-		self::tickMemory();
-	}
-
-	/**
-	 * Periodic memory-growth check. Runs every Q.webserver.memory.checkInterval seconds (default 60).
-	 * Logs growth to local/logs/memory.log at configurable thresholds and fires the anomaly webhook
-	 * (same as Q.webserver.metrics.anomalyWebhook) when a critical threshold is crossed.
-	 *
-	 * Config (Q.webserver.memory):
-	 *   checkInterval:   60       — seconds between samples
-	 *   warnMB:          10       — log a WARNING when growth since baseline exceeds this
-	 *   criticalMB:      50       — log CRITICAL + fire webhook when growth exceeds this
-	 *   emergencyMB:     100      — log EMERGENCY + fire webhook (each new multiple)
-	 *   log:             "local/logs/memory.log"
-	 */
-	static function tickMemory()
-	{
-		$now = time();
-		if ($now < self::$memNextCheck) return;
-		$interval = Q_Config::get('Q', 'webserver', 'memory', 'checkInterval', 60);
-		self::$memNextCheck = $now + $interval;
-
-		$current = memory_get_usage(true);
-		$peak    = memory_get_peak_usage(true);
-		$growthBytes = $current - self::$memBaseline;
-		$growthMB    = $growthBytes / 1048576;
-		$rateMBph    = 0;
-		$elapsed = $now - self::$memLastSampleTime;
-		if ($elapsed > 0 && self::$memLastSample > 0) {
-			$deltaBytes = $current - self::$memLastSample;
-			$rateMBph = ($deltaBytes / 1048576) / ($elapsed / 3600);
-		}
-		self::$memLastSample = $current;
-		self::$memLastSampleTime = $now;
-
-		$warnMB     = (float) Q_Config::get('Q', 'webserver', 'memory', 'warnMB', 10);
-		$critMB     = (float) Q_Config::get('Q', 'webserver', 'memory', 'criticalMB', 50);
-		$emergMB    = (float) Q_Config::get('Q', 'webserver', 'memory', 'emergencyMB', 100);
-		$logPath    = Q_Config::get('Q', 'webserver', 'memory', 'log',
-			qbix_data_path('local/logs/memory.log'));
-
-		// Always write a sample line at debug/info verbosity — use a lightweight append
-		// only if the file already exists (avoids creating it on every quiet server)
-		$sampleLine = sprintf(
-			'%s [memory] rss=%.1fMB peak=%.1fMB growth=%.1fMB rate=%.2fMB/h',
-			date('c'), $current / 1048576, $peak / 1048576, $growthMB, $rateMBph
-		);
-		if ($growthMB >= $warnMB || is_file($logPath)) {
-			@mkdir(dirname($logPath), 0755, true);
-			@file_put_contents($logPath, $sampleLine . "\n", FILE_APPEND | LOCK_EX);
-		}
-
-		// Determine alert level
-		$alertLevel = null;
-		if ($growthMB >= $emergMB) {
-			// Fire once per additional emergMB increment
-			$multiple = (int) floor($growthMB / $emergMB);
-			if ($multiple > self::$memPeakReported) {
-				self::$memPeakReported = $multiple;
-				$alertLevel = 'EMERGENCY';
-			}
-		} elseif ($growthMB >= $critMB && self::$memPeakReported < 1) {
-			self::$memPeakReported = 1;
-			$alertLevel = 'CRITICAL';
-		}
-
-		if (!$alertLevel) return;
-
-		$msg = sprintf(
-			'[memory] %s: parent rss=%.1fMB, growth=%.1fMB since startup, rate=%.2fMB/h, peak=%.1fMB',
-			$alertLevel, $current / 1048576, $growthMB, $rateMBph, $peak / 1048576
-		);
-		@file_put_contents($logPath, date('c') . ' ' . $msg . "\n", FILE_APPEND | LOCK_EX);
-		fwrite(STDERR, date('H:i:s') . " $msg\n");
-
-		$webhookUrl = Q_Config::get('Q', 'webserver', 'metrics', 'anomalyWebhook', null);
-		if ($webhookUrl) {
-			$payload = json_encode([
-				'type'       => 'memory_growth',
-				'level'      => strtolower($alertLevel),
-				'time'       => date('c'),
-				'rss_mb'     => round($current / 1048576, 2),
-				'growth_mb'  => round($growthMB, 2),
-				'peak_mb'    => round($peak / 1048576, 2),
-				'rate_mb_ph' => round($rateMBph, 3),
-			]);
-			@file_get_contents($webhookUrl, false, stream_context_create([
-				'http' => [
-					'method'        => 'POST',
-					'header'        => "Content-Type: application/json\r\n",
-					'content'       => $payload,
-					'timeout'       => 2,
-					'ignore_errors' => true,
-				]
-			]));
-		}
-	}
-
-	/**
-	 * Return current memory stats for the dashboard / health endpoint.
-	 */
-	static function memoryStats()
-	{
-		$current = memory_get_usage(true);
-		$peak    = memory_get_peak_usage(true);
-		return [
-			'rss_mb'      => round($current / 1048576, 2),
-			'baseline_mb' => round(self::$memBaseline / 1048576, 2),
-			'growth_mb'   => round(($current - self::$memBaseline) / 1048576, 2),
-			'peak_mb'     => round($peak / 1048576, 2),
-		];
 	}
 
 	/**
@@ -724,21 +442,15 @@ class Q_WebServer_Metrics
 		if (!self::$db) return;
 		if (!empty(self::$flowBuffer)) {
 			try {
-				$ins = self::$db->prepare(
-					'INSERT OR IGNORE INTO flow (from_path, to_path, count) VALUES (:f, :t, 0)'
-				);
-				$upd = self::$db->prepare(
-					'UPDATE flow SET count = count + 1 WHERE from_path = :f AND to_path = :t'
+				$stmt = self::$db->prepare(
+					'INSERT INTO flow (from_path, to_path, count) VALUES (:f, :t, 1)
+					 ON CONFLICT(from_path, to_path) DO UPDATE SET count = count + 1'
 				);
 				foreach (self::$flowBuffer as $f) {
-					$ins->bindValue(':f', $f['from']);
-					$ins->bindValue(':t', $f['to']);
-					$ins->execute();
-					$ins->reset();
-					$upd->bindValue(':f', $f['from']);
-					$upd->bindValue(':t', $f['to']);
-					$upd->execute();
-					$upd->reset();
+					$stmt->bindValue(':f', $f['from']);
+					$stmt->bindValue(':t', $f['to']);
+					$stmt->execute();
+					$stmt->reset();
 				}
 			} catch (\Exception $e) {}
 			self::$flowBuffer = [];
@@ -746,100 +458,26 @@ class Q_WebServer_Metrics
 		if (!empty(self::$pageHits)) {
 			try {
 				$now = date('c');
-				$ins = self::$db->prepare(
-					'INSERT OR IGNORE INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
-					 VALUES (:p, 0, 0, 0, :t)'
-				);
-				$upd = self::$db->prepare(
-					'UPDATE page_stats SET
-					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
+				$stmt = self::$db->prepare(
+					'INSERT INTO page_stats (path, hits, unique_sessions, avg_ms, last_hit)
+					 VALUES (:p, :h, :u, :a, :t)
+					 ON CONFLICT(path) DO UPDATE SET
 					   hits = hits + :h,
 					   unique_sessions = unique_sessions + :u,
-					   last_hit = :t
-					 WHERE path = :p'
+					   avg_ms = (avg_ms * hits + :a * :h) / (hits + :h),
+					   last_hit = :t'
 				);
 				foreach (self::$pageHits as $path => $data) {
-					$h = $data['hits'];
-					$u = count($data['sessions']);
-					$a = $h > 0 ? $data['totalMs'] / $h : 0;
-					$ins->bindValue(':p', $path);
-					$ins->bindValue(':t', $now);
-					$ins->execute();
-					$ins->reset();
-					$upd->bindValue(':p', $path);
-					$upd->bindValue(':h', $h);
-					$upd->bindValue(':u', $u);
-					$upd->bindValue(':a', $a);
-					$upd->bindValue(':t', $now);
-					$upd->execute();
-					$upd->reset();
-				}
-			} catch (\Exception $e) {}
-			self::$pageHits = [];
-		}
-		// Flush individual requests for analytics
-		if (!empty(self::$requestBuffer)) {
-			try {
-				$stmt = self::$db->prepare(
-					'INSERT INTO requests (ts, session_id, path, prev_path, status, duration_ms, ip, host, platform, browser, language, app_name, branch, referer)
-					 VALUES (:ts, :sid, :path, :prev, :status, :dur, :ip, :host, :plat, :br, :lang, :app, :branch, :ref)'
-				);
-				foreach (self::$requestBuffer as $r) {
-					$stmt->bindValue(':ts', $r['ts'], SQLITE3_INTEGER);
-					$stmt->bindValue(':sid', $r['sessionId']);
-					$stmt->bindValue(':path', $r['path']);
-					$stmt->bindValue(':prev', $r['prevPath']);
-					$stmt->bindValue(':status', $r['status'], SQLITE3_INTEGER);
-					$stmt->bindValue(':dur', $r['durationMs']);
-					$stmt->bindValue(':ip', $r['ip']);
-					$stmt->bindValue(':host', $r['host']);
-					$stmt->bindValue(':plat', $r['platform']);
-					$stmt->bindValue(':br', $r['browser']);
-					$stmt->bindValue(':lang', $r['lang']);
-					$stmt->bindValue(':app', $r['appName']);
-					$stmt->bindValue(':branch', $r['branch']);
-					$stmt->bindValue(':ref', $r['referer']);
+					$stmt->bindValue(':p', $path);
+					$stmt->bindValue(':h', $data['hits']);
+					$stmt->bindValue(':u', count($data['sessions']));
+					$stmt->bindValue(':a', $data['hits'] > 0 ? $data['totalMs'] / $data['hits'] : 0);
+					$stmt->bindValue(':t', $now);
 					$stmt->execute();
 					$stmt->reset();
 				}
 			} catch (\Exception $e) {}
-			self::$requestBuffer = [];
-		}
-		// Flush session metadata
-		if (!empty(self::$sessionUpdates)) {
-			try {
-				$ins = self::$db->prepare(
-					'INSERT OR IGNORE INTO sessions (session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path, app_name)
-					 VALUES (:sid, :first, :last, :ip, :host, :plat, :br, :lang, :cnt, :entry, :app)'
-				);
-				$upd = self::$db->prepare(
-					'UPDATE sessions SET
-					   last_seen = MAX(last_seen, :last),
-					   page_count = page_count + :cnt
-					 WHERE session_id = :sid'
-				);
-				foreach (self::$sessionUpdates as $sid => $s) {
-					$ins->bindValue(':sid', $sid);
-					$ins->bindValue(':first', $s['firstSeen'], SQLITE3_INTEGER);
-					$ins->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
-					$ins->bindValue(':ip', $s['ip']);
-					$ins->bindValue(':host', $s['host']);
-					$ins->bindValue(':plat', $s['platform']);
-					$ins->bindValue(':br', $s['browser']);
-					$ins->bindValue(':lang', $s['lang']);
-					$ins->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
-					$ins->bindValue(':entry', $s['entryPath']);
-					$ins->bindValue(':app', $s['appName']);
-					$ins->execute();
-					$ins->reset();
-					$upd->bindValue(':sid', $sid);
-					$upd->bindValue(':last', $s['lastSeen'], SQLITE3_INTEGER);
-					$upd->bindValue(':cnt', $s['pageCount'], SQLITE3_INTEGER);
-					$upd->execute();
-					$upd->reset();
-				}
-			} catch (\Exception $e) {}
-			self::$sessionUpdates = [];
+			self::$pageHits = [];
 		}
 	}
 
@@ -901,10 +539,7 @@ class Q_WebServer_Metrics
 		if (!self::$db) return;
 		$retainDays = Q_Config::get('Q', 'webserver', 'metrics', 'retainDays', 30);
 		$cutoff = date('Y-m-d H:i', strtotime("-$retainDays days"));
-		$cutoffTs = strtotime("-$retainDays days");
 		self::$db->exec("DELETE FROM minute_stats WHERE ts < '$cutoff'");
-		self::$db->exec("DELETE FROM requests WHERE ts < $cutoffTs");
-		self::$db->exec("DELETE FROM sessions WHERE last_seen < $cutoffTs");
 	}
 
 	// ── Query ──
@@ -1032,7 +667,6 @@ class Q_WebServer_Metrics
 			'bufferSize' => count(self::$accessBuffer) + count(self::$errorBuffer),
 			'activeSessions' => count(self::$sessions),
 			'logFiles' => $logFiles,
-			'requestsBuffered' => count(self::$requestBuffer),
 			'retainDays' => Q_Config::get('Q', 'webserver', 'metrics', 'retainDays', 30),
 			'logRetainDays' => Q_Config::get('Q', 'webserver', 'metrics', 'logRetainDays', 7),
 		];
@@ -1087,300 +721,5 @@ class Q_WebServer_Metrics
 		$r = self::$db->query("SELECT from_path, count FROM flow WHERE to_path='$escapedPath' ORDER BY count DESC LIMIT 20");
 		while ($row = $r->fetchArray(SQLITE3_ASSOC)) $in[] = $row;
 		return ['outgoing' => $out, 'incoming' => $in];
-	}
-
-	// ── Analytics queries ──
-
-	/**
-	 * Get navigation flow edges with optional filters.
-	 * Returns [{from_path, to_path, count}] for Sankey diagrams.
-	 */
-	static function analyticsFlow($filters = [], $limit = 50)
-	{
-		if (!self::$db) return [];
-		$where = ['prev_path IS NOT NULL'];
-		$params = [];
-		self::buildAnalyticsWhere($filters, $where, $params);
-		$sql = 'SELECT prev_path AS from_path, path AS to_path, COUNT(*) AS count
-				FROM requests WHERE ' . implode(' AND ', $where) . '
-				GROUP BY prev_path, path ORDER BY count DESC LIMIT ' . (int) $limit;
-		return self::analyticsQuery($sql, $params);
-	}
-
-	/**
-	 * Get drilldown: where users go FROM a specific page, or come TO it.
-	 */
-	static function analyticsDrilldown($path, $direction = 'outgoing', $filters = [], $limit = 20)
-	{
-		if (!self::$db) return [];
-		$where = [];
-		$params = [];
-		self::buildAnalyticsWhere($filters, $where, $params);
-		if ($direction === 'outgoing') {
-			$where[] = 'prev_path = :drill_path';
-			$params[':drill_path'] = $path;
-			$sql = 'SELECT path AS to_path, COUNT(*) AS count
-					FROM requests WHERE ' . implode(' AND ', $where) . '
-					GROUP BY path ORDER BY count DESC LIMIT ' . (int) $limit;
-		} else {
-			$where[] = 'path = :drill_path';
-			$where[] = 'prev_path IS NOT NULL';
-			$params[':drill_path'] = $path;
-			$sql = 'SELECT prev_path AS from_path, COUNT(*) AS count
-					FROM requests WHERE ' . implode(' AND ', $where) . '
-					GROUP BY prev_path ORDER BY count DESC LIMIT ' . (int) $limit;
-		}
-		return self::analyticsQuery($sql, $params);
-	}
-
-	/**
-	 * List sessions matching filters with summary info.
-	 */
-	static function analyticsSessions($filters = [], $limit = 50, $offset = 0)
-	{
-		if (!self::$db) return [];
-		$where = [];
-		$params = [];
-		self::buildSessionWhere($filters, $where, $params);
-		$whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
-		$sql = "SELECT session_id, first_seen, last_seen, ip, host, platform, browser, language, page_count, entry_path, app_name
-				FROM sessions $whereClause
-				ORDER BY last_seen DESC
-				LIMIT " . (int) $limit . " OFFSET " . (int) $offset;
-		return self::analyticsQuery($sql, $params);
-	}
-
-	/**
-	 * Get the full request path for a single session.
-	 */
-	static function sessionPath($sessionId)
-	{
-		if (!self::$db) return [];
-		$stmt = self::$db->prepare(
-			'SELECT ts, path, prev_path, status, duration_ms, ip, host, app_name, branch, referer
-			 FROM requests WHERE session_id = :sid ORDER BY ts ASC'
-		);
-		$stmt->bindValue(':sid', $sessionId);
-		$result = $stmt->execute();
-		$rows = [];
-		while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-			$rows[] = $row;
-		}
-		return $rows;
-	}
-
-	/**
-	 * Analytics overview: aggregate stats for the given filters.
-	 */
-	static function analyticsOverview($filters = [])
-	{
-		if (!self::$db) return [];
-		$where = [];
-		$params = [];
-		self::buildAnalyticsWhere($filters, $where, $params);
-		$whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
-
-		// Use prepared statement for aggregate query so filter params get bound
-		$sql = "SELECT COUNT(*) AS page_views,
-					COUNT(DISTINCT session_id) AS sessions,
-					COUNT(DISTINCT ip) AS unique_ips,
-					AVG(duration_ms) AS avg_ms
-			 FROM requests $whereClause";
-		$rows = self::analyticsQuery($sql, $params);
-		$row = $rows ? $rows[0] : [];
-
-		// Top pages
-		$sql = "SELECT path, COUNT(*) AS hits FROM requests $whereClause GROUP BY path ORDER BY hits DESC LIMIT 10";
-		$topPages = self::analyticsQuery($sql, $params);
-
-		// Top platforms
-		$sql = "SELECT platform, COUNT(*) AS count FROM requests $whereClause GROUP BY platform ORDER BY count DESC";
-		$topPlatforms = self::analyticsQuery($sql, $params);
-
-		// Top browsers
-		$sql = "SELECT browser, COUNT(*) AS count FROM requests $whereClause GROUP BY browser ORDER BY count DESC";
-		$topBrowsers = self::analyticsQuery($sql, $params);
-
-		// Top languages — add language IS NOT NULL as a filter condition, not bare AND
-		$langWhere = $where ? $whereClause . ' AND language IS NOT NULL' : 'WHERE language IS NOT NULL';
-		$sql = "SELECT language, COUNT(*) AS count FROM requests $langWhere GROUP BY language ORDER BY count DESC LIMIT 10";
-		$topLanguages = self::analyticsQuery($sql, $params);
-
-		// Available hosts (for app filter)
-		$hostSql = "SELECT DISTINCT host FROM requests WHERE host IS NOT NULL ORDER BY host";
-		$hosts = [];
-		$r = self::$db->query($hostSql);
-		while ($h = $r->fetchArray(SQLITE3_ASSOC)) $hosts[] = $h['host'];
-
-		// Available app names
-		$appSql = "SELECT DISTINCT app_name FROM requests WHERE app_name IS NOT NULL ORDER BY app_name";
-		$apps = [];
-		$r = self::$db->query($appSql);
-		while ($h = $r->fetchArray(SQLITE3_ASSOC)) $apps[] = $h['app_name'];
-
-		// Available branches
-		$branchSql = "SELECT DISTINCT branch FROM requests WHERE branch IS NOT NULL ORDER BY branch";
-		$branches = [];
-		$r = self::$db->query($branchSql);
-		while ($h = $r->fetchArray(SQLITE3_ASSOC)) $branches[] = $h['branch'];
-
-		// Top referers
-		$refWhere = $where ? $whereClause . ' AND referer IS NOT NULL' : 'WHERE referer IS NOT NULL';
-		$sql = "SELECT referer, COUNT(*) AS count FROM requests $refWhere GROUP BY referer ORDER BY count DESC LIMIT 10";
-		$topReferers = self::analyticsQuery($sql, $params);
-
-		return [
-			'pageViews' => (int) ($row['page_views'] ?? 0),
-			'sessions' => (int) ($row['sessions'] ?? 0),
-			'uniqueIps' => (int) ($row['unique_ips'] ?? 0),
-			'avgMs' => round($row['avg_ms'] ?? 0, 1),
-			'topPages' => $topPages,
-			'topPlatforms' => $topPlatforms,
-			'topBrowsers' => $topBrowsers,
-			'topLanguages' => $topLanguages,
-			'topReferers' => $topReferers,
-			'hosts' => $hosts,
-			'apps' => $apps,
-			'branches' => $branches,
-		];
-	}
-
-	/**
-	 * Build WHERE clauses from analytics filters.
-	 * Supported filters: from (unix ts), to (unix ts), host, platform, browser,
-	 * language, ip, path, app_name, branch, referer.
-	 */
-	private static function buildAnalyticsWhere($filters, &$where, &$params)
-	{
-		if (!empty($filters['from'])) {
-			$where[] = 'ts >= :from_ts';
-			$params[':from_ts'] = (int) $filters['from'];
-		}
-		if (!empty($filters['to'])) {
-			$where[] = 'ts <= :to_ts';
-			$params[':to_ts'] = (int) $filters['to'];
-		}
-		if (!empty($filters['host'])) {
-			$where[] = 'host = :host';
-			$params[':host'] = $filters['host'];
-		}
-		if (!empty($filters['platform'])) {
-			$where[] = 'platform = :platform';
-			$params[':platform'] = $filters['platform'];
-		}
-		if (!empty($filters['browser'])) {
-			$where[] = 'browser = :browser';
-			$params[':browser'] = $filters['browser'];
-		}
-		if (!empty($filters['language'])) {
-			$where[] = 'language = :language';
-			$params[':language'] = $filters['language'];
-		}
-		if (!empty($filters['ip'])) {
-			// Support prefix matching for IP ranges
-			$where[] = 'ip LIKE :ip_prefix';
-			$params[':ip_prefix'] = $filters['ip'] . '%';
-		}
-		if (!empty($filters['path'])) {
-			$where[] = 'path LIKE :path_prefix';
-			$params[':path_prefix'] = $filters['path'] . '%';
-		}
-		if (!empty($filters['app_name'])) {
-			$where[] = 'app_name = :app_name';
-			$params[':app_name'] = $filters['app_name'];
-		}
-		if (!empty($filters['branch'])) {
-			if ($filters['branch'] === '_production') {
-				$where[] = '(branch IS NULL OR branch = \'\')';
-			} else {
-				$where[] = 'branch = :branch';
-				$params[':branch'] = $filters['branch'];
-			}
-		}
-		if (!empty($filters['referer'])) {
-			$where[] = 'referer LIKE :referer_prefix';
-			$params[':referer_prefix'] = '%' . $filters['referer'] . '%';
-		}
-	}
-
-	/**
-	 * Build WHERE clauses for sessions table.
-	 */
-	private static function buildSessionWhere($filters, &$where, &$params)
-	{
-		if (!empty($filters['from'])) {
-			$where[] = 'last_seen >= :from_ts';
-			$params[':from_ts'] = (int) $filters['from'];
-		}
-		if (!empty($filters['to'])) {
-			$where[] = 'first_seen <= :to_ts';
-			$params[':to_ts'] = (int) $filters['to'];
-		}
-		if (!empty($filters['host'])) {
-			$where[] = 'host = :host';
-			$params[':host'] = $filters['host'];
-		}
-		if (!empty($filters['platform'])) {
-			$where[] = 'platform = :platform';
-			$params[':platform'] = $filters['platform'];
-		}
-		if (!empty($filters['browser'])) {
-			$where[] = 'browser = :browser';
-			$params[':browser'] = $filters['browser'];
-		}
-		if (!empty($filters['language'])) {
-			$where[] = 'language = :language';
-			$params[':language'] = $filters['language'];
-		}
-		if (!empty($filters['ip'])) {
-			$where[] = 'ip LIKE :ip_prefix';
-			$params[':ip_prefix'] = $filters['ip'] . '%';
-		}
-		if (!empty($filters['app_name'])) {
-			$where[] = 'app_name = :app_name';
-			$params[':app_name'] = $filters['app_name'];
-		}
-	}
-
-	/**
-	 * Execute a parameterized analytics query and return rows.
-	 */
-	private static function analyticsQuery($sql, $params)
-	{
-		try {
-			$stmt = self::$db->prepare($sql);
-			foreach ($params as $key => $val) {
-				$stmt->bindValue($key, $val);
-			}
-			$result = $stmt->execute();
-			$rows = [];
-			while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-				$rows[] = $row;
-			}
-			return $rows;
-		} catch (\Exception $e) {
-			return [];
-		}
-	}
-
-	/**
-	 * Get date range of available analytics data.
-	 */
-	static function analyticsDateRange()
-	{
-		if (!self::$db) return null;
-		try {
-			$row = self::$db->querySingle(
-				'SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts, COUNT(*) AS total FROM requests', true
-			);
-			if (!$row || !$row['min_ts']) return null;
-			return [
-				'from' => (int) $row['min_ts'],
-				'to' => (int) $row['max_ts'],
-				'total' => (int) $row['total'],
-			];
-		} catch (\Exception $e) {
-			return null;
-		}
 	}
 }

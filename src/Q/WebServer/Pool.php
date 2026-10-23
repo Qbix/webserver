@@ -25,26 +25,57 @@
  * stateful resources before forking. Q's DB connections are
  * lazy (opened on first query), so this is natural.
  *
+ * Elastic scaling:
+ *   The pool starts at targetSize workers and scales between
+ *   minWorkers and maxWorkers based on load:
+ *   - Scale UP:   when all workers are busy and requests are
+ *                 pending, fork new workers up to maxWorkers.
+ *   - Scale DOWN: when idle workers exceed minWorkers and no
+ *                 requests have been pending for scaleDownDelay
+ *                 seconds, recycle excess workers without
+ *                 replacing them.
+ *   - Branch workers are on-demand and reaped after
+ *                 branchIdleTimeout seconds of inactivity.
+ *   - Workers busy longer than workerTimeout are killed.
+ *   - Pending queue is capped at maxPendingRequests; overflow
+ *                 gets 503 with Retry-After.
+ *
  *   Parent (event loop, Q.inc.php loaded)
  *     ├── Worker 0 [idle, waiting on socketpair]
  *     ├── Worker 1 [busy, processing request]  → exits → replacement forked
  *     ├── Worker 2 [idle]
- *     └── Worker 3 [idle]
+ *     └── Worker 3 [idle]  ← may be reaped if idle > minWorkers
  *
  * @class Q_WebServer_Pool
  */
 class Q_WebServer_Pool
 {
 	public $targetSize;
-	protected $workers = array();       // index => [pid, socket, busy]
-	protected $workerClients = array(); // index => HTTP client socket
-	protected $workerBuffers = array(); // index => partial response data
-	protected $watchers = array();      // index => Q_Evented watcher id
-	protected $pending = array();       // queued [client, parsed, scriptPath]
-	protected $nextIndex = 0;
 	protected $octane = false;          // persistent workers (true) or fork-per-request (false)
 	protected $maxRequests = 1000;      // voluntary recycle after N requests (octane mode)
+	protected $workers = array();       // index => [pid, socket, busy, branch]
+	protected $workerClients = array(); // index => HTTP client socket
+	protected $workerBuffers = array(); // index => partial response data
+	protected $workerParsed = array();  // index => full parsed request (for cache)
+	protected $watchers = array();      // index => Q_Evented watcher id
+	protected $pending = array();       // queued [client, parsed, scriptPath]
+	protected $branchPending = array(); // branch => queued [client, parsed, scriptPath]
+	protected $nextIndex = 0;
+	protected $branchWorkerCounts = array(); // branch => count of workers
+	protected $maxBranchWorkers = 2;    // max persistent workers per branch
 	protected static $inputWrapperRegistered = false;
+
+	// ── Elastic scaling ──────────────────────────────────
+	protected $minWorkers = 2;          // never scale below this
+	protected $maxWorkers = 16;         // never scale above this
+	protected $maxPendingRequests = 100; // 503 backpressure when exceeded
+	protected $workerTimeout = 30;      // kill workers busy longer than this (seconds)
+	protected $branchIdleTimeout = 120; // reap branch workers idle longer than this
+	protected $scaleDownDelay = 30;     // seconds of no pending before scaling down
+	protected $lastPendingTime = 0;     // last time pending queue was non-empty
+	protected $workerBusySince = array(); // index => hrtime(true) when worker became busy
+	protected $branchLastUsed = array();  // branch => hrtime(true) when last request served
+	protected $scalingTimerId = null;   // Q_Evented timer for scaling checks
 
 	/**
 	 * When set (in a booted worker), called with the request instead of
@@ -118,7 +149,7 @@ class Q_WebServer_Pool
 	 */
 	static function encodeRequest($parsed, $scriptPath)
 	{
-		$msg = json_encode(array(
+		$payload = array(
 			'method'         => $parsed['method'],
 			'uri'            => $parsed['uri'],
 			'path'           => $parsed['path'],
@@ -130,8 +161,22 @@ class Q_WebServer_Pool
 			'scriptName'     => self::scriptName($scriptPath),
 			'documentRoot'   => rtrim(Q_WebServer::$rootDir ?? '', '/\\'),
 			'serverPort'     => (string)($_SERVER['SERVER_PORT'] ?? '8080'),
-			'remoteAddr'     => '127.0.0.1'
-		));
+			'remoteAddr'     => '127.0.0.1',
+			'pathInfo'       => $parsed['pathInfo'] ?? ''
+		);
+		// Pass sandbox config to the worker so it can apply per-app jailing
+		if (Q_WebServer::$currentHostConfig
+			&& !empty(Q_WebServer::$currentHostConfig['sandbox'])
+		) {
+			$payload['_hostConfig'] = Q_WebServer::$currentHostConfig;
+		}
+		// Pass branch metadata so workers can apply credential injection
+		// and write restrictions
+		if (!empty($parsed['_branch'])) {
+			$payload['_branch'] = $parsed['_branch'];
+			$payload['_branchRecord'] = $parsed['_branchRecord'];
+		}
+		$msg = json_encode($payload);
 		return pack('N', strlen($msg)) . $msg;
 	}
 
@@ -162,6 +207,37 @@ class Q_WebServer_Pool
 		$this->maxRequests = (int) Q_Config::get(
 			'Q', 'webserver', 'maxRequests', 1000
 		);
+		$this->maxBranchWorkers = (int) Q_Config::get(
+			'Q', 'webserver', 'maxBranchWorkers', 2
+		);
+
+		// ── Elastic scaling config ──
+		// Detect CPU count for maxWorkers default
+		$cpuCount = self::cpuCount();
+		$defaultMax = min($cpuCount * 2, 64);
+
+		$this->minWorkers = max(1, (int) Q_Config::get(
+			'Q', 'webserver', 'minWorkers', 2
+		));
+		$this->maxWorkers = max($this->minWorkers, (int) Q_Config::get(
+			'Q', 'webserver', 'maxWorkers', $defaultMax
+		));
+		// Clamp targetSize to [minWorkers, maxWorkers]
+		$this->targetSize = max($this->minWorkers,
+			min($this->maxWorkers, $this->targetSize));
+		$this->maxPendingRequests = (int) Q_Config::get(
+			'Q', 'webserver', 'maxPendingRequests', 100
+		);
+		$this->workerTimeout = (float) Q_Config::get(
+			'Q', 'webserver', 'workerTimeout', 30
+		);
+		$this->branchIdleTimeout = (float) Q_Config::get(
+			'Q', 'webserver', 'branchIdleTimeout', 120
+		);
+		$this->scaleDownDelay = (float) Q_Config::get(
+			'Q', 'webserver', 'scaleDownDelay', 30
+		);
+		$this->lastPendingTime = 0;
 
 		// Source rewriting on in both modes (unless explicitly disabled).
 		// Octane needs it to reset lifecycle state; fork-per-request needs it
@@ -193,15 +269,34 @@ class Q_WebServer_Pool
 		for ($i = 0; $i < $this->targetSize; $i++) {
 			$this->forkWorker();
 		}
+
+		// ── Start periodic scaling timer (every 5 seconds) ──
+		$pool = $this;
+		$this->scalingTimerId = Q_Evented::repeat(5.0, function () use ($pool) {
+			$pool->scalingTick();
+		});
+	}
+
+	/**
+	 * Switch the pool to fork-per-request mode at runtime.
+	 * Used when a preset is set but no Boot adapter detected the framework,
+	 * so source transforms would break on re-inclusion in persistent workers.
+	 * @method setForkPerRequest
+	 * @param {boolean} $on
+	 */
+	function setForkPerRequest($on)
+	{
+		$this->octane = !$on;
 	}
 
 	/**
 	 * Fork one worker. Child inherits parent's loaded state
 	 * via copy-on-write.
 	 * @method forkWorker
+	 * @param {string|null} $branch  Branch tag (null = trunk worker)
 	 * @return {integer} Worker index
 	 */
-	protected function forkWorker()
+	protected function forkWorker($branch = null)
 	{
 		// STREAM_PF_UNIX doesn't exist on Windows — use INET loopback
 		$family = defined('STREAM_PF_UNIX') ? STREAM_PF_UNIX : STREAM_PF_INET;
@@ -229,8 +324,13 @@ class Q_WebServer_Pool
 
 		$index = $this->nextIndex++;
 		$this->workers[$index] = array(
-			'pid' => $pid, 'socket' => $sock, 'busy' => false
+			'pid' => $pid, 'socket' => $sock, 'busy' => false,
+			'branch' => $branch
 		);
+		if ($branch !== null) {
+			$this->branchWorkerCounts[$branch]
+				= ($this->branchWorkerCounts[$branch] ?? 0) + 1;
+		}
 
 		$pool = $this;
 		$this->watchers[$index] = Q_Evented::onReadable(
@@ -327,6 +427,35 @@ class Q_WebServer_Pool
 		self::$req = $req;
 		self::$failedRequest = false;
 		self::prepareRequest($req);
+
+		// Apply per-app sandbox (same as executeScript does for the
+		// fork-per-request path).  Must happen after prepareRequest
+		// sets up superglobals but before the script runs.
+		if (class_exists('Q_WebServer_Sandbox', false)
+			&& (!empty($req['_hostConfig']) || !empty($req['_branchRecord']))
+		) {
+			$hostConfig = $req['_hostConfig'] ?? array();
+			$branchRecord = $req['_branchRecord'] ?? null;
+			Q_WebServer_Sandbox::apply(
+				$hostConfig,
+				rtrim($req['documentRoot'] ?? '', DIRECTORY_SEPARATOR),
+				$branchRecord
+			);
+
+			// If sandbox detected a uid mismatch (persistent worker was
+			// already at a different uid), send 503 and signal the loop
+			// to exit so the parent can re-fork a fresh worker.
+			if (Q_WebServer_Sandbox::$uidMismatch) {
+				Q_WebServer_Sandbox::$uidMismatch = false;
+				self::writeMsg(
+					self::$roleSocket, 503,
+					'Worker uid mismatch — retry',
+					array('Retry-After' => '0')
+				);
+				return false; // exit the worker loop
+			}
+		}
+
 		if (is_string(self::$scriptRunner)) {
 			self::$scriptFile = self::$scriptRunner;     // adapter's global-scope handler
 		} elseif (self::$scriptRunner) {
@@ -555,6 +684,8 @@ class Q_WebServer_Pool
 			}
 		}
 
+		$_SERVER['REQUEST_TIME']       = time();
+		$_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
 		$_SERVER['REQUEST_METHOD'] = $req['method'];
 		$_SERVER['REQUEST_URI'] = $req['uri'];
 		$_SERVER['QUERY_STRING'] = $req['query'] ?? '';
@@ -562,6 +693,7 @@ class Q_WebServer_Pool
 		$_SERVER['SCRIPT_NAME'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['PHP_SELF'] = $req['scriptName'] ?? '/index.php';
 		$_SERVER['DOCUMENT_ROOT'] = $req['documentRoot'] ?? '';
+		$_SERVER['PATH_INFO'] = $req['pathInfo'] ?? '';
 
 		// Match mod_php / PHP-FPM: set cwd to the script's directory so
 		// relative paths (template caches, require's) resolve beside it.
@@ -671,6 +803,35 @@ class Q_WebServer_Pool
 			self::$inputWrapperRegistered = true;
 		}
 
+		// ── Branch context for credential injection and write restrictions ──
+		if (!empty($req['_branch'])
+			&& class_exists('Q_WebServer_CompatFileWrapper', false)
+		) {
+			$branchRecord = $req['_branchRecord'] ?? array();
+			$credentials = $branchRecord['credentials'] ?? array();
+			Q_WebServer_CompatFileWrapper::setBranchContext($branchRecord, $credentials);
+			if (!empty($branchRecord['user'])) {
+				Q_WebServer_CompatFileWrapper::$branchUser = $branchRecord['user'];
+			}
+			if (!empty($branchRecord['fileTier'])) {
+				Q_WebServer_CompatFileWrapper::$branchFileTier = $branchRecord['fileTier'];
+			}
+			// Templates writable below the code tier must not call arbitrary
+			// methods or tools. Fail closed: no recorded tier means restricted.
+			Q_Config::set('Q', 'handlebars', 'restricted',
+				empty($branchRecord['fileTier']) || $branchRecord['fileTier'] !== 'code'
+			);
+			if (!empty($branchRecord['preset'])) {
+				Q_WebServer_CompatFileWrapper::$branchPreset = $branchRecord['preset'];
+			}
+			if (!empty($branchRecord['userPaths'])) {
+				Q_WebServer_CompatFileWrapper::$branchUserPaths = $branchRecord['userPaths'];
+			}
+			if (!empty($branchRecord['userConfig'])) {
+				Q_WebServer_CompatFileWrapper::$branchUserConfig = $branchRecord['userConfig'];
+			}
+		}
+
 		// Non-removable buffer: Q_Dispatcher::dispatch() calls ob_end_flush()
 		// which would destroy a normal buffer. Passing flags=0 makes
 		// ob_end_flush()/ob_end_clean() fail on this buffer, so it survives.
@@ -693,6 +854,46 @@ class Q_WebServer_Pool
 	protected static function executeScript($req)
 	{
 		self::prepareRequest($req);
+
+		// Apply per-app sandbox before running application code.
+		// For branch requests, pass the branch record so Sandbox can
+		// use the branch uid for posix_setuid and the branch root for
+		// open_basedir.
+		if (class_exists('Q_WebServer_Sandbox', false)
+			&& (!empty($req['_hostConfig']) || !empty($req['_branchRecord']))
+		) {
+			$hostConfig = $req['_hostConfig'] ?? array();
+			$branchRecord = $req['_branchRecord'] ?? null;
+			Q_WebServer_Sandbox::apply(
+				$hostConfig,
+				rtrim($req['documentRoot'] ?? '', DIRECTORY_SEPARATOR),
+				$branchRecord
+			);
+
+			// If sandbox detected a uid mismatch (persistent worker was
+			// already at a different uid), return 503 so the parent
+			// re-forks a fresh worker for this request.
+			if (Q_WebServer_Sandbox::$uidMismatch) {
+				Q_WebServer_Sandbox::$uidMismatch = false;
+				return array(
+					'status' => 503,
+					'body' => 'Worker uid mismatch — retry',
+					'headers' => array('Retry-After' => '0'),
+				);
+			}
+		}
+
+		// ── CVE-2026-109618 / CVE-2026-109619 (PHP2Shell) hardening ──
+		// PHP's built-in multipart parser and session.upload_progress handler
+		// contain heap use-after-free bugs reachable before any userland code
+		// runs in a standard php-fpm setup.  This webserver runs as CLI SAPI
+		// (not FPM), parses multipart itself, and has already populated
+		// $_POST/$_FILES above.  Disabling PHP's own body-reading and upload-
+		// progress machinery ensures the vulnerable C code never executes for
+		// requests handled here, regardless of the PHP version in use.
+		@ini_set('enable_post_data_reading',        '0');
+		@ini_set('session.upload_progress.enabled', '0');
+
 		$failed = false;
 		try {
 			if (self::$scriptRunner) {
@@ -843,23 +1044,115 @@ class Q_WebServer_Pool
 
 	/**
 	 * Send a request to an idle worker. Queues if all busy.
+	 *
+	 * Branch routing (octane mode only):
+	 *   - Trunk requests (no _branch) go to trunk workers (branch tag = null).
+	 *   - Branch requests go to a worker tagged with the same branch.
+	 *   - If no matching idle worker exists and we haven't hit
+	 *     $maxBranchWorkers for that branch, fork a new tagged worker.
+	 *   - Otherwise queue in per-branch pending queue.
+	 *   - In fork-per-request mode, workers are disposable so any idle one works.
 	 */
 	function dispatch($client, $parsed, $scriptPath)
 	{
-		$idle = $this->findIdle();
-		if ($idle === null) {
-			$this->pending[] = array($client, $parsed, $scriptPath);
+		$branch = $parsed['_branch'] ?? null;
+
+		if (!$this->octane || $branch === null) {
+			// Trunk request or fork-per-request mode: use any idle trunk worker
+			$idle = $this->findIdle(null);
+			if ($idle === null) {
+				// ── Elastic scale-up: fork a new worker if below maxWorkers ──
+				$trunkCount = $this->trunkWorkerCount();
+				if ($trunkCount < $this->maxWorkers) {
+					$newIdx = $this->forkWorker(null);
+					$this->sendTo($newIdx, $client, $parsed, $scriptPath);
+					return;
+				}
+				// ── Backpressure: reject if pending queue is full ──
+				if ($this->maxPendingRequests > 0
+					&& count($this->pending) >= $this->maxPendingRequests
+				) {
+					Q_WebServer::sendResponse($client, 503,
+						'Server busy — try again shortly',
+						'text/plain; charset=utf-8',
+						array('Retry-After' => '1'));
+					Q_WebServer::closeClient((int) $client);
+					return;
+				}
+				$this->pending[] = array($client, $parsed, $scriptPath);
+				$this->lastPendingTime = hrtime(true);
+				return;
+			}
+			$this->sendTo($idle, $client, $parsed, $scriptPath);
 			return;
 		}
-		$this->sendTo($idle, $client, $parsed, $scriptPath);
+
+		// Branch request in octane mode: find idle worker tagged to this branch
+		$idle = $this->findIdle($branch);
+		if ($idle !== null) {
+			$this->sendTo($idle, $client, $parsed, $scriptPath);
+			$this->branchLastUsed[$branch] = hrtime(true);
+			return;
+		}
+
+		// No idle branch worker — can we fork a new one?
+		$count = $this->branchWorkerCounts[$branch] ?? 0;
+		if ($count < $this->maxBranchWorkers) {
+			$newIdx = $this->forkWorker($branch);
+			$this->sendTo($newIdx, $client, $parsed, $scriptPath);
+			$this->branchLastUsed[$branch] = hrtime(true);
+			return;
+		}
+
+		// ── Backpressure for branch pending ──
+		$branchQueueSize = count($this->branchPending[$branch] ?? array());
+		if ($this->maxPendingRequests > 0
+			&& $branchQueueSize >= $this->maxPendingRequests
+		) {
+			Q_WebServer::sendResponse($client, 503,
+				'Branch busy — try again shortly',
+				'text/plain; charset=utf-8',
+				array('Retry-After' => '1'));
+			Q_WebServer::closeClient((int) $client);
+			return;
+		}
+
+		// At capacity for this branch — queue
+		if (!isset($this->branchPending[$branch])) {
+			$this->branchPending[$branch] = array();
+		}
+		$this->branchPending[$branch][] = array($client, $parsed, $scriptPath);
+		$this->lastPendingTime = hrtime(true);
 	}
 
 	protected function sendTo($index, $client, $parsed, $scriptPath)
 	{
 		$this->workers[$index]['busy'] = true;
+		$this->workerBusySince[$index] = hrtime(true);
 		$this->workerClients[$index] = $client;
 		$this->workerBuffers[$index] = '';
 		$this->workerRequestHeaders[$index] = $parsed['headers'];
+		$this->workerParsed[$index] = $parsed;
+
+		// Inject Merkle stale hints so the worker knows which slots changed.
+		// This enables framework-aware partial re-rendering (skip unchanged slots).
+		if (class_exists('Q_WebServer_Cache_Components', false)
+			&& Q_WebServer_Cache_Components::enabled()
+		) {
+			$pageKey = $parsed['path'] . '?' . ($parsed['query'] ?? '');
+			$staleHints = Q_WebServer_Cache_Components::buildStaleHintsHeader($pageKey);
+			if ($staleHints !== null) {
+				$parsed['headers']['x-q-cache-stale-hints'] = $staleHints;
+			}
+			// Also tell the worker which slots have cached HTML it can reuse.
+			// The worker can skip rendering these slots entirely and inject
+			// the cached HTML, saving render time on partially-stale pages.
+			$cachedSlots = Q_WebServer_Cache_Components::buildCachedSlotsHeader($pageKey);
+			if ($cachedSlots !== null) {
+				$parsed['headers']['x-q-cache-cached-slots'] = $cachedSlots;
+			}
+		}
+
 		// In octane mode, the watcher was cancelled after the previous
 		// response to prevent stream_select from firing endlessly on the
 		// idle socket. Create a fresh one-shot watcher for this dispatch.
@@ -915,6 +1208,13 @@ class Q_WebServer_Pool
 		$json = substr($buf, 4, $len);
 		$response = json_decode($json, true);
 
+		// Decode base64-encoded body (wire protocol uses body_b64 / b64
+		// so NUL bytes and invalid UTF-8 survive JSON transport)
+		if ($response && array_key_exists('body_b64', $response)) {
+			$response['body'] = base64_decode($response['body_b64']);
+			unset($response['body_b64']);
+		}
+
 		if ($response && !empty($response['b64'])) {
 			$decoded = is_string($response['body'] ?? null)
 				? base64_decode($response['body'], true) : false;
@@ -938,6 +1238,28 @@ class Q_WebServer_Pool
 			unset($response['_cacheMessages']);
 		}
 
+		// Process Merkle cache headers from the worker response.
+		// In-process paths do this inside executePhpScript(), but the forked
+		// worker path was missing it — X-Q-Cache-Tree, X-Q-Cache-Deps and
+		// X-Q-Cache-Invalidate headers went unprocessed.
+		$parsed = $this->workerParsed[$index] ?? null;
+		if ($response && $parsed
+			&& class_exists('Q_WebServer_Cache_Components', false)
+			&& Q_WebServer_Cache_Components::enabled()
+		) {
+			$pageKey = ($parsed['path'] ?? '') . '?' . ($parsed['query'] ?? '');
+			$responseHeaders = $response['headers'] ?? array();
+			Q_WebServer_Cache_Components::processResponseHeaders($pageKey, $responseHeaders);
+			$response['headers'] = $responseHeaders;
+		}
+
+		// Store response in reverse proxy cache.
+		// In-process paths call Cache::put() after processPhpResponse(),
+		// but the forked worker path was missing it entirely.
+		if ($response && $parsed) {
+			Q_WebServer_Cache::put($parsed, $response);
+		}
+
 		$client = $this->workerClients[$index] ?? null;
 		$reqHeaders = $this->workerRequestHeaders[$index] ?? [];
 		if ($response && $client && is_resource($client)) {
@@ -955,9 +1277,15 @@ class Q_WebServer_Pool
 		// child exited after one request).
 		if ($this->octane) {
 			$this->workers[$index]['busy'] = false;
+			unset($this->workerBusySince[$index]);
 			$this->workers[$index]['requests'] = ($this->workers[$index]['requests'] ?? 0) + 1;
 			$this->workerBuffers[$index] = '';
-			unset($this->workerClients[$index]);
+			unset($this->workerClients[$index], $this->workerParsed[$index]);
+			// Track branch activity
+			$workerBranch2 = $this->workers[$index]['branch'] ?? null;
+			if ($workerBranch2 !== null) {
+				$this->branchLastUsed[$workerBranch2] = hrtime(true);
+			}
 
 			// Recycle if marked for graceful recycling, or hit maxRequests
 			$shouldRecycle = !empty($this->workers[$index]['recycleAfter'])
@@ -972,9 +1300,26 @@ class Q_WebServer_Pool
 				Q_Evented::cancel($this->watchers[$index]);
 				unset($this->watchers[$index]);
 			}
-			if (!empty($this->pending)) {
-				$next = array_shift($this->pending);
-				$this->dispatch($next[0], $next[1], $next[2]);
+			// Drain the correct pending queue: branch workers serve their
+			// branch queue first, trunk workers serve the trunk queue.
+			$workerBranch = $this->workers[$index]['branch'] ?? null;
+			$drained = false;
+			if ($workerBranch !== null
+				&& !empty($this->branchPending[$workerBranch])
+			) {
+				$next = array_shift($this->branchPending[$workerBranch]);
+				if (empty($this->branchPending[$workerBranch])) {
+					unset($this->branchPending[$workerBranch]);
+				}
+				$this->sendTo($index, $next[0], $next[1], $next[2]);
+				$drained = true;
+			}
+			if (!$drained && !empty($this->pending)) {
+				// Only trunk workers should pick up trunk pending
+				if ($workerBranch === null) {
+					$next = array_shift($this->pending);
+					$this->sendTo($index, $next[0], $next[1], $next[2]);
+				}
 			}
 		} else {
 			$this->recycle($index, false);
@@ -1006,21 +1351,55 @@ class Q_WebServer_Pool
 			if (is_resource($c)) @fclose($c);
 		}
 
+		$workerBranch = null;
 		if (isset($this->workers[$index])) {
+			$workerBranch = $this->workers[$index]['branch'] ?? null;
 			$sock = $this->workers[$index]['socket'];
 			if (is_resource($sock)) @fclose($sock);
 			Q_WebServer_Fork::waitpid($this->workers[$index]["pid"], $st, 1);
 		}
 		unset($this->workers[$index], $this->workerClients[$index],
-			$this->workerBuffers[$index], $this->workerRequestHeaders[$index]);
+			$this->workerBuffers[$index], $this->workerRequestHeaders[$index],
+			$this->workerParsed[$index]);
 
-		// Immediately fork replacement
-		$newIdx = $this->forkWorker();
+		// Track branch worker count
+		if ($workerBranch !== null) {
+			if (isset($this->branchWorkerCounts[$workerBranch])) {
+				$this->branchWorkerCounts[$workerBranch]--;
+				if ($this->branchWorkerCounts[$workerBranch] <= 0) {
+					unset($this->branchWorkerCounts[$workerBranch]);
+				}
+			}
+		}
 
-		// Drain pending queue
-		if (!empty($this->pending)) {
-			$next = array_shift($this->pending);
-			$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+		// Clear busy-since tracking
+		unset($this->workerBusySince[$index]);
+
+		if ($workerBranch !== null) {
+			// Branch worker died — check if there are pending branch requests
+			if (!empty($this->branchPending[$workerBranch])) {
+				$newIdx = $this->forkWorker($workerBranch);
+				$next = array_shift($this->branchPending[$workerBranch]);
+				if (empty($this->branchPending[$workerBranch])) {
+					unset($this->branchPending[$workerBranch]);
+				}
+				$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+			}
+			// Don't fork a replacement branch worker if no pending —
+			// branch workers are on-demand, not maintained at a target size
+		} else {
+			// Trunk worker — replace only if we'd drop below targetSize,
+			// or if there are pending requests. This allows elastic
+			// scale-down: excess workers recycled without replacement.
+			$trunkCount = $this->trunkWorkerCount();
+			if ($trunkCount < $this->targetSize || !empty($this->pending)) {
+				$newIdx = $this->forkWorker(null);
+				// Drain trunk pending queue
+				if (!empty($this->pending)) {
+					$next = array_shift($this->pending);
+					$this->sendTo($newIdx, $next[0], $next[1], $next[2]);
+				}
+			}
 		}
 	}
 
@@ -1037,10 +1416,15 @@ class Q_WebServer_Pool
 		Q_WebServer_Headers::processResponse($client, $resp, $reqHeaders);
 	}
 
-	protected function findIdle()
+	/**
+	 * Find an idle worker matching the given branch tag.
+	 * @param {string|null} $branch  null = trunk workers only
+	 * @return {integer|null} Worker index, or null if none idle
+	 */
+	protected function findIdle($branch = null)
 	{
 		foreach ($this->workers as $i => $w) {
-			if (!$w['busy']) return $i;
+			if (!$w['busy'] && ($w['branch'] ?? null) === $branch) return $i;
 		}
 		return null;
 	}
@@ -1072,8 +1456,11 @@ class Q_WebServer_Pool
 	{
 		$immediate = 0;
 		$pending = 0;
-		foreach ($this->workers as $i => $w) {
-			if ($w['busy']) {
+		// Collect indices first — recycle() modifies $this->workers
+		$indices = array_keys($this->workers);
+		foreach ($indices as $i) {
+			if (!isset($this->workers[$i])) continue;
+			if ($this->workers[$i]['busy']) {
 				$this->workers[$i]['recycleAfter'] = true;
 				$pending++;
 			} else {
@@ -1089,25 +1476,236 @@ class Q_WebServer_Pool
 	 */
 	function workerStats()
 	{
+		$now = hrtime(true);
 		$stats = [];
 		foreach ($this->workers as $i => $w) {
+			$busySec = null;
+			if ($w['busy'] && isset($this->workerBusySince[$i])) {
+				$busySec = round(($now - $this->workerBusySince[$i]) / 1e9, 1);
+			}
 			$stats[] = [
 				'index' => $i,
 				'pid' => $w['pid'],
 				'busy' => $w['busy'],
+				'busySec' => $busySec,
+				'branch' => $w['branch'] ?? null,
 				'requests' => $w['requests'] ?? 0,
 				'recycleAfter' => !empty($w['recycleAfter']),
 			];
+		}
+		$branchPendingTotal = 0;
+		foreach ($this->branchPending as $q) {
+			$branchPendingTotal += count($q);
 		}
 		return [
 			'workers' => $stats,
 			'total' => count($this->workers),
 			'busy' => count(array_filter($this->workers, function($w) { return $w['busy']; })),
 			'idle' => count(array_filter($this->workers, function($w) { return !$w['busy']; })),
+			'trunkWorkers' => $this->trunkWorkerCount(),
+			'branchWorkers' => $this->branchWorkerCounts,
+			'maxBranchWorkers' => $this->maxBranchWorkers,
 			'maxRequests' => $this->maxRequests,
 			'mode' => $this->octane ? 'persistent' : 'fork-per-request',
 			'pending' => count($this->pending),
+			'branchPending' => $branchPendingTotal,
+			// Elastic scaling info
+			'minWorkers' => $this->minWorkers,
+			'maxWorkers' => $this->maxWorkers,
+			'targetSize' => $this->targetSize,
+			'maxPendingRequests' => $this->maxPendingRequests,
+			'workerTimeout' => $this->workerTimeout,
+			'branchIdleTimeout' => $this->branchIdleTimeout,
+			'scaleDownDelay' => $this->scaleDownDelay,
+			'cpuCount' => self::cpuCount(),
 		];
+	}
+
+	// ── Elastic scaling engine ──────────────────────────
+
+	/**
+	 * Count trunk workers (branch tag = null).
+	 * @return int
+	 */
+	function trunkWorkerCount()
+	{
+		$n = 0;
+		foreach ($this->workers as $w) {
+			if (($w['branch'] ?? null) === null) $n++;
+		}
+		return $n;
+	}
+
+	/**
+	 * Periodic scaling tick — called every 5 seconds by the event loop.
+	 * Handles: scale-down of excess trunk workers, reaping idle branch
+	 * workers, and killing timed-out workers.
+	 */
+	function scalingTick()
+	{
+		$now = hrtime(true);
+
+		// ── 1. Kill timed-out workers ──
+		if ($this->workerTimeout > 0) {
+			$timeoutNs = $this->workerTimeout * 1e9;
+			foreach ($this->workerBusySince as $index => $since) {
+				if (($now - $since) > $timeoutNs && isset($this->workers[$index])) {
+					$pid = $this->workers[$index]['pid'];
+					error_log(sprintf(
+						'[Pool] Worker %d (pid %d) timed out after %.1fs — killing',
+						$index, $pid, ($now - $since) / 1e9
+					));
+					// SIGTERM first, then recycle will handle cleanup
+					if (function_exists('posix_kill')) {
+						posix_kill($pid, SIGTERM);
+					}
+					// Schedule a SIGKILL if it doesn't exit in 5 seconds
+					$pool = $this;
+					Q_Evented::delay(5.0, function () use ($pool, $index, $pid) {
+						if (isset($pool->workers[$index])
+							&& ($pool->workers[$index]['pid'] ?? 0) === $pid
+						) {
+							if (function_exists('posix_kill')) {
+								posix_kill($pid, SIGKILL);
+							}
+							$pool->recycle($index, true);
+						}
+					});
+				}
+			}
+		}
+
+		// ── 2. Scale down excess trunk workers ──
+		// Only scale down if no requests have been pending for scaleDownDelay
+		$pendingIdleSec = $this->lastPendingTime > 0
+			? ($now - $this->lastPendingTime) / 1e9
+			: PHP_FLOAT_MAX; // never had pending = idle forever
+		$trunkCount = $this->trunkWorkerCount();
+
+		if ($pendingIdleSec >= $this->scaleDownDelay
+			&& empty($this->pending)
+			&& $trunkCount > $this->minWorkers
+		) {
+			// Recycle ONE idle excess worker per tick (gradual ramp-down)
+			foreach ($this->workers as $i => $w) {
+				if (!$w['busy'] && ($w['branch'] ?? null) === null
+					&& $trunkCount > $this->minWorkers
+				) {
+					// Don't replace this worker — recycle handles that via
+					// the trunkWorkerCount() < targetSize check
+					$this->targetSize = max($this->minWorkers, $trunkCount - 1);
+					$this->recycle($i, false);
+					break; // one per tick to avoid thrashing
+				}
+			}
+		}
+
+		// ── 3. Reap idle branch workers ──
+		if ($this->branchIdleTimeout > 0) {
+			$branchTimeoutNs = $this->branchIdleTimeout * 1e9;
+			foreach ($this->workers as $i => $w) {
+				$branch = $w['branch'] ?? null;
+				if ($branch === null) continue;
+				if ($w['busy']) continue;
+				$lastUsed = $this->branchLastUsed[$branch] ?? 0;
+				if ($lastUsed > 0 && ($now - $lastUsed) > $branchTimeoutNs) {
+					error_log(sprintf(
+						'[Pool] Reaping idle branch worker %d (branch=%s, idle %.0fs)',
+						$i, $branch, ($now - $lastUsed) / 1e9
+					));
+					$this->recycle($i, false);
+					// Only reap one per branch per tick
+					break;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Dynamically resize the pool to a new target.
+	 * If growing: forks new workers immediately.
+	 * If shrinking: marks excess idle workers for recycling.
+	 * @method resize
+	 * @param int $newSize New target worker count
+	 * @return array Summary of what happened
+	 */
+	function resize($newSize)
+	{
+		$newSize = max($this->minWorkers, min($this->maxWorkers, (int) $newSize));
+		$oldSize = $this->targetSize;
+		$this->targetSize = $newSize;
+		$forked = 0;
+		$recycled = 0;
+
+		$trunkCount = $this->trunkWorkerCount();
+
+		if ($newSize > $trunkCount) {
+			// Scale up: fork the difference
+			$toFork = $newSize - $trunkCount;
+			for ($i = 0; $i < $toFork; $i++) {
+				$this->forkWorker(null);
+				$forked++;
+			}
+		} elseif ($newSize < $trunkCount) {
+			// Scale down: recycle excess idle workers
+			$toRecycle = $trunkCount - $newSize;
+			$indices = array_keys($this->workers);
+			foreach ($indices as $idx) {
+				if ($toRecycle <= 0) break;
+				if (!isset($this->workers[$idx])) continue;
+				$w = $this->workers[$idx];
+				if (($w['branch'] ?? null) !== null) continue; // skip branch workers
+				if ($w['busy']) {
+					// Mark for recycling after current request
+					$this->workers[$idx]['recycleAfter'] = true;
+					$toRecycle--;
+					$recycled++;
+				} else {
+					$this->recycle($idx, false);
+					$toRecycle--;
+					$recycled++;
+				}
+			}
+		}
+
+		return array(
+			'oldSize' => $oldSize,
+			'newSize' => $newSize,
+			'forked' => $forked,
+			'recycled' => $recycled,
+			'clamped' => ($newSize !== (int) $newSize),
+			'minWorkers' => $this->minWorkers,
+			'maxWorkers' => $this->maxWorkers,
+		);
+	}
+
+	/**
+	 * Detect the number of CPU cores. Cross-platform.
+	 * @return int
+	 */
+	static function cpuCount()
+	{
+		// Linux: /proc/cpuinfo or nproc
+		if (PHP_OS_FAMILY === 'Linux') {
+			if (is_readable('/proc/cpuinfo')) {
+				$cpuinfo = file_get_contents('/proc/cpuinfo');
+				$count = substr_count($cpuinfo, 'processor');
+				if ($count > 0) return $count;
+			}
+			$nproc = @shell_exec('nproc 2>/dev/null');
+			if ($nproc && ($n = (int) trim($nproc)) > 0) return $n;
+		}
+		// macOS
+		if (PHP_OS_FAMILY === 'Darwin') {
+			$sysctl = @shell_exec('sysctl -n hw.ncpu 2>/dev/null');
+			if ($sysctl && ($n = (int) trim($sysctl)) > 0) return $n;
+		}
+		// Windows
+		if (PHP_OS_FAMILY === 'Windows') {
+			$n = (int) ($_SERVER['NUMBER_OF_PROCESSORS'] ?? 0);
+			if ($n > 0) return $n;
+		}
+		return 4; // safe fallback
 	}
 
 	/**
@@ -1117,6 +1715,11 @@ class Q_WebServer_Pool
 	 */
 	function shutdown($timeout = 3.0)
 	{
+		// Cancel scaling timer
+		if ($this->scalingTimerId !== null) {
+			Q_Evented::cancel($this->scalingTimerId);
+			$this->scalingTimerId = null;
+		}
 		// Cancel watchers and close sockets
 		foreach ($this->workers as $i => $w) {
 			if (isset($this->watchers[$i])) {
@@ -1184,6 +1787,7 @@ class Q_WebServer_Pool
 			$stats[] = array(
 				'pid' => $pid,
 				'busy' => $w['busy'],
+				'branch' => $w['branch'] ?? null,
 				'rssKb' => $rssKb,
 			);
 		}
@@ -1260,15 +1864,21 @@ class Q_WebServer_Pool
 	protected static function writeMsg($sock, $status, $body, $headers,
 		$cookies = array())
 	{
-		$j = json_encode(compact('status', 'body', 'headers', 'cookies'));
+		$payload = array(
+			'status' => $status,
+			'headers' => $headers,
+			'cookies' => $cookies,
+			'body_b64' => base64_encode($body),
+		);
+		$j = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE);
 		if ($j === false) {
-			// Binary body (invalid UTF-8): carry it as base64
-			$b64 = true;
-			$body = base64_encode((string)$body);
-			$j = json_encode(
-				compact('status', 'body', 'headers', 'cookies', 'b64'),
-				JSON_INVALID_UTF8_SUBSTITUTE
-			);
+			// Last resort: send a 502 with a safe body
+			$j = json_encode(array(
+				'status' => 502,
+				'headers' => array('Content-Type' => 'text/plain'),
+				'cookies' => array(),
+				'body_b64' => base64_encode('Internal encoding error'),
+			));
 		}
 		$frame = pack('N', strlen($j)) . $j;
 		$total = strlen($frame);
