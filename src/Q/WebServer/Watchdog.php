@@ -199,7 +199,7 @@ class Q_WebServer_Watchdog
 			$recent = array_slice($lines, -15);
 		}
 		return [
-			'enabled' => Q_Config::get('Q', 'webserver', 'watchdog', null) !== false,
+			'enabled' => (bool) Q_Config::get('Q', 'webserver', 'watchdog', null),
 			'pid' => $alive ? $watchdogPid : null,
 			'alive' => $alive,
 			'log' => $recent,

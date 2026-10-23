@@ -20,7 +20,7 @@
  *   --help           Print usage and exit
  */
 
-define('QBIX_SERVER_VERSION', '3.4.0');
+define('QBIX_SERVER_VERSION', '2.4.0');
 define('QBIX_SERVER_DIR', __DIR__);
 
 // ── OPcache for CLI ─────────────────────────────────
@@ -81,7 +81,6 @@ $opts = array(
 	'gui'     => false, // --gui : mark packed binary as GUI (no console window)
 	'open'    => null,  // --open[=/path] : open browser when server is ready
 	'debug'   => false,
-	'quiet'   => false,
 );
 
 // Options that take a value may be written "--port 8080" as well as "--port=8080".
@@ -119,11 +118,10 @@ foreach ($argv as $i => $arg) {
 		echo "  --socket-mode=MODE  Permissions on socket file (default: 0660)\n";
 		echo "  --workers=N      Persistent workers (default: auto = nproc × 50)\n";
 		echo "  --config=FILE    JSON config file\n";
-		echo "  --preset=NAME    Framework preset (qbix, laravel, symfony, wordpress, drupal)\n";
+		echo "  --preset=NAME    Framework preset (laravel, symfony, wordpress, drupal)\n";
 		echo "  --pid=PATH       PID file path\n";
 		echo "  --hotreload      Watch files, auto-restart on changes\n";
-		echo "  --quiet, -q      Suppress banner and non-error output\n";
-	echo "  --debug          Verbose logging\n";
+		echo "  --debug          Verbose logging\n";
 		echo "  -t               Test config and exit\n";
 		echo "  --stop           Graceful shutdown (via PID file)\n";
 		echo "  --reload         Re-exec server (via PID file)\n";
@@ -164,10 +162,6 @@ foreach ($argv as $i => $arg) {
 		$opts['debug'] = true;
 		continue;
 	}
-	if ($arg === '--quiet' || $arg === '-q') {
-		$opts['quiet'] = true;
-		continue;
-	}
 	if ($arg === '--hotreload') {
 		$opts['hotreload'] = true;
 		continue;
@@ -180,8 +174,8 @@ foreach ($argv as $i => $arg) {
 		$opts['open'] = '/';
 		continue;
 	}
-	if ($arg === '--no-watchdog') {
-		Q_Config::set('Q', 'webserver', 'watchdog', false);
+	if ($arg === '--watchdog') {
+		Q_Config::set('Q', 'webserver', 'watchdog', true);
 		continue;
 	}
 	if ($arg === '--sign-binary' || strpos($arg, '--sign-binary=') === 0) {
@@ -212,26 +206,6 @@ foreach ($argv as $i => $arg) {
 // ── Determine mode: standalone vs Qbix app ──────────
 
 $qbixMode = false;
-
-// Auto-detect Qbix app when no --app is given.
-// --preset=qbix is treated as an explicit request for native Qbix mode
-// (not the compat layer — Qbix doesn't need source transforms).
-// With no flags at all, auto-detect if cwd looks like a Qbix app.
-if (!$opts['app']) {
-	$isQbixPreset = ($opts['preset'] === 'qbix');
-	$noFlags = !$opts['preset'];
-	if ($isQbixPreset || $noFlags) {
-		$cwd = getcwd();
-		if (file_exists($cwd . '/scripts/Q.inc.php')
-			|| file_exists($cwd . '/local/paths.json')
-		) {
-			$opts['app'] = $cwd;
-			if ($isQbixPreset) {
-				$opts['preset'] = ''; // consumed; skip compat layer
-			}
-		}
-	}
-}
 
 if ($opts['app']) {
 	// Qbix app mode — load the full framework
@@ -271,18 +245,7 @@ if ($opts['app']) {
 		);
 		$serverSrcDir = __DIR__ . DIRECTORY_SEPARATOR . 'src'
 			. DIRECTORY_SEPARATOR . 'Q' . DIRECTORY_SEPARATOR;
-		$serverSrcBase = __DIR__ . DIRECTORY_SEPARATOR . 'src'
-			. DIRECTORY_SEPARATOR;
-		spl_autoload_register(function ($className) use ($webserverOwnedClasses, $serverSrcDir, $serverSrcBase) {
-			// Db_Branch (no Q_ prefix) — lives in src/Db/Branch.php
-			if (strpos($className, 'Db_') === 0) {
-				$rel = str_replace('_', DIRECTORY_SEPARATOR, $className) . '.php';
-				$file = $serverSrcBase . $rel;
-				if (file_exists($file)) {
-					require_once $file;
-				}
-				return;
-			}
+		spl_autoload_register(function ($className) use ($webserverOwnedClasses, $serverSrcDir) {
 			$ours = in_array($className, $webserverOwnedClasses, true)
 				|| strpos($className, 'Q_WebServer_') === 0;
 			if (!$ours) {
@@ -464,29 +427,34 @@ function qbix_data_path($relativePath) {
 }
 
 // ── Validate document root early ────────────────────────
-// Check this BEFORE loading Q shim, because if neither the root
-// nor src/Q.php exist, the user just downloaded the binary and
-// ran it in an empty directory — show them how to get started.
+// Check BEFORE loading Q shim whether the requested root exists.
+// If the user explicitly passed --root and it doesn't exist, that is a real error.
+// If no --root was given and ./web doesn't exist, start anyway — WebServer will serve the
+// welcome page (src/Q/welcome.php) for '/', which is more useful than a help message and exit.
 if (!$servingFromPhar) {
 	$resolvedWebDir = realpath($webDir);
 	if (!$resolvedWebDir || !is_dir($resolvedWebDir)) {
-		$target = $opts['root'] ?: './web';
-		$me = basename($argv[0]);
-		fwrite(STDERR, "\n");
-		fwrite(STDERR, "  No document root found at: $target\n\n");
-		fwrite(STDERR, "  Quick start:\n\n");
-		fwrite(STDERR, "    mkdir -p web && echo '<?php echo \"Hello from Qbix Server!\";' > web/index.php\n");
-		fwrite(STDERR, "    $me\n\n");
-		fwrite(STDERR, "  Or point to an existing project:\n\n");
-		fwrite(STDERR, "    $me --root=/path/to/your/public\n\n");
-		fwrite(STDERR, "  Framework shortcuts:\n\n");
-		fwrite(STDERR, "    $me --root=public --preset=laravel\n");
-		fwrite(STDERR, "    $me --root=public --preset=symfony\n");
-		fwrite(STDERR, "    $me --root=.     --preset=wordpress\n\n");
-		fwrite(STDERR, "  Docs: https://github.com/Qbix/webserver\n\n");
-		exit(1);
+		if ($opts['root']) {
+			// Explicit --root that doesn't exist → hard error, nothing to serve.
+			$me = basename($argv[0]);
+			fwrite(STDERR, "\n");
+			fwrite(STDERR, "  No document root found at: " . $opts['root'] . "\n\n");
+			fwrite(STDERR, "  Or point to an existing project:\n\n");
+			fwrite(STDERR, "    $me --root=/path/to/your/public\n\n");
+			fwrite(STDERR, "  Framework shortcuts:\n\n");
+			fwrite(STDERR, "    $me --root=public --preset=laravel\n");
+			fwrite(STDERR, "    $me --root=public --preset=symfony\n");
+			fwrite(STDERR, "    $me --root=.     --preset=wordpress\n\n");
+			fwrite(STDERR, "  Docs: https://github.com/Qbix/webserver\n\n");
+			exit(1);
+		}
+		// No --root and no ./web — start with the source root as a stand-in so WebServer
+		// can boot. It has no index.html/index.php, so '/' triggers renderWelcome() just
+		// as it does from the phar. The panel and all /Q/ routes are fully functional.
+		$webDir = realpath(dirname($argv[0])) ?: getcwd();
+	} else {
+		$webDir = $resolvedWebDir;
 	}
-	$webDir = $resolvedWebDir;
 }
 
 if (!$qbixMode) {
@@ -954,9 +922,6 @@ $opts['https-port'] = $httpsPort;
 
 // Store HTTP port in config too (for anything that reads it)
 Q_Config::set('Q', 'webserver', 'port', $httpPort);
-if (!empty($opts['quiet'])) {
-	Q_Config::set('Q', 'webserver', 'quiet', true);
-}
 
 // Unix domain socket: --socket > Q.webserver.socket > null (TCP only)
 $socketPath = $opts['socket'] ?: Q_Config::get('Q', 'webserver', 'socket', null);
@@ -1130,32 +1095,13 @@ $colors = array(
 $reset = "\033[0m";
 
 Q_WebServer::$onRequest = function ($method, $uri, $status, $ms) use ($colors, $reset, $opts) {
-	// Suppress 403s that are clearly automated credential/config sweeps — they are
-	// correctly blocked and generate hundreds of log lines per minute of noise.
-	// Set Q.webserver.logProbes = true in config to log them anyway.
-	if ($status === 403 && !Q_Config::get('Q', 'webserver', 'logProbes', false)) {
-		$path = strtok($uri, '?');
-		static $probeRx = null;
-		if ($probeRx === null) {
-			$probeRx = '~'
-				. '(?:^|/)\.env(?:\.[a-z0-9_-]+)?$'        // .env, .env.production, etc.
-				. '|/\.git(?:/|$)'                          // .git paths
-				. '|/\.ssh(?:/|$)'                          // .ssh paths
-				. '|/wp-(?:admin|login|config)(?:/|$)'      // WordPress probes
-				. '|/phpinfo\.php(?:$)'                     // phpinfo.php
-				. '|/(?:service-account|credentials|gcp-(?:key|credentials|sa)|google-(?:credentials|key)|firebase-(?:adminsdk|key)|key|keyfile|application_default_credentials)\.json$'
-				. '|/\.config/gcloud/'                      // gcloud credentials
-				. '|/(?:adminer|phpmyadmin|pma|mysql|db)(?:/|$)' // DB admin tools
-				. '~i';
-		}
-		if (preg_match($probeRx, $path)) return;
-	}
 	$color = $colors[(int)($status / 100)] ?? '';
 	$time = date('H:i:s');
 	fwrite(STDERR, "$time {$color}{$status}{$reset} $method $uri ({$ms}ms)\n");
 };
 
 // ── Start server ────────────────────────────────────
+
 
 // Detect if HTTPS will be available (certs must actually exist)
 $httpsAvailable = false;
@@ -1172,44 +1118,32 @@ if (is_file($certFile) && is_file($keyFile)) {
 
 fwrite(STDERR, "\n");
 
-// ── Detect system resources (used for worker count and memory limit) ──
-$nproc = 1;
-$totalRAM = 0;
-if (is_file('/proc/cpuinfo')) {
-	$nproc = max(1, (int) trim(shell_exec('nproc 2>/dev/null') ?: '1'));
-	// /proc/meminfo reports in KB
-	$memLine = shell_exec("grep MemTotal /proc/meminfo 2>/dev/null");
-	if ($memLine && preg_match('/(\d+)/', $memLine, $m)) {
-		$totalRAM = (int) $m[1] * 1024; // bytes
-	}
-} elseif (PHP_OS_FAMILY === 'Darwin') {
-	$nproc = max(1, (int) trim(shell_exec('sysctl -n hw.ncpu 2>/dev/null') ?: '1'));
-	$totalRAM = (int) trim(shell_exec('sysctl -n hw.memsize 2>/dev/null') ?: '0');
-}
-
-// Set memory watchdog limit: default to half of available RAM, minimum 128MB.
-// Configurable via Q.webserver.memoryLimit (in MB).
-if (Q_Config::get('Q', 'webserver', 'memoryLimit', null) === null) {
-	if ($totalRAM > 0) {
-		$defaultMemLimitMB = max(128, (int) floor($totalRAM / 2 / 1048576));
-	} else {
-		$defaultMemLimitMB = 256; // fallback when RAM can't be detected
-	}
-	Q_Config::set('Q', 'webserver', 'memoryLimit', $defaultMemLimitMB);
-}
-
 // Auto-detect workers if not specified
 if (!$opts['workers'] && function_exists('pcntl_fork')) {
-	$maxByCpu = $nproc * 50;
+	$nproc = 1;
+	$totalRAM = 0;
+	if (is_file('/proc/cpuinfo')) {
+		$nproc = max(1, (int) trim(shell_exec('nproc 2>/dev/null') ?: '1'));
+		// /proc/meminfo reports in KB
+		$memLine = shell_exec("grep MemTotal /proc/meminfo 2>/dev/null");
+		if ($memLine && preg_match('/(\d+)/', $memLine, $m)) {
+			$totalRAM = (int) $m[1] * 1024; // bytes
+		}
+	} elseif (PHP_OS_FAMILY === 'Darwin') {
+		$nproc = max(1, (int) trim(shell_exec('sysctl -n hw.ncpu 2>/dev/null') ?: '1'));
+		$totalRAM = (int) trim(shell_exec('sysctl -n hw.memsize 2>/dev/null') ?: '0');
+	}
+
+	$maxByCpu = $nproc * 200;
 
 	if ($totalRAM > 0) {
 		$reservedRAM = 1024 * 1024 * 1024; // 1GB for OS + PHP base + SQLite
 		$availableRAM = max(0, $totalRAM - $reservedRAM);
-		$perWorker = 2 * 1024 * 1024; // ~2MB per worker (realistic with app state)
+		$perWorker = 200 * 1024; // ~200KB COW per worker (measured)
 		$maxByRam = (int) ($availableRAM / $perWorker);
-		$opts['workers'] = min(512, max(4, min($maxByRam, $maxByCpu)));
+		$opts['workers'] = max(4, min($maxByRam, $maxByCpu));
 	} else {
-		$opts['workers'] = min(512, $nproc * 50); // fallback
+		$opts['workers'] = $nproc * 50; // fallback
 	}
 }
 
@@ -1366,42 +1300,40 @@ if ($opts['workers'] > 0) {
 	}
 }
 
-// ── Build banner lines, then compute box width dynamically ──
-$bannerTop = array();  // lines above the divider
-$bannerBot = array();  // lines below the divider
-
-$bannerTop[] = "  Qbix Server v" . QBIX_SERVER_VERSION;
-$bannerTop[] = ''; // divider marker
-$bannerTop[] = "  http://{$opts['host']}:{$opts['port']}";
+$boxRows = array();
+$boxRows[] = "  Qbix Server v" . QBIX_SERVER_VERSION;
+$boxRows[] = null;
+$httpLine = "  http://{$opts['host']}:{$opts['port']}";
+$boxRows[] = $httpLine;
 if ($socketPath) {
-	$bannerTop[] = "  unix:" . $socketPath;
+	$boxRows[] = "  unix:" . $socketPath;
 }
 if ($httpsAvailable) {
-	$bannerTop[] = "  https://{$opts['host']}:{$opts['https-port']}";
+	$httpsLine = "  https://{$opts['host']}:{$opts['https-port']}";
+	$boxRows[] = $httpsLine;
 }
 $rootLabel = $servingFromPhar ? 'web (phar)' : ($servingFromZip ? 'web (appended zip)' : basename($webDir));
-$bannerTop[] = "  Root: " . $rootLabel;
-$bannerTop[] = "  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone');
+$boxRows[] = "  Root: " . $rootLabel;
+$boxRows[] = "  Mode: " . ($qbixMode ? 'Qbix Platform' : 'Standalone');
 if (!Q_Config::get('Q', 'compat', 'skipSourceCodeTransform', false)) {
 	$preset = $opts['preset'] ?: 'custom';
-	$bannerTop[] = "  Compat: $preset (source transform active)";
+	$boxRows[] = "  Compat: $preset (source transform active)";
 }
-$bannerTop[] = "  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process')
+$boxRows[] = "  PHP: " . ($opts['workers'] ? $opts['workers'] . ' workers' : 'in-process')
 	. ' (' . (class_exists('Q_WebServer_Fork') ? Q_WebServer_Fork::method() : 'detecting...') . ')';
 $nClasses = count(get_declared_classes());
 $nHandlers = property_exists('Q', 'preloadedHandlers') ? Q::$preloadedHandlers : 0;
-$bannerTop[] = $nHandlers > 0
+$preloadLabel = $nHandlers > 0
 	? "  Preloaded: {$nClasses} classes, {$nHandlers} handlers"
 	: "  Preloaded: {$nClasses} classes (handlers: lazy)";
-$memLimitMB = Q_Config::get('Q', 'webserver', 'memoryLimit', 256);
-$bannerTop[] = "  Memory: {$memLimitMB}MB limit (Q.webserver.memoryLimit)";
-
+$boxRows[] = $preloadLabel;
+$boxRows[] = null;
 $evLoop = class_exists('Io\\Poll', false) ? 'epoll/kqueue (PHP 8.6 Io\\Poll)'
 	: (class_exists('Revolt\\EventLoop') ? 'Revolt' : 'stream_select');
-$bannerBot[] = "  Dashboard: /Q/dashboard";
-$bannerBot[] = "  Health:    /Q/health";
-$bannerBot[] = "  Docs:      /Q/docs";
-$bannerBot[] = "  I/O:       $evLoop";
+$boxRows[] = "  Dashboard: /Q/dashboard";
+$boxRows[] = "  Health:    /Q/health";
+$boxRows[] = "  Docs:      /Q/docs";
+$boxRows[] = "  I/O:       $evLoop";
 
 // ── Initialize mesh identity ──
 $meshId = '';
@@ -1410,36 +1342,12 @@ if (is_file($meshFile)) {
 	require_once $meshFile;
 	Q_WebServer_Mesh::init();
 	$meshId = Q_WebServer_Mesh::peerId();
-	$bannerBot[] = "  Mesh ID: " . substr($meshId, 0, 12) . "…";
+	$meshLabel = "  Mesh ID: " . substr($meshId, 0, 12) . "…";
+	$boxRows[] = $meshLabel;
 }
 
-$bannerBot[] = "  Ctrl+C to stop";
-
-// Compute box width from the longest line (minimum 38)
-$W = 38;
-foreach (array_merge($bannerTop, $bannerBot) as $line) {
-	$len = strlen($line);
-	if ($len > $W) $W = $len;
-}
-$W += 2; // right-side padding
-
-// Render the box (unless --quiet)
-if (empty($opts['quiet'])) {
-	$boxRows = array();
-	$dividerDone = false;
-	foreach ($bannerTop as $line) {
-		if ($line === '' && !$dividerDone) {
-			$boxRows[] = null;
-			$dividerDone = true;
-			continue;
-		}
-		$boxRows[] = $line;
-	}
-	$boxRows[] = null;
-	foreach ($bannerBot as $line) {
-		$boxRows[] = $line;
-	}
-	// Width is counted in characters, not bytes ("…" and the like), and the box grows to fit its widest row
+$boxRows[] = "  Ctrl+C to stop";
+// Width is counted in characters, not bytes ("…" and the like), and the box grows to fit its widest row
 $__w = function ($t) { return function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : preg_match_all('/./us', $t); };
 $W = 38;
 foreach ($boxRows as $__r) { if ($__r !== null) $W = max($W, $__w($__r) + 2); }
@@ -1452,8 +1360,7 @@ foreach ($boxRows as $__r) {
 $__box .= "  └" . str_repeat('─', $W) . "┘\n";
 fwrite(STDERR, $__box);
 unset($boxRows, $__box, $__r, $__w);
-	fwrite(STDERR, "\n");
-}
+fwrite(STDERR, "\n");
 
 // ── Open browser if requested ──
 $openPath = $opts['open']
@@ -1474,16 +1381,13 @@ if ($openPath !== null) {
 }
 
 // ── Watchdog — monitor and auto-restart on crash ──
-// Watchdog is ON by default. Disable with --no-watchdog flag or Q.webserver.watchdog: false in config.
 $watchdogEnabled = Q_Config::get('Q', 'webserver', 'watchdog', null);
-if ($watchdogEnabled !== false) {
+if ($watchdogEnabled) {
 	require_once __DIR__ . '/src/Q/WebServer/Watchdog.php';
 	$watchdogPid = Q_WebServer_Watchdog::start(getmypid(), $argv);
 	if ($watchdogPid > 0) {
-		fwrite(STDERR, "  Watchdog: PID $watchdogPid (auto-restart on crash, --no-watchdog to disable)\n");
+		fwrite(STDERR, "  Watchdog: PID $watchdogPid (auto-restart on crash)\n");
 	}
-} else {
-	fwrite(STDERR, "  Watchdog: disabled (--no-watchdog)\n");
 }
 
 // ── Cluster initialization ──
@@ -1501,132 +1405,6 @@ if (!$qbixMode) {
 		}
 	}
 }
-
-// Apply any config overrides saved via the control panel
-require_once __DIR__ . '/src/Q/WebServer/Panel.php';
-Q_WebServer_Panel::applyConfigOverrides();
-
-// ── Auto-spawn relay process ────────────────────────
-// When relay config exists (Q.relay.smtp.host or Users.relay.smtp.host),
-// spawn qbixrelay.php as a managed child process. The server monitors
-// the relay, restarts it on crash, and reports its status in the dashboard.
-$__relayPid = null;
-$__relayConfigured = Q_Config::get('Q', 'relay', 'smtp', 'host',
-	Q_Config::get('Users', 'relay', 'smtp', 'host', null));
-
-/**
- * Start the relay as a child process. Returns the child's pid (0 if fork failed).
- * The relay shares no memory with this process, so it reads the 'Q' and 'Users' config trees
- * from a file only this user can read (it holds the same secrets as the config files it came from).
- * Called again by qbix_relay_supervise() to restart a relay that exited.
- */
-function qbix_relay_fork(array $st)
-{
-	$args = [$st['script']];
-	if (method_exists('Q_Config', 'getAll')) {
-		$all = Q_Config::getAll();
-		$path = qbix_data_path('local/relay-config.json');
-		$tree = [];
-		foreach (['Q', 'Users'] as $k) {
-			if (isset($all[$k])) $tree[$k] = $all[$k];
-		}
-		@mkdir(dirname($path), 0700, true);
-		$old = umask(0077);
-		if (@file_put_contents($path, json_encode($tree), LOCK_EX) !== false) {
-			@chmod($path, 0600);
-			$args[] = '--config=' . $path;
-		}
-		umask($old);
-	}
-	if (!empty($st['debug'])) $args[] = '--debug';
-	$pid = pcntl_fork();
-	if ($pid === 0) {
-		pcntl_exec(PHP_BINARY, $args);
-		// If pcntl_exec fails (e.g. running from PHAR), run inline.
-		// Reset argv so the relay doesn't inherit the server's --port etc.
-		$GLOBALS['argv'] = $args;
-		$GLOBALS['argc'] = count($args);
-		require $st['script'];
-		exit(0);
-	}
-	return $pid > 0 ? $pid : 0;
-}
-
-/**
- * Called every few seconds from the server's main loop: if the relay child exited, start it
- * again, waiting 5 seconds after the first failure and doubling up to 5 minutes. A relay that has
- * stayed up for a minute counts as healthy again. Only the process that started the relay acts.
- */
-function qbix_relay_supervise()
-{
-	if (empty($GLOBALS['__qbix_relay'])) return;
-	$st = &$GLOBALS['__qbix_relay'];
-	if (getmypid() !== $st['master']) return;
-	$now = time();
-	if ($st['pid'] > 0) {
-		$r = pcntl_waitpid($st['pid'], $status, WNOHANG);
-		if ($r === 0) {
-			if ($st['fails'] && $now - $st['started'] > 60) $st['fails'] = 0;
-			return;
-		}
-		fwrite(STDERR, "  Relay:   PID {$st['pid']} exited, restarting\n");
-		$st['pid'] = 0;
-		$st['fails']++;
-		$st['next'] = $now + min(300, 5 * (1 << min($st['fails'] - 1, 6)));
-	}
-	if ($st['pid'] === 0 && $now >= $st['next']) {
-		$pid = qbix_relay_fork($st);
-		$st['pid'] = $pid;
-		$st['started'] = $now;
-		if ($pid === 0) {
-			$st['fails']++;
-			$st['next'] = $now + min(300, 5 * (1 << min($st['fails'] - 1, 6)));
-		} else {
-			fwrite(STDERR, "  Relay:   PID $pid (restarted)\n");
-		}
-	}
-}
-
-if ($__relayConfigured && function_exists('pcntl_fork')) {
-	$__relayScript = __DIR__ . '/bin/qbixrelay.php';
-	if (!is_file($__relayScript)) {
-		// Check if running from PHAR — extract relay script path
-		$__relayScript = __DIR__ . '/qbixrelay.php';
-	}
-	if (is_file($__relayScript)) {
-		$GLOBALS['__qbix_relay'] = [
-			'master' => getmypid(), 'script' => $__relayScript, 'debug' => !empty($opts['debug']),
-			'pid' => 0, 'fails' => 0, 'next' => 0, 'started' => time(),
-		];
-		$__relayPid = qbix_relay_fork($GLOBALS['__qbix_relay']);
-		if ($__relayPid > 0) {
-			$GLOBALS['__qbix_relay']['pid'] = $__relayPid;
-			fwrite(STDERR, "  Relay:   PID $__relayPid (auto-spawned)\n");
-			// On server shutdown, stop whichever relay process is current
-			register_shutdown_function(function () {
-				$st = isset($GLOBALS['__qbix_relay']) ? $GLOBALS['__qbix_relay'] : null;
-				if (!$st || $st['pid'] <= 0 || getmypid() !== $st['master']) return;
-				@posix_kill($st['pid'], SIGTERM);
-				$waited = 0;
-				while ($waited < 5) {
-					$r = pcntl_waitpid($st['pid'], $status, WNOHANG);
-					if ($r > 0 || $r === -1) break;
-					usleep(200000);
-					$waited += 0.2;
-				}
-				if ($waited >= 5) {
-					@posix_kill($st['pid'], SIGKILL);
-				}
-			});
-		} else {
-			fwrite(STDERR, "  Relay:   fork failed, relay not started\n");
-			unset($GLOBALS['__qbix_relay']);
-		}
-	}
-} elseif ($__relayConfigured) {
-	fwrite(STDERR, "  Relay:   pcntl extension not available, run qbixrelay.php separately\n");
-}
-unset($__relayConfigured, $__relayScript);
 
 // Forked workers and the framework boot master unwind to here by throwing
 // Q_WebServer_Role, then run their loop from a file included at this level,
@@ -1659,20 +1437,6 @@ try {
 // exits non-zero — a supervisor (Docker, systemd) can then restart us.
 // Without this, the process exits 0 and looks like a clean shutdown.
 if (!$__qbix_role) {
-	// Suppress raw escape-code echo (arrow keys, scroll) when running in a terminal
-	$__qbix_sttyRestore = null;
-	if (defined('STDIN') && function_exists('posix_isatty') && @posix_isatty(STDIN)) {
-		$__qbix_sttyRestore = trim(shell_exec('stty -g 2>/dev/null') ?: '');
-		@shell_exec('stty -echo -icanon 2>/dev/null');
-		// Restore terminal settings on exit
-		register_shutdown_function(function () use ($__qbix_sttyRestore) {
-			if ($__qbix_sttyRestore) {
-				@shell_exec('stty ' . escapeshellarg($__qbix_sttyRestore) . ' 2>/dev/null');
-			} else {
-				@shell_exec('stty echo icanon 2>/dev/null');
-			}
-		});
-	}
 	try {
 		Q_WebServer::run();
 	} catch (Q_WebServer_Role $__qbix_r) {

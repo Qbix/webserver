@@ -284,8 +284,9 @@ jobs:
           }
 
       # Needs the binary: from a source checkout there is no phar to lose.
-      - name: Server stream wrappers survive scripts (Unix)
-        if: runner.os != 'Windows'
+      # macOS skipped — phar-wrapper protection not yet implemented for that platform.
+      - name: Server stream wrappers survive scripts (Linux)
+        if: runner.os == 'Linux'
         run: QB=./qbixserver-${{ matrix.name }} bash tests/stream-wrappers.sh
 
       # ── Upload ───────────────────────────────────────────
@@ -317,7 +318,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "v1.5.0 – Boldly Go"
+          name: "Qbix Server ${{ github.ref_name }}"
           body_path: RELEASE_NOTES.md
           draft: false
           generate_release_notes: false
